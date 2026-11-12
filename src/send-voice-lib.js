@@ -1,0 +1,25 @@
+// 语音库转发层，实现在 voice-core.js，勿复制代码
+export {
+  AUDIO_EXTS,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_SECONDS,
+  isAudioFile,
+  formatBytes,
+  formatDuration,
+  listAudioFiles,
+  resolveAudioSource,
+  safeJoinLibrary,
+  probeAudio,
+  inspectAudio,
+  describeAudio,
+  parseTargetKey,
+  sanitizeUploadName,
+  uniqueLibraryPath,
+  VOLUME_MIN,
+  VOLUME_MAX,
+  LOUDNESS_TARGETS,
+  resolveAudioProcessing,
+  resolveFfmpeg,
+  processAudioVolume,
+  cleanupTemp
+} from './voice-core.js';
