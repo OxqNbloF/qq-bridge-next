@@ -1,0 +1,1294 @@
+{
+  "sourceAll": [
+    "qq_collect_sticker",
+    "qq_get_active_members",
+    "qq_get_forward_msg",
+    "qq_get_group_history",
+    "qq_get_group_members",
+    "qq_get_message_detail",
+    "qq_get_message_images",
+    "qq_get_my_recent_messages",
+    "qq_get_prompt",
+    "qq_get_recent_messages",
+    "qq_get_self_image",
+    "qq_get_sticker_image",
+    "qq_get_unread_messages",
+    "qq_list_groups",
+    "qq_list_stickers",
+    "qq_list_voices",
+    "qq_mark_read",
+    "qq_memory_append",
+    "qq_memory_clear",
+    "qq_memory_query",
+    "qq_memory_remove",
+    "qq_reply",
+    "qq_report_feedback",
+    "qq_send_burst",
+    "qq_send_group_message",
+    "qq_send_message",
+    "qq_send_poke",
+    "qq_send_private_message",
+    "qq_send_sticker",
+    "qq_send_voice",
+    "qq_set_sticker_remark",
+    "qq_set_wake_config",
+    "qq_slang_query",
+    "qq_slang_submit",
+    "qq_social_state",
+    "qq_status",
+    "qq_sticker_note",
+    "qq_wait_for_messages"
+  ],
+  "profiles": {
+    "closed-agent/all-tools-on": {
+      "qq_collect_sticker": {
+        "params": [
+          "key",
+          "messageId",
+          "remark",
+          "token"
+        ],
+        "required": [
+          "key",
+          "messageId",
+          "token"
+        ]
+      },
+      "qq_get_active_members": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_forward_msg": {
+        "params": [
+          "id",
+          "key",
+          "token"
+        ],
+        "required": [
+          "id",
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_group_history": {
+        "params": [
+          "groupId",
+          "messageSeq"
+        ],
+        "required": [
+          "groupId"
+        ]
+      },
+      "qq_get_group_members": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key"
+        ]
+      },
+      "qq_get_message_detail": {
+        "params": [
+          "key",
+          "messageId",
+          "target",
+          "token"
+        ],
+        "required": [
+          "messageId",
+          "token"
+        ]
+      },
+      "qq_get_message_images": {
+        "params": [
+          "key",
+          "messageId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "messageId"
+        ]
+      },
+      "qq_get_my_recent_messages": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_prompt": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_recent_messages": {
+        "params": [
+          "key",
+          "limit",
+          "offset",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_self_image": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_sticker_image": {
+        "params": [
+          "key",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_get_unread_messages": {
+        "params": [
+          "afterSeq",
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_list_groups": {
+        "params": [],
+        "required": []
+      },
+      "qq_list_stickers": {
+        "params": [
+          "count",
+          "key",
+          "query",
+          "refresh",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_list_voices": {
+        "params": [
+          "key",
+          "probe",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_mark_read": {
+        "params": [
+          "key",
+          "throughSeq",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_append": {
+        "params": [
+          "category",
+          "content",
+          "extra",
+          "key",
+          "token"
+        ],
+        "required": [
+          "category",
+          "content",
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_clear": {
+        "params": [
+          "category",
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_query": {
+        "params": [
+          "category",
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_remove": {
+        "params": [
+          "category",
+          "content",
+          "key",
+          "target",
+          "token"
+        ],
+        "required": [
+          "category",
+          "key",
+          "token"
+        ]
+      },
+      "qq_reply": {
+        "params": [
+          "groupId",
+          "message",
+          "replyToMessageId",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "message",
+          "replyToMessageId"
+        ]
+      },
+      "qq_report_feedback": {
+        "params": [
+          "key",
+          "level",
+          "message",
+          "token"
+        ],
+        "required": [
+          "key",
+          "message",
+          "token"
+        ]
+      },
+      "qq_send_burst": {
+        "params": [
+          "groupId",
+          "messages",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "messages",
+          "token"
+        ]
+      },
+      "qq_send_group_message": {
+        "params": [
+          "groupId",
+          "message",
+          "replyToMessageId",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "message"
+        ]
+      },
+      "qq_send_message": {
+        "params": [
+          "atUserId",
+          "content",
+          "gapMode",
+          "gapMs",
+          "gaps",
+          "key",
+          "message",
+          "messages",
+          "replyToMessageId",
+          "target",
+          "text",
+          "token"
+        ],
+        "required": [
+          "token"
+        ]
+      },
+      "qq_send_poke": {
+        "params": [
+          "key",
+          "targetUserId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_send_private_message": {
+        "params": [
+          "message",
+          "replyToMessageId",
+          "token",
+          "userId"
+        ],
+        "required": [
+          "message",
+          "userId"
+        ]
+      },
+      "qq_send_sticker": {
+        "params": [
+          "atUserId",
+          "key",
+          "replyToMessageId",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_send_voice": {
+        "params": [
+          "key",
+          "label",
+          "readback",
+          "token",
+          "verify",
+          "voice"
+        ],
+        "required": [
+          "key",
+          "token",
+          "voice"
+        ]
+      },
+      "qq_set_sticker_remark": {
+        "params": [
+          "key",
+          "remark",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "remark",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_set_wake_config": {
+        "params": [
+          "config",
+          "key",
+          "throughSeq",
+          "token"
+        ],
+        "required": [
+          "config",
+          "key",
+          "token"
+        ]
+      },
+      "qq_slang_query": {
+        "params": [
+          "key",
+          "q",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_slang_submit": {
+        "params": [
+          "content",
+          "context",
+          "key",
+          "token"
+        ],
+        "required": [
+          "content",
+          "key",
+          "token"
+        ]
+      },
+      "qq_social_state": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_status": {
+        "params": [],
+        "required": []
+      },
+      "qq_sticker_note": {
+        "params": [
+          "key",
+          "note",
+          "stickerId",
+          "tags",
+          "token",
+          "usage"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_wait_for_messages": {
+        "params": [
+          "key",
+          "minNewMessages",
+          "purpose",
+          "quietMs",
+          "timeoutMs",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      }
+    },
+    "reserved2/config.example.json": {
+      "qq_collect_sticker": {
+        "params": [
+          "key",
+          "messageId",
+          "remark",
+          "token"
+        ],
+        "required": [
+          "key",
+          "messageId",
+          "token"
+        ]
+      },
+      "qq_get_active_members": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_forward_msg": {
+        "params": [
+          "id",
+          "key",
+          "token"
+        ],
+        "required": [
+          "id",
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_group_members": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key"
+        ]
+      },
+      "qq_get_message_detail": {
+        "params": [
+          "key",
+          "messageId",
+          "target",
+          "token"
+        ],
+        "required": [
+          "messageId",
+          "token"
+        ]
+      },
+      "qq_get_message_images": {
+        "params": [
+          "key",
+          "messageId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "messageId"
+        ]
+      },
+      "qq_get_my_recent_messages": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_prompt": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_recent_messages": {
+        "params": [
+          "key",
+          "limit",
+          "offset",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_self_image": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_sticker_image": {
+        "params": [
+          "key",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_get_unread_messages": {
+        "params": [
+          "afterSeq",
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_list_stickers": {
+        "params": [
+          "count",
+          "key",
+          "query",
+          "refresh",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_mark_read": {
+        "params": [
+          "key",
+          "throughSeq",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_append": {
+        "params": [
+          "category",
+          "content",
+          "extra",
+          "key",
+          "token"
+        ],
+        "required": [
+          "category",
+          "content",
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_clear": {
+        "params": [
+          "category",
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_query": {
+        "params": [
+          "category",
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_remove": {
+        "params": [
+          "category",
+          "content",
+          "key",
+          "target",
+          "token"
+        ],
+        "required": [
+          "category",
+          "key",
+          "token"
+        ]
+      },
+      "qq_reply": {
+        "params": [
+          "groupId",
+          "message",
+          "replyToMessageId",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "message",
+          "replyToMessageId"
+        ]
+      },
+      "qq_report_feedback": {
+        "params": [
+          "key",
+          "level",
+          "message",
+          "token"
+        ],
+        "required": [
+          "key",
+          "message",
+          "token"
+        ]
+      },
+      "qq_send_burst": {
+        "params": [
+          "groupId",
+          "messages",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "messages",
+          "token"
+        ]
+      },
+      "qq_send_group_message": {
+        "params": [
+          "groupId",
+          "message",
+          "replyToMessageId",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "message"
+        ]
+      },
+      "qq_send_message": {
+        "params": [
+          "atUserId",
+          "content",
+          "gapMode",
+          "gapMs",
+          "gaps",
+          "key",
+          "message",
+          "messages",
+          "replyToMessageId",
+          "target",
+          "text",
+          "token"
+        ],
+        "required": [
+          "token"
+        ]
+      },
+      "qq_send_poke": {
+        "params": [
+          "key",
+          "targetUserId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_send_private_message": {
+        "params": [
+          "message",
+          "replyToMessageId",
+          "token",
+          "userId"
+        ],
+        "required": [
+          "message",
+          "userId"
+        ]
+      },
+      "qq_send_sticker": {
+        "params": [
+          "atUserId",
+          "key",
+          "replyToMessageId",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_set_wake_config": {
+        "params": [
+          "config",
+          "key",
+          "throughSeq",
+          "token"
+        ],
+        "required": [
+          "config",
+          "key",
+          "token"
+        ]
+      },
+      "qq_slang_query": {
+        "params": [
+          "key",
+          "q",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_slang_submit": {
+        "params": [
+          "content",
+          "context",
+          "key",
+          "token"
+        ],
+        "required": [
+          "content",
+          "key",
+          "token"
+        ]
+      },
+      "qq_social_state": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_status": {
+        "params": [],
+        "required": []
+      },
+      "qq_sticker_note": {
+        "params": [
+          "key",
+          "note",
+          "stickerId",
+          "tags",
+          "token",
+          "usage"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_wait_for_messages": {
+        "params": [
+          "key",
+          "minNewMessages",
+          "purpose",
+          "quietMs",
+          "timeoutMs",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      }
+    },
+    "reserved2/no-tools-config": {
+      "qq_collect_sticker": {
+        "params": [
+          "key",
+          "messageId",
+          "remark",
+          "token"
+        ],
+        "required": [
+          "key",
+          "messageId",
+          "token"
+        ]
+      },
+      "qq_get_active_members": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_forward_msg": {
+        "params": [
+          "id",
+          "key",
+          "token"
+        ],
+        "required": [
+          "id",
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_group_members": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key"
+        ]
+      },
+      "qq_get_message_detail": {
+        "params": [
+          "key",
+          "messageId",
+          "target",
+          "token"
+        ],
+        "required": [
+          "messageId",
+          "token"
+        ]
+      },
+      "qq_get_message_images": {
+        "params": [
+          "key",
+          "messageId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "messageId"
+        ]
+      },
+      "qq_get_my_recent_messages": {
+        "params": [
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_prompt": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_recent_messages": {
+        "params": [
+          "key",
+          "limit",
+          "offset",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_self_image": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_get_sticker_image": {
+        "params": [
+          "key",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_get_unread_messages": {
+        "params": [
+          "afterSeq",
+          "key",
+          "limit",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_list_stickers": {
+        "params": [
+          "count",
+          "key",
+          "query",
+          "refresh",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_mark_read": {
+        "params": [
+          "key",
+          "throughSeq",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_append": {
+        "params": [
+          "category",
+          "content",
+          "extra",
+          "key",
+          "token"
+        ],
+        "required": [
+          "category",
+          "content",
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_clear": {
+        "params": [
+          "category",
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_query": {
+        "params": [
+          "category",
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_memory_remove": {
+        "params": [
+          "category",
+          "content",
+          "key",
+          "target",
+          "token"
+        ],
+        "required": [
+          "category",
+          "key",
+          "token"
+        ]
+      },
+      "qq_reply": {
+        "params": [
+          "groupId",
+          "message",
+          "replyToMessageId",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "message",
+          "replyToMessageId"
+        ]
+      },
+      "qq_report_feedback": {
+        "params": [
+          "key",
+          "level",
+          "message",
+          "token"
+        ],
+        "required": [
+          "key",
+          "message",
+          "token"
+        ]
+      },
+      "qq_send_burst": {
+        "params": [
+          "groupId",
+          "messages",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "messages",
+          "token"
+        ]
+      },
+      "qq_send_group_message": {
+        "params": [
+          "groupId",
+          "message",
+          "replyToMessageId",
+          "token"
+        ],
+        "required": [
+          "groupId",
+          "message"
+        ]
+      },
+      "qq_send_message": {
+        "params": [
+          "atUserId",
+          "content",
+          "gapMode",
+          "gapMs",
+          "gaps",
+          "key",
+          "message",
+          "messages",
+          "replyToMessageId",
+          "target",
+          "text",
+          "token"
+        ],
+        "required": [
+          "token"
+        ]
+      },
+      "qq_send_poke": {
+        "params": [
+          "key",
+          "targetUserId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_send_private_message": {
+        "params": [
+          "message",
+          "replyToMessageId",
+          "token",
+          "userId"
+        ],
+        "required": [
+          "message",
+          "userId"
+        ]
+      },
+      "qq_send_sticker": {
+        "params": [
+          "atUserId",
+          "key",
+          "replyToMessageId",
+          "stickerId",
+          "token"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_set_wake_config": {
+        "params": [
+          "config",
+          "key",
+          "throughSeq",
+          "token"
+        ],
+        "required": [
+          "config",
+          "key",
+          "token"
+        ]
+      },
+      "qq_slang_query": {
+        "params": [
+          "key",
+          "q",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_slang_submit": {
+        "params": [
+          "content",
+          "context",
+          "key",
+          "token"
+        ],
+        "required": [
+          "content",
+          "key",
+          "token"
+        ]
+      },
+      "qq_social_state": {
+        "params": [
+          "key",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      },
+      "qq_status": {
+        "params": [],
+        "required": []
+      },
+      "qq_sticker_note": {
+        "params": [
+          "key",
+          "note",
+          "stickerId",
+          "tags",
+          "token",
+          "usage"
+        ],
+        "required": [
+          "key",
+          "stickerId",
+          "token"
+        ]
+      },
+      "qq_wait_for_messages": {
+        "params": [
+          "key",
+          "minNewMessages",
+          "purpose",
+          "quietMs",
+          "timeoutMs",
+          "token"
+        ],
+        "required": [
+          "key",
+          "token"
+        ]
+      }
+    }
+  }
+}
