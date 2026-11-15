@@ -1,9 +1,10 @@
+import { modelMemberVisible, modelMessageVisible } from '../../../gate/model-visibility.js';
+import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
 // 二代仿真内部 Agent API：配置、状态、未读、唤醒、发送
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import path from 'node:path';
 import { canonicalV2Key } from '../../../policy/access.js';
 import { SENSITIVE_RE } from '../../../sensitive.js';
-import { buildSlangContext } from '../../../slang-learner.js';
 import { buildStickerContext, buildStickerStrategyHint } from '../../../sticker-lib.js';
 import { readConfigObject, atomicWriteJson } from '../../../store/fs-atomic.js';
 
@@ -11,19 +12,19 @@ import { readConfigObject, atomicWriteJson } from '../../../store/fs-atomic.js';
 export function createToolSocialV2Routes(b) {
   return async function toolSocialV2Routes(rq) {
     // 二代仿真内部 Agent API
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/config') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/config') {
       rq.sendJson({ ok: true, config: b.cfg.socialV2 ?? {} });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/config') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/config') {
       const body = await rq.readBody();
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       // 没有保存过就用现在生效的配置打底，否则会把默认关的工具打开
       const fileV2 = (file.socialV2 && typeof file.socialV2 === 'object' && !Array.isArray(file.socialV2))
         ? file.socialV2
         : null;
-      const current = fileV2 ?? ((b.cfg.socialV2 && typeof b.cfg.socialV2 === 'object') ? b.cfg.socialV2 : {});
+      const current = fileV2 ? { ...fileV2, tools: { ...b.cfg.socialV2?.tools, ...fileV2.tools } } : b.cfg.socialV2 ?? {};
       const merged = { ...current, ...body };
       // 子对象须为非 null 对象，否则保留当前值，防绕过工具开关
       for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'voice']) {
@@ -45,7 +46,7 @@ export function createToolSocialV2Routes(b) {
         merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
       }
       // tools：只接受布尔开关
-      const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
+      const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
       if (body.tools && typeof body.tools === 'object') {
         merged.tools = { ...(current.tools ?? {}), ...body.tools };
         for (const k of toolFlags) {
@@ -164,7 +165,7 @@ export function createToolSocialV2Routes(b) {
       if (merged.provideRecommendations !== undefined) merged.provideRecommendations = merged.provideRecommendations === true;
       if (merged.agentPreset !== undefined) merged.agentPreset = String(merged.agentPreset ?? '');
       file.socialV2 = merged;
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.socialV2 = { ...(b.cfg.socialV2 ?? {}), ...merged };
       // 只有影响默认唤醒的字段变了才同步到使用默认配置的会话
       const WAKE_DEFAULT_KEYS = [
@@ -181,11 +182,11 @@ export function createToolSocialV2Routes(b) {
       rq.sendJson({ ok: true, config: b.cfg.socialV2 });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/activity') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/activity') {
       rq.sendJson({ ok: true, paused: b.socialV2.paused });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/activity') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/activity') {
       const body = await rq.readBody();
       const paused = body.paused === true;
       b.socialV2.paused = paused;
@@ -203,7 +204,7 @@ export function createToolSocialV2Routes(b) {
       rq.sendJson({ ok: true, paused: b.socialV2.paused });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/reset') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/reset') {
       b.sessionEpoch++;
       b.sessionPromises.clear();
       b.clearAllSocialV2Timers();
@@ -246,32 +247,34 @@ export function createToolSocialV2Routes(b) {
       rq.sendJson({ ok: true });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/state') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/state') {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('socialState')) { rq.sendJson({ ok: false, error: '工具未启用：qq_social_state' }, 403); return; }
       const st = b.getSocialV2State(key);
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
       rq.sendJson({
         ok: true,
         key,
         wakeConfig: st.wakeConfig,
         wakeSafety: b.computeWakeSafetyV2(st.wakeConfig),
-        unreadCount: st.unread.length,
-        recentCount: st.recentMessages.length,
+        unreadCount: isAgent ? st.unread.filter((m) => modelMessageVisible(b, key, m)).length : st.unread.length,
+        recentCount: isAgent ? st.recentMessages.filter((m) => modelMessageVisible(b, key, m)).length : st.recentMessages.length,
         lastWakeReason: st.lastWakeReason,
         lastAiReplyAt: st.lastAiReplyAt
       });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/prompt') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/prompt') {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('getPrompt')) { rq.sendJson({ ok: false, error: '工具未启用：qq_get_prompt' }, 403); return; }
       const st = b.getSocialV2State(key);
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
       // 按 TTL 同步收藏表情，失败不阻塞
       if (b.cfg.socialV2?.sticker?.enabled !== false) {
         try { await b.syncStickerLibrary(false); } catch {}
@@ -295,8 +298,6 @@ export function createToolSocialV2Routes(b) {
         setWakeConfig: 'qq_set_wake_config',
         markRead: 'qq_mark_read',
         memory: 'qq_memory_append / qq_memory_query / qq_memory_remove / qq_memory_clear',
-        slangQuery: 'qq_slang_query',
-        slangSubmit: 'qq_slang_submit',
         getImages: 'qq_get_message_images',
         getForwardMsg: 'qq_get_forward_msg',
         sendPoke: 'qq_send_poke',
@@ -313,7 +314,7 @@ export function createToolSocialV2Routes(b) {
       const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
       const enabledTools = [];
       for (const [flag, name] of Object.entries(toolMap)) {
-        if (tools[flag] !== false && !(stickerToolFlags.has(flag) && !b.stickerEnabled())) enabledTools.push(name);
+        if (tools[flag] !== false && (!rq.toolPolicy || b.toolFlagAllowed(key, flag)) && !(stickerToolFlags.has(flag) && !b.stickerEnabled())) enabledTools.push(name);
       }
       rq.sendJson({
         ok: true,
@@ -333,18 +334,17 @@ export function createToolSocialV2Routes(b) {
           proactive: b.cfg.socialV2?.proactive ?? {}
         },
         enabledTools,
-        replyTiming: b.replyTimingV2(st),
-        unreadCount: st.unread.length,
-        recentCount: st.recentMessages.length,
+        replyTiming: b.replyTimingV2(st, key),
+        unreadCount: isAgent ? st.unread.filter((m) => modelMessageVisible(b, key, m)).length : st.unread.length,
+        recentCount: isAgent ? st.recentMessages.filter((m) => modelMessageVisible(b, key, m)).length : st.recentMessages.length,
         currentWakeConfig: st.wakeConfig,
         wakeSafety: b.computeWakeSafetyV2(st.wakeConfig),
-        memory: b.formatMemoryV2(st),
-        participation: b.formatParticipationV2(st),
-        slang: {
-          enabled: b.cfg.slang?.enabled !== false,
-          entries: b.confirmedSlangListV2(key),
-          block: buildSlangContext(b.slangEntries, b.cfg.slang?.injectMax ?? 8, key)
-        },
+        memory: b.formatMemoryV2(st, key, { filterVisibility: isAgent }),
+        participation: b.formatParticipationV2(st, key, { filterVisibility: isAgent }),
+        terms: (() => {
+          const termKey = isAgent && canonicalV2Key(key)?.startsWith('private:') && !modelMemberVisible(b, key) ? 'global' : key;
+          return { enabled: b.cfg.memory.terms?.enabled !== false, entries: b.terms.query(termKey), block: b.terms.buildContext(termKey) };
+        })(),
         stickers: {
           enabled: b.cfg.socialV2?.sticker?.enabled !== false,
           total: b.stickerEntries.length,
@@ -362,7 +362,7 @@ export function createToolSocialV2Routes(b) {
       });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/unread') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/unread') {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       const limit = Math.min(100, Math.max(1, Number(rq.url.searchParams.get('limit')) || 30));
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
@@ -376,14 +376,16 @@ export function createToolSocialV2Routes(b) {
         return;
       }
       const st = b.getSocialV2State(key);
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
       // 默认给最后几条未读；带上位置就能继续读完更多的
-      const messages = afterSeq === null ? st.unread.slice(-limit)
-        : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
-      const readThroughSeq = rq.req.headers['x-agent-token'] ? b.noteModelMessagesV2(st, messages) : b.readThroughSeqV2(st);
-      rq.sendJson({ ok: true, key, unreadCount: st.unread.length, messages, readThroughSeq });
+      const pool = isAgent ? st.unread.filter((m) => modelMessageVisible(b, key, m)) : st.unread;
+      const messages = afterSeq === null ? pool.slice(-limit)
+        : pool.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
+      const readThroughSeq = isAgent ? b.noteModelMessagesV2(st, messages) : b.readThroughSeqV2(st);
+      rq.sendJson({ ok: true, key, unreadCount: pool.length, messages, readThroughSeq });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/recent') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/recent') {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       const limit = Math.min(100, Math.max(1, Number(rq.url.searchParams.get('limit')) || 20));
       const offset = Math.max(0, Number(rq.url.searchParams.get('offset')) || 0);
@@ -392,14 +394,16 @@ export function createToolSocialV2Routes(b) {
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('getRecent')) { rq.sendJson({ ok: false, error: '工具未启用：qq_get_recent_messages' }, 403); return; }
       const st = b.getSocialV2State(key);
-      const start = Math.max(0, st.recentMessages.length - offset - limit);
-      const end = Math.max(0, st.recentMessages.length - offset);
-      const messages = st.recentMessages.slice(start, end);
+      // 不计入上下文的成员消息不给模型看；控制台照常看全量
+      const pool = rq.req.headers['x-agent-token'] ? st.recentMessages.filter((m) => modelMessageVisible(b, key, m)) : st.recentMessages;
+      const start = Math.max(0, pool.length - offset - limit);
+      const end = Math.max(0, pool.length - offset);
+      const messages = pool.slice(start, end);
       const readThroughSeq = rq.req.headers['x-agent-token'] ? b.noteModelMessagesV2(st, messages) : b.readThroughSeqV2(st);
       rq.sendJson({ ok: true, key, messages, readThroughSeq });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/mark-read') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/mark-read') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
@@ -407,8 +411,9 @@ export function createToolSocialV2Routes(b) {
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('markRead')) { rq.sendJson({ ok: false, error: '工具未启用：qq_mark_read' }, 403); return; }
       const st = b.getSocialV2State(key);
-      // 不带位置就会清空全部未读，这是故意保留的老规矩
-      const throughSeq = b.requestedReadThroughSeqV2(st, body, !!rq.req.headers['x-agent-token']);
+      // 仅控制台不带位置时全清未读；agent 不带位置时按已展示连续水位确认，不越过未展示可见缺口
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
+      const throughSeq = b.requestedReadThroughSeqV2(st, body, isAgent);
       // 潜水配置下未满观察窗口时不允许 mark_read 回潜水
       if (b.isSleepingConfigV2(st.wakeConfig) && b.preSleepWaitBlockedV2(st)) {
         const preSleepMs = Math.max(0, Number(b.cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
@@ -435,10 +440,11 @@ export function createToolSocialV2Routes(b) {
       b.markReadCalledKeys.add(key);
       b.saveSocialV2State();
       b.log(`[reserved2] 控制台/工具标记 ${key} 未读已读：${markedCount} 条，已确认下一次唤醒配置`);
-      rq.sendJson({ ok: true, key, markedCount, unreadCount: st.unread.length, readThroughSeq: b.readThroughSeqV2(st), wakeGuaranteed: b.computeWakeSafetyV2(st.wakeConfig).guaranteed, wakeSafety: b.computeWakeSafetyV2(st.wakeConfig), wakeConfig: st.wakeConfig });
+      const unreadCount = isAgent ? st.unread.filter((m) => modelMessageVisible(b, key, m)).length : st.unread.length;
+      rq.sendJson({ ok: true, key, markedCount, unreadCount, readThroughSeq: b.readThroughSeqV2(st), wakeGuaranteed: b.computeWakeSafetyV2(st.wakeConfig).guaranteed, wakeSafety: b.computeWakeSafetyV2(st.wakeConfig), wakeConfig: st.wakeConfig });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/wake-config') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/wake-config') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
@@ -446,7 +452,9 @@ export function createToolSocialV2Routes(b) {
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('setWakeConfig')) { rq.sendJson({ ok: false, error: '工具未启用：qq_set_wake_config' }, 403); return; }
       const st = b.getSocialV2State(key);
-      const throughSeq = b.requestedReadThroughSeqV2(st, body, !!rq.req.headers['x-agent-token']);
+      const throughSeq = Object.prototype.hasOwnProperty.call(body, 'throughSeq')
+        ? b.requestedReadThroughSeqV2(st, body, !!rq.req.headers['x-agent-token'])
+        : null;
       // markRead 关闭时只更新唤醒配置
       const acknowledgeOnClose = throughSeq !== null && b.v2ToolEnabled('markRead');
       const input = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {};
@@ -590,17 +598,16 @@ export function createToolSocialV2Routes(b) {
       b.saveSocialV2State();
       b.wakeConfigUpdatedKeys.add(key);
       b.wakeConfigMissCount.delete(key);
-      if (st.pendingWakeTimer) {
-        b.clearTimeout(st.pendingWakeTimer);
-        st.pendingWakeTimer = null;
-      }
+      b.cancelPendingWakeV2(key, st);
       b.cancelReplyCheckV2(key); // AI 已设置新唤醒配置，取消回复检查
       b.setupSleepTimerV2(key);
       b.log(`[reserved2] 更新唤醒配置 ${key}: mode=${next.mode} infinite=${next.infinite} sleepUntil=${next.sleepUntil ?? 'null'}`);
-      rq.sendJson({ ok: true, key, markedCount, unreadCount: st.unread.length, readThroughSeq: b.readThroughSeqV2(st), wakeConfig: next, wakeSafety: b.computeWakeSafetyV2(next) });
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
+      const unreadCount = isAgent ? st.unread.filter((m) => modelMessageVisible(b, key, m)).length : st.unread.length;
+      rq.sendJson({ ok: true, key, markedCount, unreadCount, readThroughSeq: b.readThroughSeqV2(st), wakeConfig: next, wakeSafety: b.computeWakeSafetyV2(next) });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/states') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/states') {
       const list = [];
       for (const [key, st] of b.socialV2.conversations) {
         list.push({
@@ -616,12 +623,12 @@ export function createToolSocialV2Routes(b) {
       rq.sendJson({ ok: true, conversations: list });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/wake') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/wake') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       const reason = String(body.reason ?? 'admin').trim() || 'admin';
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-      if (b.currentMode !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+      if (!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
       const keyMatch = /^(group|private):(\d+)$/.exec(key);
       if (!keyMatch) { rq.sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
       const kind = keyMatch[1];
@@ -631,10 +638,7 @@ export function createToolSocialV2Routes(b) {
         return;
       }
       const st = b.getSocialV2State(key);
-      if (st.pendingWakeTimer) {
-        b.clearTimeout(st.pendingWakeTimer);
-        st.pendingWakeTimer = null;
-      }
+      b.cancelPendingWakeV2(key, st);
       // 首次唤醒必须走 bootstrap，否则会话永远拿不到引导
       const firstWake = !st.bootstrapSent;
       if (firstWake) st.bootstrapSent = true;
@@ -647,7 +651,7 @@ export function createToolSocialV2Routes(b) {
       return;
     }
     // 每个聊天的初始提示词：只有控制台能改，第一次叫醒时写进去
-    if (rq.url.pathname === '/api/socialV2/initial-prompt' && (rq.req.method === 'GET' || rq.req.method === 'POST')) {
+    if (rq.url.pathname === '/api/agent/initial-prompt' && (rq.req.method === 'GET' || rq.req.method === 'POST')) {
       if (rq.req.method === 'GET') {
         const key = String(rq.url.searchParams.get('key') ?? '').trim();
         if (!key) {
@@ -700,7 +704,7 @@ export function createToolSocialV2Routes(b) {
       });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/send-burst') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/send-burst') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       let rawMessages = body.messages;
@@ -724,23 +728,14 @@ export function createToolSocialV2Routes(b) {
         ? rawMessages.map((m) => String(m ?? '').trim()).filter(Boolean)
         : (typeof rawMessages === 'string' ? [String(rawMessages).trim()].filter(Boolean) : []);
       const replyToMessageId = body.replyToMessageId;
-      if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
-        rq.sendJson({ ok: false, error: 'qq_send_burst 暂不支持引用，请使用 qq_reply' }, 400);
-        return;
-      }
       if (!key || !messages.length) {
         rq.sendJson({ ok: false, error: 'key 和 messages 不能为空' }, 400);
-        return;
-      }
-      const sendCfgBurst = b.cfg.socialV2?.send ?? {};
-      if (sendCfgBurst.burstEnabled === false && messages.length > 1) {
-        rq.sendJson({ ok: false, error: '已禁用多条发送，请合并为一条消息' }, 403);
         return;
       }
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('sendBurst')) { rq.sendJson({ ok: false, error: '工具未启用：qq_send_burst' }, 403); return; }
-      if (b.currentMode !== 'reserved2') {
+      if (!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') {
         rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403);
         return;
       }
@@ -761,38 +756,11 @@ export function createToolSocialV2Routes(b) {
         return;
       }
       const sendCfg = b.cfg.socialV2?.send ?? {};
-      const maxMsgs = Math.max(1, Number(sendCfg.burstMaxMessages) || 8);
-      const maxChars = Math.max(1, Number(sendCfg.maxMessageChars) || 500);
-      if (messages.length > maxMsgs) {
-        rq.sendJson({ ok: false, error: `最多发送 ${maxMsgs} 条` }, 400);
-        return;
-      }
-      for (const msg of messages) {
-        if (msg.length > maxChars) {
-          rq.sendJson({ ok: false, error: `单条消息不能超过 ${maxChars} 字` }, 400);
-          return;
-        }
-        if (SENSITIVE_RE.test(msg)) {
-          rq.sendJson({ ok: false, error: '消息含敏感信息，已阻止发送' }, 403);
-          return;
-        }
-      }
       const st = b.getSocialV2State(key);
       const now = Date.now();
       try {
-        const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
-        const maxPerHour = Number(sendCfg.maxSendPerHour) || 0;
-        const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
-        const recentHour = (st.sendTimes || []).filter((t) => now - t < 3600000).length;
-        if ((maxPerMinute > 0 && recentMinute + messages.length > maxPerMinute) || (maxPerHour > 0 && recentHour + messages.length > maxPerHour)) {
-          rq.sendJson({ ok: false, error: '发送频率超限，请稍后再试' }, 429);
-          return;
-        }
-        // 先把发送次数占上，免得同时发好几条绕过限制
-        for (let i = 0; i < messages.length; i++) st.sendTimes.push(now);
-        if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
         const delays = b.computeGapsV2(messages, 'auto', undefined, undefined, sendCfg);
-        const sentMessages = await b.sendMessagesV2(key, messages, delays);
+        const sentMessages = await b.sendMessagesV2(key, messages, delays, replyToMessageId, null, 'sendBurst', { noReply: true });
         b.recordSentMessagesV2(key, sentMessages);
         st.lastAiReplyAt = now;
         st.lastActionAt = now;
@@ -810,20 +778,12 @@ export function createToolSocialV2Routes(b) {
           b.recordSentMessagesV2(key, error.sent);
           b.log(`[reserved2] 工具分条发送部分成功 ${error.sent.length}/${messages.length} 条，已记录已发消息`);
         }
-        // 回滚未发出消息的预占额度，防假 429
-        const sentCount = Array.isArray(error?.sent) ? error.sent.length : 0;
-        const failedCount = Math.max(0, messages.length - sentCount);
-        for (let i = 0; i < failedCount; i++) {
-          const idx = st.sendTimes.indexOf(now);
-          if (idx >= 0) st.sendTimes.splice(idx, 1);
-        }
-        if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
         b.saveSocialV2State();
-        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, error?.statusCode ?? 500);
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/send-message') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/send-message') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       let rawMessages = body.messages;
@@ -858,15 +818,10 @@ export function createToolSocialV2Routes(b) {
         rq.sendJson({ ok: false, error: 'key 和 messages 不能为空' }, 400);
         return;
       }
-      const sendCfgBurst = b.cfg.socialV2?.send ?? {};
-      if (sendCfgBurst.burstEnabled === false && messages.length > 1) {
-        rq.sendJson({ ok: false, error: '已禁用多条发送，请合并为一条消息' }, 403);
-        return;
-      }
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('sendMessage')) { rq.sendJson({ ok: false, error: '工具未启用：qq_send_message' }, 403); return; }
-      if (b.currentMode !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+      if (!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
       if (!rq.req.headers['x-agent-token']) { rq.sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
       const keyMatch = /^(group|private):(\d+)$/.exec(key);
       if (!keyMatch) { rq.sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
@@ -876,69 +831,16 @@ export function createToolSocialV2Routes(b) {
         rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
         return;
       }
-      if (kind === 'private' && atUserId) {
-        rq.sendJson({ ok: false, error: '私聊不需要 @' }, 400);
-        return;
-      }
       if (b.shouldBlockSilentReply(key)) {
         rq.sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403);
         return;
       }
-      if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
-        rq.sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
-        return;
-      }
       const sendCfg = b.cfg.socialV2?.send ?? {};
-      const maxMsgs = Math.max(1, Number(sendCfg.burstMaxMessages) || 8);
-      const maxChars = Math.max(1, Number(sendCfg.maxMessageChars) || 500);
-      if (messages.length > maxMsgs) {
-        rq.sendJson({ ok: false, error: `最多发送 ${maxMsgs} 条` }, 400);
-        return;
-      }
-      for (const msg of messages) {
-        if (msg.length > maxChars) {
-          rq.sendJson({ ok: false, error: `单条消息不能超过 ${maxChars} 字` }, 400);
-          return;
-        }
-        if (SENSITIVE_RE.test(msg)) {
-          rq.sendJson({ ok: false, error: '消息含敏感信息，已阻止发送' }, 403);
-          return;
-        }
-      }
       const delays = b.computeGapsV2(messages, gapMode, gapMs, gaps, sendCfg);
-      // 先查频率并占额度，再去找引用的消息，免得把网关打爆
       const st = b.getSocialV2State(key);
       const now = Date.now();
-      const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
-      const maxPerHour = Number(sendCfg.maxSendPerHour) || 0;
-      const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
-      const recentHour = (st.sendTimes || []).filter((t) => now - t < 3600000).length;
-      if ((maxPerMinute > 0 && recentMinute + messages.length > maxPerMinute) || (maxPerHour > 0 && recentHour + messages.length > maxPerHour)) {
-        rq.sendJson({ ok: false, error: '发送频率超限，请稍后再试' }, 429);
-        return;
-      }
-      // 先把发送次数占上，免得同时发好几条绕过限制
-      for (let i = 0; i < messages.length; i++) st.sendTimes.push(now);
-      if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
-      let quotedInfo = null;
-      let actualReplyToMessageId = replyToMessageId;
-      if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
-        const resolved = await b.resolveReplyTargetV2(st, kind, id, String(replyToMessageId).trim());
-        if (!resolved) {
-          // 找不到引用的消息：把占的次数退回去
-          for (let i = 0; i < messages.length; i++) {
-            const idx = st.sendTimes.indexOf(now);
-            if (idx >= 0) st.sendTimes.splice(idx, 1);
-          }
-          b.saveSocialV2State();
-          rq.sendJson({ ok: false, error: '无法解析被引用消息，请确认 message id 正确且属于当前会话（可用 qq_get_message_detail 查看）' }, 400);
-          return;
-        }
-        quotedInfo = resolved.info;
-        actualReplyToMessageId = resolved.messageId;
-      }
       try {
-        const sentMessages = await b.sendMessagesV2(key, messages, delays, actualReplyToMessageId, atUserId);
+        const sentMessages = await b.sendMessagesV2(key, messages, delays, replyToMessageId, atUserId, 'sendMessage', { resolveReply: true });
         b.recordSentMessagesV2(key, sentMessages);
         st.lastAiReplyAt = now;
         st.lastActionAt = now;
@@ -950,36 +852,28 @@ export function createToolSocialV2Routes(b) {
         const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
         const spaceWarn = b.findCjkSpaceWarning(messages);
         const splitWarn = b.findSplitBoundaryWarning(messages);
-        rq.sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: quotedInfo, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
+        rq.sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: sentMessages.quoted, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
       } catch (error) {
         if (error?.sent?.length) {
           b.recordSentMessagesV2(key, error.sent);
           b.log(`[reserved2] 工具统一发送部分成功 ${error.sent.length}/${messages.length} 条，已记录已发消息`);
         }
-        // 回滚未发出消息的预占额度，防假 429
-        const sentCount = Array.isArray(error?.sent) ? error.sent.length : 0;
-        const failedCount = Math.max(0, messages.length - sentCount);
-        for (let i = 0; i < failedCount; i++) {
-          const idx = st.sendTimes.indexOf(now);
-          if (idx >= 0) st.sendTimes.splice(idx, 1);
-        }
-        if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
         b.saveSocialV2State();
-        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, error?.statusCode ?? 500);
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/send-poke') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/send-poke') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       const targetUserId = String(body.targetUserId ?? body.userId ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-      if (b.currentMode !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+      if (!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
       if (!rq.req.headers['x-agent-token']) { rq.sendJson({ ok: false, error: 'reserved2 模式发送拍一拍必须携带 agent token' }, 403); return; }
       if (!b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (!b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (!b.v2ToolEnabled('sendPoke')) { rq.sendJson({ ok: false, error: '工具未启用：qq_send_poke' }, 403); return; }
-      if (b.socialV2.paused) { rq.sendJson({ ok: false, error: '二代 AI 已暂停，不能发送拍一拍' }, 403); return; }
+      if (b.socialV2.paused && (!rq.toolPolicy || b.modeForKey(key) === 'reserved2')) { rq.sendJson({ ok: false, error: '二代 AI 已暂停，不能发送拍一拍' }, 403); return; }
       const keyMatch = /^(group|private):(\d+)$/.exec(key);
       if (!keyMatch) { rq.sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
       const kind = keyMatch[1];
@@ -989,33 +883,9 @@ export function createToolSocialV2Routes(b) {
         return;
       }
       if (b.shouldBlockSilentReply(key)) { rq.sendJson({ ok: false, error: '静默模式已开启，当前不允许拍一拍' }, 403); return; }
-      if (kind === 'group' && !targetUserId) {
-        rq.sendJson({ ok: false, error: '群聊拍一拍必须指定 targetUserId（要拍的群友 QQ 号）' }, 400);
-        return;
-      }
-      if (targetUserId && !/^[1-9]\d*$/.test(targetUserId)) {
-        rq.sendJson({ ok: false, error: 'targetUserId 必须是正整数 QQ 号' }, 400);
-        return;
-      }
       const sendGuard = b.captureSendGuard(key, { ai: true });
-      // 群聊须确认目标是本群成员
-      if (kind === 'group') {
-        const memberError = await b.assertGroupMember(id, targetUserId);
-        if (memberError) { rq.sendJson({ ok: false, error: memberError }, 403); return; }
-      }
       const st = b.getSocialV2State(key);
-      const sendCfg = b.cfg.socialV2?.send ?? {};
       const now = Date.now();
-      const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
-      const maxPerHour = Number(sendCfg.maxSendPerHour) || 0;
-      const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
-      const recentHour = (st.sendTimes || []).filter((t) => now - t < 3600000).length;
-      if ((maxPerMinute > 0 && recentMinute + 1 > maxPerMinute) || (maxPerHour > 0 && recentHour + 1 > maxPerHour)) {
-        rq.sendJson({ ok: false, error: '发送频率超限，请稍后再试' }, 429);
-        return;
-      }
-      st.sendTimes.push(now);
-      if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
       // 检查成员期间状态可能变，发之前再查一次能不能发
       try {
         sendGuard();
@@ -1024,19 +894,15 @@ export function createToolSocialV2Routes(b) {
           blocked.statusCode = 403;
           throw blocked;
         }
-        if (kind === 'group') {
-          await b.bot.raw('group_poke', { group_id: id, user_id: Number(targetUserId) });
-        } else {
-          // 私聊拍一拍自动发给当前对象
-          await b.bot.raw('send_poke', { user_id: id });
-        }
+        const pokeText = kind === 'group' ? `[拍一拍] 我拍了拍 ${targetUserId}` : '[拍一拍] 我拍了拍你';
+        await b.enqueueOutbound(key, { ai: true, channel: 'tool', assertSendAllowed: sendGuard, rateScope: 'tool', pokeTarget: targetUserId,
+          action: kind === 'group' ? 'group_poke' : 'send_poke',
+          params: kind === 'group' ? { group_id: id, user_id: Number(targetUserId) } : { user_id: id },
+          archiveText: pokeText, archiveOptions: { media: [{ kind: 'poke', summary: String(targetUserId || id) }] },
+        });
         st.lastActionAt = now;
         st.lastAiReplyAt = now;
         st.wakeConfig.noActionCount = 0;
-        const pokeText = kind === 'group'
-          ? `[拍一拍] 我拍了拍 ${targetUserId}`
-          : '[拍一拍] 我拍了拍你';
-        b.archiveOutgoing(key, pokeText, null, { media: [{ kind: 'poke', summary: String(targetUserId || id) }] });
         st.recentMessages.push({
           messageId: null,
           sender: '我',
@@ -1065,9 +931,6 @@ export function createToolSocialV2Routes(b) {
         b.appendActivity(`${key} [reserved2] 工具拍一拍${kind === 'group' ? ' -> ' + targetUserId : ''}`);
         rq.sendJson({ ok: true, key, kind, targetUserId: targetUserId || String(id) });
       } catch (error) {
-        const idx = st.sendTimes.indexOf(now);
-        if (idx >= 0) st.sendTimes.splice(idx, 1);
-        if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
         b.log(`[reserved2] 工具拍一拍失败 ${key}:`, error?.message ?? error);
         rq.sendJson({ ok: false, error: `拍一拍失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
       }

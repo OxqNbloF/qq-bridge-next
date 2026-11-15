@@ -72,8 +72,8 @@ export function createBridgeLog({ file, maxLines = 2000, redact, console: out = 
  */
 export function createActivityLog({ file, maxLines = 500, redact }) {
   const appendActivityLog = createCappedLogger(file, maxLines);
-  return function appendActivity(line) {
+  return function appendActivity(line, messageId = null) {
     // 用本地时间而非 UTC
-    appendActivityLog(`[${localClock()}] ${redact(String(line).replace(/[\r\n]+/g, ' '))}\n`);
+    appendActivityLog(`[${localClock()}] ${messageId == null ? '' : `[msg:${encodeURIComponent(String(messageId))}] `}${redact(String(line).replace(/[\r\n]+/g, ' '))}\n`);
   };
 }

@@ -32,7 +32,7 @@ export function createUpstreamHealth({ cfg, log, fetch: doFetch, timers }) {
     snowlumaHealth.goodCheckedAt = Date.now();
   }
 
-  /** 供 /api/status 与控制台使用的只读快照。 */
+  /** 供 /api/console/status 与控制台使用的只读快照。 */
   function snowlumaHealthSnapshot() {
     const now = Date.now();
     const agoMs = snowlumaHealth.lastPacketAt ? now - snowlumaHealth.lastPacketAt : null;

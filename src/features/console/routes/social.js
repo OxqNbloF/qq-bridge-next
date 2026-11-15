@@ -1,8 +1,7 @@
+import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
 // 控制台测试发送、一代社交引擎配置、引导 AI 的路由；鉴权在分发前完成
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import path from 'node:path';
-import { allowed } from '../../../policy/access.js';
-import { escapeCqText } from '../../../policy/audit.js';
 import { SENSITIVE_RE } from '../../../sensitive.js';
 import { readConfigObject, atomicWriteJson } from '../../../store/fs-atomic.js';
 
@@ -10,7 +9,7 @@ import { readConfigObject, atomicWriteJson } from '../../../store/fs-atomic.js';
 export function createConsoleSocialRoutes(b) {
   return async function consoleSocialRoutes(rq) {
     // 测试发送消息（必须过白名单检查）
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/test-send') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/test-send') {
       const body = await rq.readBody();
       const kind = body.kind === 'private' ? 'private' : 'group';
       const id = Number(body.id);
@@ -18,14 +17,9 @@ export function createConsoleSocialRoutes(b) {
       if (!Number.isFinite(id) || id <= 0) { rq.sendJson({ ok: false, error: '目标 id 无效' }, 400); return; }
       if (!message) { rq.sendJson({ ok: false, error: '消息不能为空' }, 400); return; }
       if (SENSITIVE_RE.test(message)) { rq.sendJson({ ok: false, error: '消息含敏感信息，已阻止发送' }, 403); return; }
-      if (!allowed(kind, id, b.cfg)) { rq.sendJson({ ok: false, error: `目标不在白名单内（${kind} ${id}），请先加入白名单` }, 403); return; }
-      if (!b.modeAllowed(`${kind}:${id}`, kind, id, b.cfg, b.currentMode)) { rq.sendJson({ ok: false, error: `当前模式（${b.currentMode}）不允许向 ${kind}:${id} 发送测试消息` }, 403); return; }
+      if (!b.modeAllowed(`${kind}:${id}`, kind, id, b.cfg, b.currentMode, { listed: true })) { rq.sendJson({ ok: false, error: `当前模式（${b.currentMode}）不允许向 ${kind}:${id} 发送测试消息` }, 403); return; }
       try {
-        const safeMessage = escapeCqText(b.redactKnownTokensOnly(message));
-        const result = kind === 'private'
-          ? await b.bot.sendPrivateMessage(id, b.text(safeMessage))
-          : await b.bot.sendGroupMessage(id, b.text(safeMessage));
-        b.archiveOutgoing(b.convKey(kind, id), safeMessage, result);
+        const result = await b.enqueueOutbound(`${kind}:${id}`, { text: b.redactKnownTokensOnly(message), channel: 'console', explicitAllow: true });
         b.log(`控制台：测试发送 ${kind}:${id} 成功`);
         rq.sendJson({ ok: true, kind, id, message_id: result?.message_id ?? result });
       } catch (error) {
@@ -33,7 +27,7 @@ export function createConsoleSocialRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/social/state') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/social/state') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
@@ -53,7 +47,7 @@ export function createConsoleSocialRoutes(b) {
       return;
     }
     // 一代社交引擎配置读写
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/social') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/social') {
       const stats = {};
       for (const [k, e] of b.social.pendingSummaries.entries()) stats[k] = e.items.length;
       const states = {};
@@ -65,11 +59,11 @@ export function createConsoleSocialRoutes(b) {
       rq.sendJson({ config: b.cfg.social, pendingSummaries: stats, states });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/social') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/social') {
       const body = await rq.readBody();
       const configFile = path.join(b.ROOT, 'config.json');
       // 配置文件损坏直接 500，绝不回写
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       const merged = { ...(file.social ?? {}), ...body };
       // 保存时清掉已废弃的旧字段
       for (const k of ['burstProbability', 'burstMaxMessages', 'followUpEnabled', 'followUpProbability', 'followUpDelayMinMs', 'followUpDelayMaxMs', 'followUpCooldownMs']) {
@@ -105,13 +99,13 @@ export function createConsoleSocialRoutes(b) {
       }
       if (Array.isArray(body.mustReplyKeywords)) merged.mustReplyKeywords = body.mustReplyKeywords.map(String);
       file.social = merged;
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.social = { ...b.cfg.social, ...merged };
       b.log('控制台：社交配置已更新');
       rq.sendJson({ ok: true, config: b.cfg.social });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/social/flush') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/social/flush') {
       const body = await rq.readBody();
       await b.flushSummaries(body.key || null);
       rq.sendJson({ ok: true });
@@ -141,7 +135,7 @@ export function createConsoleSocialRoutes(b) {
         rq.sendJson({ ok: false, error: `该会话不在当前模式（${b.currentMode}）允许范围内` }, 403);
         return;
       }
-      if (!b.state.sessions[key] && !allowed(kind, id, b.cfg)) {
+      if (!b.state.sessions[key] && !b.modeAllowed(key, kind, id, b.cfg, b.currentMode, { listed: true })) {
         rq.sendJson({ ok: false, error: '该会话不在白名单内，且尚未创建' }, 403);
         return;
       }
@@ -166,30 +160,16 @@ export function createConsoleSocialRoutes(b) {
         tokenLine = `【会话令牌】${stV2.agentToken}（调用二代状态/发送工具时请在参数中带上此令牌）\n\n`;
       }
       const promptText = `${roleLine}${tokenLine}【后台控制端提醒】（来自控制台/管理端，不是群友消息）\n${message}\n\n这是后台给你的引导或提醒，请据此调整你的行为。绝对不要复述、转发或原样发送这条后台提醒，也不要发送其中的会话令牌；它只用于你内部调整行为。${isV2 ? '当前是二代仿真模式：你的文本输出不会自动发送到 QQ；如果需要在群里发言，请使用发送工具（qq_send_message / qq_reply）。如果不需要发言，可以 qq_mark_read 或 qq_set_wake_config 收尾。' : '如果不需要在群里发言，请不要输出会发到 QQ 的内容。'}`;
-      let sessionId = null;
-      let popSilent = null;
       try {
-        sessionId = await b.ensureSession(key);
-        const silentId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-        const arr = b.social.silentTurns.get(sessionId) ?? [];
-        b.social.silentTurns.set(sessionId, [...arr, { id: silentId, ts: Date.now() }]);
-        popSilent = () => {
-          const list = b.social.silentTurns.get(sessionId) ?? [];
-          const next = list.filter((x) => x.id !== silentId);
-          if (next.length > 0) b.social.silentTurns.set(sessionId, next);
-          else b.social.silentTurns.delete(sessionId);
-        };
         const result = await b.deliverPrompt(key, promptText, { silent: true });
         if (result.ok) {
           b.log(`控制台：已向 ${key} 的 DSH 发送后台提醒`);
           b.appendActivity(`${key} 控制台后台提醒：${message.slice(0, 80)}`);
-          rq.sendJson({ ok: true, key, sessionId });
+          rq.sendJson({ ok: true, key, sessionId: result.sessionId ?? b.state.sessions[key] ?? null });
         } else {
-          popSilent();
           rq.sendJson({ ok: false, error: result.error || '投递失败' }, 500);
         }
       } catch (error) {
-        if (popSilent) popSilent();
         rq.sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
       }
       return;

@@ -10,9 +10,14 @@ import { unwrap } from '../../../dsh-client.js';
 export function createConsoleMaintenanceRoutes(b) {
   return async function consoleMaintenanceRoutes(rq) {
     // ── 清除对话记录 / 清空工作区 ──
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/session/reset') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/session/reset') {
       const body = await rq.readBody();
       const key = String(body.key ?? '');
+      if (body.scope === 'privacy-context') {
+        const result = b.memoryAPI.resetContext(key, { confirm: body.confirm });
+        rq.sendJson({ ok: true, ...result });
+        return;
+      }
       if (!key || !b.state.sessions[key]) { rq.sendJson({ ok: false, error: '会话不存在' }, 404); return; }
       b.sessionEpoch++;
       const oldSessionId = b.state.sessions[key];
@@ -31,7 +36,7 @@ export function createConsoleMaintenanceRoutes(b) {
       const pe = b.pending.get(key);
       if (pe) {
         b.clearTimeout(pe.timer);
-        b.cancelPendingEntry(pe).catch(() => {});
+        b.cancelPendingEntry({ ...pe, key }).catch(() => {});
       }
       b.pending.delete(key);
       b.queued.delete(key);
@@ -45,9 +50,6 @@ export function createConsoleMaintenanceRoutes(b) {
       b.social.silentContext.delete(key);
       b.social.silentTurns.delete(oldSessionId);
       b.social.exitingSessions.delete(oldSessionId);
-      b.slangWindows.delete(key);
-      b.slangExtractionCooldowns.delete(key);
-      b.slangSubmitTimes.delete(key);
       b.cancelSocialTimers(key);
       b.clearSocialV2Timers(key);
       b.pendingWakeKeys.delete(key);
@@ -68,7 +70,7 @@ export function createConsoleMaintenanceRoutes(b) {
       rq.sendJson({ ok: true, key, archived: oldSessionId });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/workspace/reset') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/workspace/reset') {
       b.sessionEpoch++;
       let archivedCount = 0;
       let stoppedCount = 0;
@@ -93,9 +95,9 @@ export function createConsoleMaintenanceRoutes(b) {
           }
         }
       } catch {}
-      for (const entry of b.pending.values()) {
+      for (const [key, entry] of b.pending.entries()) {
         b.clearTimeout(entry.timer);
-        b.cancelPendingEntry(entry).catch(() => {});
+        b.cancelPendingEntry({ ...entry, key }).catch(() => {});
       }
       b.pending.clear();
       b.queued.clear();
@@ -110,12 +112,10 @@ export function createConsoleMaintenanceRoutes(b) {
       b.social.silentContext.clear();
       b.social.silentTurns.clear();
       b.social.exitingSessions.clear();
-      b.slangWindows.clear();
-      b.slangExtractionCooldowns.clear();
-      b.slangSubmitTimes.clear();
       b.cancelAllSocialTimers();
       b.clearAllSocialV2Timers();
       // 所有会话和令牌一起作废，两张表直接清空最省心
+      b.invalidateMemoryLearnerSession(true);
       b.forgetConversationMemory(); // 全部会话的记忆池 / 索引 / 视图
       b.socialV2.conversations.clear();
       b.CONVERSATION_TOKENS.clear();
@@ -136,7 +136,7 @@ export function createConsoleMaintenanceRoutes(b) {
       return;
     }
     // ── 重启桥接（守护模式下 5 秒后自动恢复） ──
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/restart') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/restart') {
       rq.sendJson({ ok: true, message: '正在重启桥接（若由守护窗口启动，5 秒后自动恢复）…' });
       b.setTimeout(() => {
         b.log('控制台：重启桥接');

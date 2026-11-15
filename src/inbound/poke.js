@@ -1,5 +1,5 @@
 // 处理拍一拍事件：记下来，需要时把 AI 叫醒
-import { ignoredSender } from '../policy/access.js';
+import { getModeAdapter } from '../modes/registry.js';
 
 // 创建拍一拍处理器
 export function createPokeHandler(b) {
@@ -11,7 +11,6 @@ export function createPokeHandler(b) {
     const senderIdRaw = event.sender_id ?? event.user_id ?? event.sender?.user_id ?? null;
     const targetIdRaw = event.target_id ?? event.targetId ?? null;
     const senderId = senderIdRaw != null ? String(senderIdRaw) : '';
-    if (ignoredSender(senderId, b.cfg)) return;
     const targetId = targetIdRaw != null ? String(targetIdRaw) : '';
     // 自己发出的拍一拍不回灌给 AI（避免把“我拍了别人”当成群友事件）。
     if (senderId && selfId != null && String(senderId) === String(selfId)) return;
@@ -29,7 +28,9 @@ export function createPokeHandler(b) {
       id = String(peer);
       key = b.convKey('private', id);
     }
-    if (!b.modeAllowed(key, kind, id, b.cfg, b.currentMode)) return;
+    const gateQq = kind === 'private' ? event.user_id ?? senderId : senderId;
+    const decision = b.gateDecide({ kind, id, qq: gateQq, cfg: b.cfg, closedAgentOk: b.modeForKey(key, b.currentMode, b.cfg) === 'closed-agent', applyMemberPolicy: b.cfg.architecture?.gateV2 === true });
+    if (!decision.allowed || decision.flags.converse === false) return;
     if (b.modeForKey(key) !== 'reserved2') {
       b.appendActivity(`${key} 收到拍一拍事件（非 reserved2，仅记录）：${senderId} -> ${targetId}`);
       return;
@@ -50,18 +51,20 @@ export function createPokeHandler(b) {
       isOwner,
       groupId: groupId != null ? String(groupId) : null,
       action: event.action,
-      suffix: event.suffix
+      suffix: event.suffix,
+      unread: decision.flags.respond !== false,
+      converse: decision.flags.converse !== false,
+      noContext: decision.flags.context === false,
+      sourceQqs: senderId ? [senderId] : [],
     });
     b.appendActivity(`${key} 拍一拍事件：${msg.text.slice(0, 80)}`);
-    if (b.modeForKey(key) !== 'reserved2') return;
-    if (b.socialV2.paused) return;
+    if (b.modeForKey(key) !== 'reserved2' || !decision.flags.respond) return;
+    if (!b.gateDecide({ kind, id, qq: gateQq, cfg: b.cfg, closedAgentOk: b.modeForKey(key, b.currentMode, b.cfg) === 'closed-agent', runtime: { silent: b.readRoleState().mode === 'silent', paused: b.socialV2.paused, aiReply: true }, applyMemberPolicy: b.cfg.architecture?.gateV2 === true }).allowed) return;
     const st = b.getSocialV2State(key);
-    if (!st.bootstrapSent) {
-      st.bootstrapSent = true;
-      b.saveSocialV2State();
-      b.scheduleWakeV2(key, 'bootstrap');
-    } else if (st.wakeConfig?.triggers?.poke) {
-      b.scheduleWakeV2(key, 'poke');
+    const wake = getModeAdapter(b.modeForKey(key)).decide({ flags: decision.flags, reason: st.wakeConfig?.triggers?.poke ? 'poke' : null }, st);
+    if (wake.action === 'wake') {
+      if (wake.reason === 'bootstrap') { st.bootstrapSent = true; b.saveSocialV2State(); }
+      b.scheduleWakeV2(key, wake.reason, wake);
     }
   }
 

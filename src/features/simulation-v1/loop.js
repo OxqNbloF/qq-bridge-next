@@ -1,4 +1,6 @@
 // 一代仿真调度：延迟回复、5 秒心跳、摘要投喂
+import { modelMessageVisible } from '../../gate/model-visibility.js';
+import { rememberModelSources } from '../../memory/model-sources.js';
 import { boundedTimerDelay } from '../../infra/async.js';
 
 // 创建一代调度函数，b 为桥接访问器
@@ -9,11 +11,16 @@ export function createSocialLoopV1(b) {
     return Math.floor(min + Math.random() * (max - min + 1));
   };
   // 随机延迟后投递一次社交回复
-  function scheduleSocialReply(key, promptText, minDelay, maxDelay, label, farewell = false, media = null) {
+  function scheduleSocialReply(key, promptText, minDelay, maxDelay, label, farewell = false, media = null, sourceQqs = [], scheduleDecision = null) {
     const delay = boundedTimerDelay(randInt(
       boundedTimerDelay(minDelay, 2000), boundedTimerDelay(maxDelay, 8000)
     ), 2000);
     b.log(`社交模式：${label} ${key}，延迟 ${Math.round(delay / 1000)}s 后投递`);
+    if (b.schedulerEnabled?.(key)) {
+      void b.scheduleDelayedPrompt(key, promptText, { farewell, media: media ?? [], schedulerTag: 'social-reply', scheduleDecision, sourceQqs: [...new Set([...sourceQqs, ...(b.social.recentMessages.get(key) ?? []).filter(message => message.respondAllowed !== false).map(message => message.userId).filter(Boolean)])] }, delay)
+        .catch((error) => b.log(`社交投递异常 ${key}: ${error?.message ?? error}`));
+      return;
+    }
     const timer = b.setTimeout(() => {
       const timers = b.social.pendingTimers.get(key);
       if (timers) {
@@ -28,12 +35,12 @@ export function createSocialLoopV1(b) {
   }
 
   // 心跳：主动开话题、活跃检测、冷场与试探回退
-  function socialLoopTick() {
-    if (!b.isSocialEnabled()) return;
+  function socialLoopTick(onlyKey = null) {
     const now = Date.now();
     // 有消息或状态的群都参与状态机
-    const keys = new Set([...b.social.states.keys(), ...b.social.recentMessages.keys()]);
+    const keys = onlyKey ? [onlyKey] : new Set([...b.social.states.keys(), ...b.social.recentMessages.keys()]);
     for (const key of keys) {
+      if (!b.isSocialEnabled(key) || !b.isSessionAllowedInCurrentMode(key)) continue;
       const st = b.socialState(key);
       if (st.phase === 'idle') {
         // 观望期主动开话题（仅群聊）
@@ -66,7 +73,7 @@ export function createSocialLoopV1(b) {
         // 活跃超时：到随机上限主动退场
         if (b.triggerActiveDurationExit(key, st, now)) continue;
         if (now >= st.nextCheckAt) {
-          const newMsgs = (b.social.recentMessages.get(key) ?? []).filter((m) => m.time > st.lastCheckAt);
+          const newMsgs = (b.social.recentMessages.get(key) ?? []).filter((m) => m.time > st.lastCheckAt && modelMessageVisible(b, key, m));
           st.lastCheckAt = now;
           st.nextCheckAt = now + randInt(Number(b.cfg.social?.activeCheckMinMs ?? 20000), Number(b.cfg.social?.activeCheckMaxMs ?? 40000));
           if (newMsgs.length) {
@@ -87,13 +94,13 @@ export function createSocialLoopV1(b) {
                 const silent = b.social.silentContext.get(key) ?? [];
                 silent.push(...newMsgs);
                 b.social.silentContext.set(key, silent.slice(-30));
-                for (const m of newMsgs) b.appendSummary(key, m.sender, m.text, m.plain ?? m.text, m.isOwner, m.media ?? [], m.messageId ?? '');
+                for (const m of newMsgs) b.appendSummary(key, m.sender, m.text, m.plain ?? m.text, m.isOwner, m.media ?? [], m.messageId ?? '', m);
                 continue;
               }
             }
 
             // 投递时带上之前看到但没回的消息
-            const seenMsgs = b.social.silentContext.get(key) ?? [];
+            const seenMsgs = (b.social.silentContext.get(key) ?? []).filter(message => modelMessageVisible(b, key, message));
             const promptMsgs = [...seenMsgs, ...newMsgs];
             b.social.silentContext.delete(key);
             const promptText = b.buildBatchPrompt(key, promptMsgs, !mustReply);
@@ -144,9 +151,36 @@ export function createSocialLoopV1(b) {
     }
   }
 
-  // 启动 5 秒心跳
+  // 新路径按会话的下一次状态边界计时，保留关闭开关时的旧心跳。
+  const phaseTimers = new Map();
+  function cancelSocialPhaseTimer(key) {
+    b.clearSchedulerTimer?.(phaseTimers.get(key));
+    phaseTimers.delete(key);
+  }
+  function armSocialTimer(key) {
+    cancelSocialPhaseTimer(key);
+    if (b.cfg.modes?.engine?.reserved !== true || !b.isSocialEnabled(key) || !b.isSessionAllowedInCurrentMode(key)) return;
+    const st = b.socialState(key);
+    const last = b.social.recentMessages.get(key)?.at(-1)?.time ?? 0;
+    const due = st.phase === 'active' ? Math.min(st.nextCheckAt || Date.now(), st.activeDeadlineAt || Infinity)
+      : st.phase === 'probing' ? st.probeDeadline + 1
+      : st.phase === 'exiting' ? st.activeExitAt + 60 * 60 * 1000 + 1
+      : b.cfg.social?.proactiveEnabled !== false && key.startsWith('group:')
+        ? Math.max(last + Number(b.cfg.social?.proactiveIdleThresholdMs ?? 1800000), st.proactiveNextCheckAt || 0) : Infinity;
+    if (!Number.isFinite(due)) return;
+    phaseTimers.set(key, b.schedulerSetTimer(key, 'v1-phase', () => {
+      phaseTimers.delete(key);
+      socialLoopTick(key);
+      armSocialTimer(key);
+    }, Math.max(1, due - Date.now())));
+  }
   function startSocialLoop() {
     if (b.social.loopTimer) b.clearInterval(b.social.loopTimer);
+    if (b.cfg.modes?.engine?.reserved === true) {
+      for (const key of new Set([...b.social.states.keys(), ...b.social.recentMessages.keys()])) armSocialTimer(key);
+      b.social.loopTimer = null;
+      return;
+    }
     b.social.loopTimer = b.setInterval(socialLoopTick, 5000);
     b.social.loopTimer.unref?.();
   }
@@ -156,37 +190,22 @@ export function createSocialLoopV1(b) {
     const targets = key ? (b.social.pendingSummaries.has(key) ? [[key, b.social.pendingSummaries.get(key)]] : []) : [...b.social.pendingSummaries.entries()];
     for (const [k, entry] of targets) {
       if (!entry.items.length) continue;
-      const lines = entry.items.map((m) => `${m.isOwner ? '【管理员】' : ''}${b.sanitizeUntrustedText(m.sender)}：${b.sanitizeUntrustedText(m.text)}${b.mediaHintFor(k, m.messageId, m.media)}`).join('\n');
-      const summaryMedia = entry.items.flatMap((m) => Array.isArray(m.media) ? m.media : []);
-      let sessionId;
-      try {
-        sessionId = await b.ensureSession(k);
-      } catch (error) {
-        b.log(`摘要投喂创建会话失败 (${k}): ${error?.message ?? error}`);
-        continue;
-      }
+      const visible = entry.items.filter(message => modelMessageVisible(b, k, message));
+      if (!visible.length) { entry.items = []; continue; }
+      rememberModelSources(b, k, visible);
+      const lines = visible.map((m) => `${m.isOwner ? '【管理员】' : ''}${b.sanitizeUntrustedText(m.sender)}：${b.sanitizeUntrustedText(m.text)}${b.mediaHintFor(k, m.messageId, m.media)}`).join('\n');
+      const summaryMedia = visible.flatMap((m) => Array.isArray(m.media) ? m.media : []);
       const roleHint = b.currentRoleHint();
       const summaryText = `${roleHint ? roleHint + '\n\n' : ''}【群聊摘要】过去一段时间群里发生了这些（你未逐条参与）：\n${lines}\n\n【最近对话】\n${b.buildContextBlock(k)}\n\n你不需要回复，只需记住这些内容，后续聊天会更自然。`;
-      const silentId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-      b.social.silentTurns.set(sessionId, [...(b.social.silentTurns.get(sessionId) ?? []), { id: silentId, ts: Date.now() }]);
-            // 取出并清空这个会话记着的沉默信息
-      const popSilent = () => {
-        const arr = b.social.silentTurns.get(sessionId) ?? [];
-        const next = arr.filter((x) => x.id !== silentId);
-        if (next.length > 0) b.social.silentTurns.set(sessionId, next);
-        else b.social.silentTurns.delete(sessionId);
-      };
       try {
         const result = await b.deliverPrompt(k, summaryText, { silent: true, media: summaryMedia });
         if (result.ok) {
           b.log(`已投喂群聊摘要 (${k}) ${entry.items.length} 条`);
           entry.items = [];
         } else {
-          popSilent();
           b.log(`摘要投喂被拒 (${k}): ${result.error || '未知错误'}`);
         }
       } catch (error) {
-        popSilent();
         b.log(`摘要投喂失败 (${k}): ${error?.message ?? error}`);
       }
     }
@@ -195,5 +214,5 @@ export function createSocialLoopV1(b) {
     }
   }
 
-  return { randInt, scheduleSocialReply, socialLoopTick, startSocialLoop, flushSummaries };
+  return { armSocialTimer, cancelSocialPhaseTimer, randInt, scheduleSocialReply, socialLoopTick, startSocialLoop, flushSummaries };
 }

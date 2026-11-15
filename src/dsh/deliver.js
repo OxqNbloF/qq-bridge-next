@@ -2,16 +2,17 @@
 import { mdToPlain } from '../md-to-plain.js';
 import { canonicalV2Key } from '../policy/access.js';
 import { SENSITIVE_RE } from '../sensitive.js';
+import { rememberModelSources } from '../memory/model-sources.js';
+import { modelMessageVisible } from '../gate/model-visibility.js';
 
 // 创建 DSH 投递队列
 export function createDshDeliver(b) {
-  // 本模块持有的内存状态
-  const promptQueues = new Map(); // key -> { queue, running }，按会话串行保证顺序
+  const promptQueues = new Map();
   // 实际投递 DSH prompt，只经串行队列调用
   async function deliverPromptNow(key, promptText, opts = {}) {
     if (!b.isSessionAllowedInCurrentMode(key)) throw new Error(`当前模式不允许会话 ${key}`);
     // 出队时复查唤醒：暂停/关闭或模式切换后不调用模型
-    const wakeBlocked = () => opts.wakeReason && (b.modeForKey(key) !== 'reserved2' || b.socialV2.paused || b.cfg.socialV2?.enabled === false);
+    const wakeBlocked = () => (opts.wakeReason || opts.wakeReminder) && (b.modeForKey(key) !== 'reserved2' || b.socialV2.paused || b.cfg.socialV2?.enabled === false);
     // 跳过本次唤醒并释放唤醒租约
     const skipWake = () => {
       b.pendingWakeKeys.delete(key);
@@ -19,13 +20,14 @@ export function createDshDeliver(b) {
       return { ok: true, skipped: true };
     };
     if (wakeBlocked()) return skipWake();
+    if (!b.dshReady && opts.schedulerTurnId) return { retry: true };
     if (!b.dshReady) {
       const items = b.queued.get(key) ?? [];
       if (items.length >= b.QUEUE_MAX) {
         items.shift();
         b.log(`队列满（${b.QUEUE_MAX}），丢弃最旧消息 (${key})`);
       }
-      items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason });
+      items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason, wakeReminder: opts.wakeReminder, sourceQqs: [...(opts.sourceQqs ?? [])] });
       b.queued.set(key, items);
       return { ok: true, queued: true };
     }
@@ -34,10 +36,16 @@ export function createDshDeliver(b) {
       sessionId = await b.ensureSession(key);
     } catch (error) {
       if (String(error?.message ?? error).includes('会话创建期间已重置')) {
+        if (opts.schedulerTurnId) return { retry: true };
         b.enqueueForRetry(key, promptText, opts);
         return { ok: true, retried: true };
       }
       throw error;
+    }
+    // 提醒也在建会话后生成，避免同策略重建轮换 token 后发送旧令牌。
+    if (opts.wakeReminder) {
+      if (wakeBlocked()) return skipWake();
+      promptText = b.buildWakeReminderPromptV2(key);
     }
     let wakeState;
     let wakeToken;
@@ -47,28 +55,65 @@ export function createDshDeliver(b) {
       // 建会话后再构造：令牌可能轮换，队列可能有新消息
       wakeState = b.getSocialV2State(key);
       wakeToken = wakeState.agentToken;
-      promptText = b.buildWakePromptV2(key, opts.wakeReason);
+      promptText = b.buildWakePromptV2(key, opts.wakeReason, { includeMemory: false });
       wakeSnapshot = b.buildWakeSnapshotV2(key);
+      const request = b.turnEngine.activeRequest(key);
+      if (request && request.turnId === opts.schedulerTurnId) request.payload.sourceQqs = [...new Set([
+        ...(request.payload.sourceQqs ?? []),
+        ...wakeState.unread.filter(message => !wakeSnapshot || message.seq <= wakeSnapshot.readThroughSeq).map(message => message.userId).filter(Boolean),
+      ])];
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
       }
     }
-    let content = [{ type: 'text', text: b.withSlangContext(promptText, key) }];
-    if (Array.isArray(opts.media) && opts.media.length > 0) {
-      const imageParts = await b.resolveMediaList(opts.media);
-      content = [{ type: 'text', text: b.withSlangContext(promptText, key) }, ...imageParts];
+    const mode = b.modeForKey(key);
+    if (key.startsWith('group:') && !promptText.includes('【群成员】')) {
+      const roster = b.renderIdentityRoster(key, { exposeQq: b.cfg.identity?.exposeQqInPrompt === true });
+      if (roster) promptText += `\n\n【群成员】\n${roster}`;
     }
+    if (!opts.skipMemory) {
+      const memory = b.buildModeMemory(key);
+      if (memory) promptText += `\n\n${memory}`;
+    }
+    const imageParts = Array.isArray(opts.media) && opts.media.length > 0 ? await b.resolveMediaList(opts.media) : [];
     // 图片读好之后再把这次回复标记成退场
     if (!b.isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
+    // 统一刷新预构建的令牌行；队列和媒体等待期间可能发生同策略重建。
+    const token = b.socialV2.conversations.get(canonicalV2Key(key) ?? key)?.agentToken;
+    const text = b.withContextPreamble(promptText, key);
+    const content = [{ type: 'text', text: token
+      ? text.replace(/【会话令牌】[ \t]*[a-f0-9]{32,48}\b/g, `【会话令牌】${token}`) : text }, ...imageParts];
+    if (!opts.schedulerTurnId) b.bindShadowTurn?.(key, sessionId);
+    const cursor = b.deliveryCursors?.get(sessionId);
+    if (opts.schedulerTurnId && !b.turnEngine.bind(key, opts.schedulerTurnId, sessionId, Math.max(cursor?.deliveredSeq ?? -1, cursor?.inflightSeq ?? -1))) return { ok: true, skipped: true };
+    const silentId = opts.silent ? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : null;
+    if (silentId) b.social.silentTurns.set(sessionId, [...(b.social.silentTurns.get(sessionId) ?? []), { id: silentId, ts: Date.now() }]);
+    const rollbackSilent = () => {
+      if (!silentId) return;
+      const next = (b.social.silentTurns.get(sessionId) ?? []).filter((item) => item.id !== silentId);
+      if (next.length) b.social.silentTurns.set(sessionId, next);
+      else b.social.silentTurns.delete(sessionId);
+    };
     if (opts.farewell) b.social.exitingSessions.add(sessionId);
     let accepted;
     try {
+      const targetKey = canonicalV2Key(key) ?? key;
+      const sourceState = b.socialV2.conversations.get(targetKey);
+      const visibleWindow = [
+        ...(sourceState?.recentMessages ?? []), ...(sourceState?.unread ?? []),
+        ...(b.social.recentMessages?.get(key) ?? []),
+      ].filter((m) => modelMessageVisible(b, targetKey, m));
+      rememberModelSources(b, key, visibleWindow, [
+        ...(opts.sourceQqs ?? []), ...(b.turnEngine?.activeRequest(key)?.payload.sourceQqs ?? []),
+      ]);
       accepted = await b.api.sessions.prompt({ sessionId, mode: 'queue', content });
     } catch (error) {
+      rollbackSilent();
       if (opts.farewell) b.social.exitingSessions.delete(sessionId);
       throw error;
     }
     if (!accepted.result.ok) {
+      rollbackSilent();
       if (opts.farewell) b.social.exitingSessions.delete(sessionId);
       const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
       const safeErrText = b.shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;
@@ -87,12 +132,15 @@ export function createDshDeliver(b) {
     } else if (accepted.result.value.command?.text && opts.silent && opts.farewell) {
       b.social.exitingSessions.delete(sessionId);
     }
+    if (accepted.result.value.command) rollbackSilent();
     // command=true：斜杠命令已回结果，调用方别再 ack
-    return { ok: true, command: Boolean(accepted.result.value.command) };
+    return { ok: true, command: Boolean(accepted.result.value.command), sessionId };
   }
 
   // 每会话串行投递，保证 turn 完成顺序与提交一致
   function deliverPrompt(key, promptText, opts = {}) {
+    if (!opts.schedulerTurnId && b.schedulerEnabled?.(key)) return b.schedulePrompt(key, promptText, opts);
+    if (!opts.schedulerTurnId) b.observeScheduledPrompt?.(key, promptText, opts);
     return new Promise((resolve, reject) => {
       let entry = promptQueues.get(key);
       if (!entry) {
@@ -130,6 +178,7 @@ export function createDshDeliver(b) {
 
   // 清空某会话队列并让待投递项失败
   function drainPromptQueue(key, errorMsg) {
+    b.cancelScheduledTurns?.(key, errorMsg);
     const entry = promptQueues.get(key);
     if (!entry) return;
     for (const item of entry.queue) item.reject(new Error(errorMsg));
@@ -139,6 +188,7 @@ export function createDshDeliver(b) {
 
   // 清空所有会话队列并让待投递项失败
   function drainAllPromptQueues(errorMsg) {
+    b.cancelAllScheduledTurns?.(errorMsg);
     for (const [, entry] of promptQueues) {
       for (const item of entry.queue) item.reject(new Error(errorMsg));
     }

@@ -24,7 +24,7 @@ export function createOutbox(b) {
         items.shift();
         b.log(`队列满（${QUEUE_MAX}），丢弃最旧消息 (${key})`);
       }
-      items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason });
+      items.push({ promptText, farewell: !!opts.farewell, silent: !!opts.silent, media: opts.media ?? [], wakeReason: opts.wakeReason, wakeReminder: opts.wakeReminder, sourceQqs: opts.sourceQqs });
       queued.set(key, items);
     }
     queueRetries.delete(key); // 新消息入队重置退避计数
@@ -53,7 +53,7 @@ export function createOutbox(b) {
               b.log(`补投跳过未授权会话 ${key}（当前模式 ${b.currentMode}）`);
               continue;
             }
-            const result = await b.deliverPrompt(key, item.promptText, { farewell: item.farewell, silent: item.silent, media: item.media ?? [], wakeReason: item.wakeReason });
+            const result = await b.deliverPrompt(key, item.promptText, { farewell: item.farewell, silent: item.silent, media: item.media ?? [], wakeReason: item.wakeReason, wakeReminder: item.wakeReminder, sourceQqs: item.sourceQqs });
             if (!result.ok) {
               b.log(`补投失败 ${key}: ${result.error || '未知错误'}`);
               failed += 1;

@@ -15,17 +15,33 @@ export function createConsoleSessionRoutes(b) {
   }
 
   return async function consoleSessionRoutes(rq) {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/session/stop') {
+      const body = await rq.readBody();
+      const key = body?.key;
+      if (typeof key !== 'string' || !Object.hasOwn(b.state.sessions, key)) {
+        rq.sendJson({ ok: false, error: '会话不存在' }, 404); return;
+      }
+      if (!b.dshReady) { rq.sendJson({ ok: false, error: 'DSH 当前不可用' }, 503); return; }
+      try {
+        const result = await b.withTimeout(b.api.stopSessionWork(b.state.sessions[key]), b.DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork');
+        b.appendActivity(`控制台停止 DSH 当前任务 ${key}`);
+        rq.sendJson({ ok: true, key, removed: result.removed });
+      } catch (error) {
+        rq.sendJson({ ok: false, error: `停止失败，请检查 DSH：${error.message}` }, 502);
+      }
+      return;
+    }
     // ── 会话查看 ──
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/sessions') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/sessions') {
       const list = [];
       for (const [key, sessionId] of Object.entries(b.state.sessions)) {
-        list.push({ key, sessionId, owner: key === `private:${String(b.cfg.ownerQQ ?? '')}` });
+        list.push({ key, sessionId, owner: key === `private:${String(b.cfg.ownerQQ ?? '')}`, ...b.resolveConversationMode(key) });
       }
       rq.sendJson({ sessions: list });
       return;
     }
     // ── 挂起审批 / 提问 ──
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/pending') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/pending') {
       const list = [];
       for (const [key, p] of b.pending.entries()) {
         list.push({
@@ -40,16 +56,16 @@ export function createConsoleSessionRoutes(b) {
       return;
     }
     // ── 每会话策略覆盖表（仅记录） ──
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/conversations') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/conversations') {
       rq.sendJson({ ok: true, ...b.listConversationOverrides() });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/conversations/set') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/conversations/set') {
       const body = await rq.readBody();
       changeOverride(rq, () => b.setConversationOverride(body.key, body, 'console'));
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/conversations/delete') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/conversations/delete') {
       const body = await rq.readBody();
       changeOverride(rq, () => b.deleteConversationOverride(body.key, 'console'));
       return;

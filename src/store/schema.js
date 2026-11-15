@@ -10,7 +10,9 @@ export const SCHEMA_VERSIONS = Object.freeze({
   'role-inject': 1,
   archive: 1,
   conversations: 1,
-  pool: 1,
+  pool: 2,
+  'member-policy': 1,
+  identity: 1,
 });
 
 /** MIGRATIONS[name][from] 把文档迁到 from + 1 */
@@ -21,7 +23,9 @@ const MIGRATIONS = Object.freeze({
   'role-inject': { 0: (doc) => doc },
   archive: { 0: (doc) => doc },
   conversations: { 0: (doc) => doc },
-  pool: { 0: (doc) => doc },
+  pool: { 0: (doc) => doc, 1: (doc) => doc },
+  'member-policy': { 0: (doc) => doc },
+  identity: { 0: (doc) => doc },
 });
 
 export class FutureSchemaError extends Error {

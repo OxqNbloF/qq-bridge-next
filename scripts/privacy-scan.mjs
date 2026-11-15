@@ -57,7 +57,7 @@ const DEFAULT_RULES = {
   allowPaths: [
     'scripts/privacy-', 'config.example.json', 'package-lock.json', 'src/sensitive.js',
     // 测试夹具/回归脚本：里面是刻意构造的假 ID 与假凭据
-    'scripts/test-', 'scripts/console-ui-', 'scripts/fixtures/', 'scripts/audit-bridge-harness.mjs',
+    'tests/',
     'scripts/check-onebot-status.mjs', 'scripts/send-test-group.mjs', 'scripts/send-voice.mjs',
     'scripts/setup-dsh.mjs', 'scripts/patch-', 'scripts/verify-', 'scripts/probe-',
     // 下面几项是说明文档里的占位符示例，不是真数据。

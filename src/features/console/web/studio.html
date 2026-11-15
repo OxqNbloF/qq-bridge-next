@@ -1,0 +1,2318 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Bridge · 控制台</title>
+    <style>
+      :root {
+        font-family:
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "PingFang SC",
+          "Microsoft YaHei",
+          sans-serif;
+        color: #20232b;
+        background: #fff;
+        font-size: 14px;
+        --blue: #4d6bfe;
+        --muted: #667085;
+        --line: #eceef3;
+        --pale: #f4f6ff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+      button,
+      a,
+      input,
+      select,
+      textarea {
+        -webkit-tap-highlight-color: transparent;
+      }
+      button,
+      a {
+        touch-action: manipulation;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: wait;
+      }
+      button:focus-visible,
+      a:focus-visible {
+        outline: 3px solid #9dabff;
+        outline-offset: 3px;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: 2px solid #aebaff;
+        outline-offset: 1px;
+      }
+      a {
+        color: #4561e9;
+        text-decoration: none;
+      }
+      button {
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 10px;
+        padding: 10px 16px;
+        color: inherit;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      button:hover {
+        background: #f7f8fb;
+      }
+      button.primary {
+        background: #4561e9;
+        color: white;
+        border-color: #4561e9;
+      }
+      button.primary:hover {
+        background: #3c59e8;
+      }
+      button.danger {
+        color: #ba4054;
+      }
+      button.flat {
+        border-color: transparent;
+        background: transparent;
+      }
+      svg {
+        width: 19px;
+        height: 19px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+      .shell {
+        display: grid;
+        grid-template-columns: 230px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+      .rail {
+        position: sticky;
+        top: 0;
+        height: 100dvh;
+        background: #f7f8fa;
+        border-right: 1px solid #f0f1f5;
+        padding: 30px 18px 20px;
+        display: flex;
+        flex-direction: column;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        font-size: 25px;
+        letter-spacing: -1px;
+        font-weight: 650;
+        color: var(--blue);
+      }
+      .brand svg {
+        width: 33px;
+        height: 33px;
+        stroke-width: 2.5;
+      }
+      .brand small {
+        color: #667085;
+        font-size: 10px;
+        letter-spacing: 1px;
+        font-weight: 500;
+        align-self: flex-end;
+        margin-bottom: 5px;
+      }
+      .rail-caption {
+        padding: 0 15px;
+        color: #667085;
+        font-size: 11px;
+        letter-spacing: 1.7px;
+        margin: 45px 0 13px;
+      }
+      .nav {
+        display: grid;
+        gap: 7px;
+      }
+      .nav button {
+        justify-content: flex-start;
+        background: transparent;
+        border: 0;
+        padding: 12px 16px;
+        gap: 13px;
+        border-radius: 11px;
+        color: #667085;
+      }
+      .nav button:hover {
+        background: #eef0f6;
+      }
+      .nav button[aria-current="page"] {
+        background: #e8edff;
+        color: #4561e9;
+        font-weight: 600;
+      }
+      .nav svg {
+        width: 18px;
+      }
+      .rail-bottom {
+        margin-top: auto;
+      }
+      .deploy {
+        margin: 20px 6px;
+        padding: 16px 12px;
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      .deploy strong {
+        display: block;
+        font-size: 12px;
+        margin-bottom: 7px;
+      }
+      .deploy small {
+        color: var(--muted);
+        font-size: 11px;
+        overflow-wrap: anywhere;
+      }
+      .rail-link {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        font-size: 12px;
+        color: #667085;
+      }
+      .dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        background: #667085;
+        border-radius: 50%;
+        margin-right: 7px;
+      }
+      .dot.good {
+        background: #38b489;
+      }
+      .dot.bad {
+        background: #d77b56;
+      }
+      .workspace {
+        min-width: 0;
+      }
+      .topbar {
+        height: 78px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 42px;
+        border-bottom: 1px solid #f3f4f7;
+      }
+      .crumb {
+        color: #667085;
+        font-size: 12px;
+      }
+      .crumb b {
+        color: #515868;
+        font-weight: 500;
+        margin-left: 12px;
+      }
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+      .badge {
+        font-size: 11px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 7px 12px;
+        white-space: nowrap;
+        color: #636b79;
+      }
+      .topbar button {
+        padding: 7px;
+        border: 0;
+        color: #667085;
+      }
+      .avatar {
+        width: 28px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        background: #edf0ff;
+        color: #6176df;
+        font-size: 10px;
+      }
+      .content {
+        max-width: 1240px;
+        margin: auto;
+        padding: 38px 48px 24px;
+      }
+      .view[hidden] {
+        display: none;
+      }
+      .eyebrow {
+        color: #667085;
+        font-size: 10px;
+        letter-spacing: 2px;
+      }
+      .hero {
+        text-align: center;
+        padding: 32px 0 29px;
+      }
+      .hero-mark {
+        width: 49px;
+        height: 49px;
+        border-radius: 16px;
+        background: #f0f3ff;
+        color: var(--blue);
+        display: grid;
+        place-items: center;
+        margin: 0 auto 21px;
+      }
+      .hero-mark svg {
+        width: 28px;
+        height: 28px;
+      }
+      .hero h1 {
+        font-size: 31px;
+        font-weight: 550;
+        letter-spacing: 1px;
+        margin: 0 0 13px;
+      }
+      .hero p {
+        color: #667085;
+        font-size: 13px;
+        margin: 0;
+      }
+      .composer {
+        max-width: 770px;
+        margin: 0 auto;
+        border: 1px solid #e1e5f1;
+        box-shadow: 0 7px 28px #2945a608;
+        border-radius: 21px;
+        padding: 19px 21px 14px;
+      }
+      .composer textarea {
+        display: block;
+        resize: vertical;
+        width: 100%;
+        min-height: 88px;
+        max-height: 280px;
+        border: 0;
+        padding: 3px 2px;
+        background: transparent;
+        line-height: 1.8;
+        font-size: 14px;
+      }
+      .composer textarea::placeholder {
+        color: #667085;
+      }
+      .composer-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .target {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: #667085;
+        min-width: 0;
+      }
+      .target input {
+        width: 225px;
+        max-width: 100%;
+        border: 0;
+        background: #f7f8fc;
+        border-radius: 8px;
+        padding: 8px 10px;
+        color: #667085;
+        font-size: 11px;
+      }
+      .send {
+        width: 35px;
+        height: 35px;
+        padding: 0;
+        border-radius: 50% !important;
+      }
+      .composer-help {
+        margin: 12px auto 28px;
+        text-align: center;
+        font-size: 10px;
+        color: #667085;
+        line-height: 1.8;
+      }
+      .quick {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 44px;
+        flex-wrap: wrap;
+      }
+      .quick button {
+        font-size: 11px;
+        border-radius: 20px;
+        padding: 8px 14px;
+        color: #667085;
+      }
+      .quick svg {
+        width: 14px;
+        height: 14px;
+      }
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 18px;
+        gap: 16px;
+      }
+      .section-head h2 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 550;
+      }
+      .section-head small {
+        font-size: 11px;
+        color: #667085;
+      }
+      .section-head button {
+        font-size: 11px;
+        padding: 6px 10px;
+        color: var(--muted);
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin: 0 0 30px;
+      }
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        padding: 18px 19px;
+        min-width: 0;
+      }
+      .metric-top {
+        display: flex;
+        justify-content: space-between;
+        color: #667085;
+        font-size: 11px;
+        gap: 5px;
+      }
+      .metric-top svg {
+        width: 15px;
+        height: 15px;
+        color: #667085;
+      }
+      .metric strong {
+        display: block;
+        font-size: 22px;
+        font-weight: 550;
+        margin: 13px 0 7px;
+        letter-spacing: -0.5px;
+        overflow-wrap: anywhere;
+      }
+      .metric strong.blue {
+        color: var(--blue);
+      }
+      .metric small {
+        color: #667085;
+        font-size: 10px;
+      }
+      .lower {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 25px;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 22px;
+        min-width: 0;
+      }
+      .panel h3 {
+        font-size: 13px;
+        font-weight: 550;
+        margin: 0 0 17px;
+      }
+      .connection {
+        display: flex;
+        align-items: center;
+        padding: 13px 0;
+        gap: 12px;
+        border-bottom: 1px solid #f5f6f8;
+      }
+      .connection:last-child {
+        border: 0;
+      }
+      .connection .tile {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: #f1f4ff;
+        color: #6b82ef;
+        display: grid;
+        place-items: center;
+      }
+      .connection strong {
+        font-size: 12px;
+        display: block;
+        font-weight: 500;
+      }
+      .connection small {
+        display: block;
+        color: #667085;
+        font-size: 10px;
+        margin-top: 5px;
+      }
+      .connection .state {
+        margin-left: auto;
+        font-size: 10px;
+        color: #667085;
+      }
+      .log {
+        max-height: 195px;
+        overflow: auto;
+        font-size: 11px;
+        line-height: 2;
+        color: #667085;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+        margin: 0;
+      }
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        color: #667085;
+        font-size: 10px;
+        margin: 30px 0 0;
+        padding-top: 17px;
+        gap: 12px;
+      }
+      .page-title {
+        margin-bottom: 30px;
+      }
+      .page-title h1 {
+        font-size: 25px;
+        font-weight: 550;
+        margin: 0 0 10px;
+      }
+      .page-title p {
+        font-size: 12px;
+        color: #667085;
+        line-height: 1.8;
+        margin: 0;
+      }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 20px 0;
+      }
+      .toolbar input {
+        flex: 1;
+        min-width: 130px;
+      }
+      .tabs {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+        margin: 0 0 24px;
+      }
+      .tabs button {
+        border: 0;
+        background: #f6f7fa;
+        color: #667085;
+        font-size: 12px;
+        padding: 9px 14px;
+      }
+      .tabs button[aria-selected="true"] {
+        background: #edf1ff;
+        color: var(--blue);
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0 28px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        border-bottom: 1px solid #f0f2f6;
+        padding: 18px 0;
+        min-width: 0;
+      }
+      .field-name {
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+      .field small {
+        font-size: 10px;
+        color: #667085;
+        overflow-wrap: anywhere;
+        line-height: 1.7;
+      }
+      input,
+      textarea,
+      select {
+        border: 1px solid #e5e8ef;
+        border-radius: 9px;
+        padding: 10px 12px;
+        background: #fff;
+        color: #454d60;
+        width: 100%;
+        min-width: 0;
+      }
+      textarea {
+        resize: vertical;
+        line-height: 1.7;
+      }
+      input[type="checkbox"] {
+        appearance: none;
+        width: 33px;
+        height: 19px;
+        min-width: 33px;
+        border-radius: 12px;
+        border: 0;
+        background: #dce0e9;
+        position: relative;
+        cursor: pointer;
+        padding: 0;
+      }
+      input[type="checkbox"]:before {
+        content: "";
+        position: absolute;
+        width: 13px;
+        height: 13px;
+        left: 3px;
+        top: 3px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform 0.15s;
+      }
+      input[type="checkbox"]:checked {
+        background: var(--blue);
+      }
+      input[type="checkbox"]:checked:before {
+        transform: translateX(14px);
+      }
+      .savebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+        margin-top: 25px;
+        padding-top: 15px;
+      }
+      .savebar small {
+        color: #667085;
+        font-size: 11px;
+      }
+      .notice {
+        font-size: 12px;
+        color: #6c7aaf;
+        background: #f5f7ff;
+        padding: 13px 16px;
+        border-radius: 10px;
+        line-height: 1.8;
+        margin: 16px 0;
+      }
+      .table-wrap {
+        overflow: auto;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12px;
+        text-align: left;
+      }
+      th {
+        color: #667085;
+        font-weight: 400;
+        padding: 13px 10px;
+        white-space: nowrap;
+      }
+      td {
+        padding: 18px 10px;
+        border-top: 1px solid var(--line);
+        line-height: 1.8;
+        overflow-wrap: anywhere;
+      }
+      td small {
+        display: block;
+        color: #667085;
+        font-size: 10px;
+      }
+      td button {
+        font-size: 11px;
+        padding: 5px 9px;
+      }
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 22px;
+      }
+      .stack {
+        display: grid;
+        gap: 22px;
+      }
+      .empty {
+        color: #667085;
+        padding: 30px 8px;
+        text-align: center;
+        font-size: 12px;
+      }
+      .memory-item {
+        padding: 16px 0;
+        border-bottom: 1px solid var(--line);
+        line-height: 1.8;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .memory-item button {
+        float: right;
+        font-size: 11px;
+        padding: 4px 9px;
+        margin-left: 10px;
+      }
+      #notice {
+        position: fixed;
+        bottom: 25px;
+        left: calc(50% + 90px);
+        transform: translateX(-50%);
+        max-width: calc(100vw - 40px);
+        background: #303747;
+        color: #fff;
+        border-radius: 12px;
+        padding: 13px 21px;
+        font-size: 12px;
+        z-index: 10;
+        box-shadow: 0 8px 30px #28344e20;
+        line-height: 1.7;
+      }
+      #notice:empty {
+        display: none;
+      }
+      #notice.error {
+        background: #a04350;
+      }
+      .mobile-brand {
+        display: none;
+      }
+      .skip {
+        position: fixed;
+        top: -100px;
+        left: 20px;
+        z-index: 30;
+        background: #fff;
+        padding: 12px;
+      }
+      .skip:focus {
+        top: 10px;
+      }
+      @media (min-width: 1600px) {
+        .content {
+          padding-top: 55px;
+        }
+        .hero {
+          padding-top: 60px;
+        }
+        .quick {
+          margin-bottom: 55px;
+        }
+      }
+      @media (max-width: 1100px) {
+        .shell {
+          grid-template-columns: 195px minmax(0, 1fr);
+        }
+        .rail {
+          padding: 25px 10px;
+        }
+        .brand {
+          font-size: 23px;
+        }
+        .brand small {
+          display: none;
+        }
+        .content {
+          padding: 27px;
+        }
+        .topbar {
+          padding: 0 27px;
+        }
+        .metric {
+          padding: 15px;
+        }
+        .metrics {
+          gap: 10px;
+        }
+        .lower {
+          gap: 16px;
+        }
+        .hero h1 {
+          font-size: 27px;
+        }
+      }
+      @media (max-width: 760px) {
+        .shell {
+          display: block;
+        }
+        .rail {
+          position: static;
+          height: auto;
+          padding: 16px;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+        .brand {
+          font-size: 22px;
+          padding: 0 6px;
+        }
+        .brand svg {
+          width: 26px;
+          height: 26px;
+        }
+        .rail-caption,
+        .rail-bottom {
+          display: none;
+        }
+        .nav {
+          display: flex;
+          overflow: auto;
+          gap: 4px;
+          margin-top: 18px;
+        }
+        .nav button {
+          white-space: nowrap;
+          padding: 9px 11px;
+          font-size: 12px;
+          gap: 6px;
+        }
+        .nav svg {
+          width: 14px;
+        }
+        .topbar {
+          height: 56px;
+          padding: 0 20px;
+        }
+        .top-actions {
+          gap: 12px;
+        }
+        .content {
+          padding: 20px;
+        }
+        .hero {
+          padding-top: 18px;
+        }
+        .hero h1 {
+          font-size: 23px;
+        }
+        .hero p {
+          font-size: 11px;
+        }
+        .metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .lower,
+        .split,
+        .form-grid {
+          grid-template-columns: 1fr;
+        }
+        .quick {
+          margin-bottom: 28px;
+          gap: 7px;
+        }
+        .quick button {
+          font-size: 10px;
+          padding: 7px 10px;
+        }
+        .composer {
+          padding: 15px;
+        }
+        .target input {
+          width: 190px;
+        }
+        .composer-help {
+          margin-bottom: 18px;
+        }
+        .metric strong {
+          font-size: 21px;
+        }
+        .footer {
+          font-size: 9px;
+        }
+        #notice {
+          left: 50%;
+        }
+        .savebar {
+          align-items: flex-start;
+        }
+        .page-title {
+          margin-top: 12px;
+        }
+        .topbar .badge {
+          font-size: 10px;
+        }
+        .panel {
+          padding: 18px;
+        }
+        .crumb {
+          font-size: 11px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a href="#main" class="skip">跳转到内容</a>
+    <div class="shell">
+      <aside class="rail">
+        <a class="brand" href="/" aria-label="Bridge 首页"
+          ><svg viewBox="0 0 32 32" aria-hidden="true">
+            <path
+              d="M5 20c3-9 6-13 11-11s5 13 11 8M5 25c3-9 6-13 11-11s5 13 11 8"
+            /></svg
+          >bridge<small>CONSOLE</small></a
+        >
+        <div class="rail-caption">WORKSPACE</div>
+        <nav class="nav" aria-label="主导航">
+          <button data-view="desk" aria-current="page" data-icon="grid">
+            工作台</button
+          ><button data-view="parameters" data-icon="sliders">参数调节</button
+          ><button data-view="sessions" data-icon="chat">会话管理</button
+          ><button data-view="persona" data-icon="spark">角色与记忆</button
+          ><button data-view="settings" data-icon="settings">部署与安全</button>
+        </nav>
+        <div class="rail-bottom">
+          <div class="deploy">
+            <strong><span class="dot" id="railDot"></span>DSH 部署实例</strong
+            ><small>通过当前 Bridge 服务连接</small>
+          </div>
+          <a class="rail-link" href="/?classic=1"
+            ><span data-icon="external"></span>兼容控制台</a
+          >
+          <div class="rail-link">
+            <span data-icon="shield"></span>本机令牌保护
+          </div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="crumb">
+            控制台 <span>/</span><b id="breadcrumb">工作台</b>
+          </div>
+          <div class="top-actions">
+            <span class="badge" id="connectionBadge"
+              ><span class="dot"></span>正在连接</span
+            ><button
+              id="refresh"
+              aria-label="刷新状态"
+              data-icon="refresh"
+            ></button
+            ><span class="avatar" title="控制台操作者">OP</span>
+          </div>
+        </header>
+        <main id="main" class="content" tabindex="-1">
+          <section class="view" data-page="desk">
+            <div class="hero">
+              <div class="hero-mark" data-icon="bridge"></div>
+              <h1>让每一次连接，更从容。</h1>
+              <p>连接 QQ 与 DeepSeek Harness，在这里掌握全局。</p>
+            </div>
+            <form id="commandForm" class="composer">
+              <textarea
+                id="command"
+                aria-label="DSH 后台指令"
+                placeholder="给 DSH 一条指令，或者调整它的下一步行动…"
+                required
+                maxlength="12000"
+              ></textarea>
+              <div class="composer-bottom">
+                <div class="target">
+                  <span data-icon="terminal"></span
+                  ><input
+                    id="target"
+                    aria-label="目标会话"
+                    list="targets"
+                    placeholder="选择会话 / group:群号"
+                    required
+                    pattern="(group|private):[0-9]+"
+                  />
+                </div>
+                <button
+                  class="primary send"
+                  type="submit"
+                  aria-label="投递到 DSH"
+                  data-icon="arrow"
+                ></button>
+              </div>
+            </form>
+            <datalist id="targets"></datalist>
+            <p class="composer-help">
+              投递到绑定的 DSH 会话 · 可能触发 QQ 发言 · Ctrl / ⌘ + Enter 发送
+            </p>
+            <div class="quick">
+              <button data-jump="parameters" data-icon="sliders">
+                微调运行参数</button
+              ><button id="pause" data-icon="pause" disabled>
+                暂停自动调度</button
+              ><button id="stop" data-icon="stop">停止当前任务</button>
+            </div>
+            <div class="section-head">
+              <h2>运行概览</h2>
+              <small id="updated">等待首次同步</small>
+            </div>
+            <div class="metrics">
+              <div class="metric">
+                <div class="metric-top">
+                  DSH 连接<span data-icon="pulse"></span>
+                </div>
+                <strong class="blue" id="dshMetric">—</strong
+                ><small id="dshHint">等待服务状态</small>
+              </div>
+              <div class="metric">
+                <div class="metric-top">
+                  绑定会话<span data-icon="chat"></span>
+                </div>
+                <strong id="sessionMetric">—</strong
+                ><small>QQ 群聊与私聊</small>
+              </div>
+              <div class="metric">
+                <div class="metric-top">
+                  正在处理<span data-icon="spark"></span>
+                </div>
+                <strong id="busyMetric">—</strong
+                ><small>当前运行中的会话</small>
+              </div>
+              <div class="metric">
+                <div class="metric-top">
+                  累计估算花费<span data-icon="chart"></span>
+                </div>
+                <strong id="costMetric">—</strong
+                ><small id="costHint">来自本地 Token 账本</small>
+              </div>
+            </div>
+            <div class="lower">
+              <div class="panel">
+                <div class="section-head">
+                  <h2>服务连接</h2>
+                  <small>CONNECTED SERVICES</small>
+                </div>
+                <div id="connections">
+                  <div class="empty">正在读取连接状态…</div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="section-head">
+                  <h2>最近动态</h2>
+                  <small>LIVE ACTIVITY</small>
+                </div>
+                <pre id="activity" class="log" aria-label="运行动态">
+等待服务动态…</pre
+                >
+              </div>
+            </div>
+          </section>
+          <section class="view" data-page="parameters" hidden>
+            <div class="page-title">
+              <div class="eyebrow">FINE TUNING</div>
+              <h1>把行为，调到刚刚好。</h1>
+              <p>逐项调节运行参数；数值保留服务原始单位，保存后热更新。</p>
+            </div>
+            <div class="toolbar">
+              <input
+                id="parameterSearch"
+                type="search"
+                aria-label="搜索参数"
+                placeholder="搜索参数名称或键名…"
+              /><button id="reloadParameters" data-icon="refresh">
+                重新读取
+              </button>
+            </div>
+            <div
+              id="parameterTabs"
+              class="tabs"
+              role="tablist"
+              aria-label="参数分组"
+            ></div>
+            <form id="parametersForm" class="panel">
+              <div class="section-head">
+                <h2 id="parameterGroup">运行参数</h2>
+                <small id="parameterCount"></small>
+              </div>
+              <div id="parameterFields" class="form-grid"></div>
+              <div class="savebar">
+                <small id="parameterState">尚未修改</small
+                ><button class="primary" type="submit" data-icon="check">
+                  保存本组更改
+                </button>
+              </div>
+            </form>
+            <div class="panel" style="margin-top: 22px">
+              <h3>模型与思考强度</h3>
+              <p class="notice" id="modelDescription">正在读取模型能力…</p>
+              <form id="effortForm">
+                <label class="field"
+                  >思考强度<select id="effort" required></select
+                ></label>
+                <div class="savebar">
+                  <small
+                    >新强度会影响 DSH 全局默认，已有会话下一条消息生效。</small
+                  ><button type="submit">保存强度</button>
+                </div>
+              </form>
+            </div>
+          </section>
+          <section class="view" data-page="sessions" hidden>
+            <div class="page-title">
+              <div class="eyebrow">CONVERSATIONS</div>
+              <h1>每个会话，各有节奏。</h1>
+              <p>选择会话后回到工作台投递指令，或为单个会话覆盖运行模式。</p>
+            </div>
+            <div class="panel">
+              <div class="section-head">
+                <h2>绑定的 DSH 会话</h2>
+                <button id="refreshSessions" data-icon="refresh">刷新</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>会话 / DSH ID</th>
+                      <th>模式</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sessionRows"></tbody>
+                </table>
+              </div>
+            </div>
+            <form id="overrideForm" class="panel" style="margin-top: 22px">
+              <h3>会话策略</h3>
+              <div class="form-grid">
+                <label class="field"
+                  >会话标识<input
+                    id="overrideKey"
+                    placeholder="group:123456789"
+                    list="targets"
+                    required
+                    pattern="(group|private):[0-9]+" /></label
+                ><label class="field"
+                  >模式<select id="overrideMode">
+                    <option value="chat">对话</option>
+                    <option value="reserved">一代仿真</option>
+                    <option value="reserved2">二代仿真</option>
+                    <option value="closed-agent">管理员代理</option>
+                  </select></label
+                ><label class="field"
+                  >专属预设<input
+                    id="overridePreset"
+                    placeholder="留空使用模式默认预设"
+                /></label>
+              </div>
+              <div class="savebar">
+                <button id="removeOverride" type="button">恢复全局策略</button
+                ><button class="primary" type="submit">保存会话策略</button>
+              </div>
+            </form>
+            <div class="panel" style="margin-top: 22px">
+              <h3>待处理审批与提问</h3>
+              <pre id="pending" class="log">正在读取…</pre>
+              <small style="color: var(--muted)"
+                >审批请使用管理员 QQ 管理命令处理。</small
+              >
+            </div>
+          </section>
+          <section class="view" data-page="persona" hidden>
+            <div class="page-title">
+              <div class="eyebrow">PERSONALITY & MEMORY</div>
+              <h1>有个性，也有记性。</h1>
+              <p>编辑角色设定，管理每个会话独立的长期记忆。</p>
+            </div>
+            <div class="split">
+              <form id="roleForm" class="panel">
+                <h3>角色设定</h3>
+                <label class="field"
+                  >已保存角色<select id="rolePick">
+                    <option value="">选择一个角色</option>
+                  </select></label
+                ><label class="field"
+                  >角色名称<input
+                    id="roleName"
+                    required
+                    placeholder="为角色取个名字" /></label
+                ><label class="field"
+                  >角色内容<textarea
+                    id="roleContent"
+                    rows="12"
+                    required
+                    placeholder="性格、表达方式和行为边界…"
+                  ></textarea>
+                </label>
+                <div class="toolbar">
+                  <button type="submit" class="primary">保存角色</button
+                  ><button id="activateRole" type="button">设为当前角色</button
+                  ><button id="clearRole" type="button">清除当前角色</button>
+                </div>
+              </form>
+              <div class="panel">
+                <h3>会话长期记忆</h3>
+                <form id="memoryForm" class="toolbar">
+                  <input
+                    id="memoryKey"
+                    list="targets"
+                    required
+                    aria-label="记忆所属会话"
+                    placeholder="group:群号"
+                  /><button type="submit">读取记忆</button>
+                </form>
+                <div id="memoryItems" class="empty">
+                  选择会话，查看它记住了什么。
+                </div>
+              </div>
+            </div>
+          </section>
+          <section class="view" data-page="settings" hidden>
+            <div class="page-title">
+              <div class="eyebrow">DEPLOYMENT & SECURITY</div>
+              <h1>稳稳运行，安心连接。</h1>
+              <p>
+                管理访问范围、全局模式和部署配置。部署参数保存后需要重启桥接。
+              </p>
+            </div>
+            <div class="split">
+              <div class="stack">
+                <form id="modeForm" class="panel">
+                  <h3>全局运行模式</h3>
+                  <label class="field"
+                    >模式<select id="mode">
+                      <option value="chat">对话模式</option>
+                      <option value="reserved">一代仿真</option>
+                      <option value="reserved2">二代仿真</option>
+                      <option value="closed-agent">管理员代理</option>
+                    </select></label
+                  ><label class="field"
+                    >管理员代理预设<input
+                      id="closedPreset"
+                      placeholder="留空使用 DSH 默认"
+                  /></label>
+                  <div class="savebar">
+                    <small>模式将同步写入 DSH。</small
+                    ><button type="submit">应用模式</button>
+                  </div>
+                </form>
+                <form id="accessForm" class="panel">
+                  <h3>访问控制</h3>
+                  <label class="field"
+                    >管理员 QQ<input
+                      id="owner"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
+                    /><small
+                      >留空清除管理员；只有管理员能使用代理模式与审批。</small
+                    ></label
+                  >
+                  <div class="form-grid">
+                    <label class="field"
+                      >允许群聊<textarea
+                        id="allowGroups"
+                        rows="3"
+                        placeholder="每行一个群号"
+                      ></textarea></label
+                    ><label class="field"
+                      >允许私聊<textarea
+                        id="allowPrivate"
+                        rows="3"
+                        placeholder="每行一个 QQ"
+                      ></textarea></label
+                    ><label class="field"
+                      >拒绝群聊<textarea
+                        id="denyGroups"
+                        rows="3"
+                      ></textarea></label
+                    ><label class="field"
+                      >拒绝私聊<textarea id="denyPrivate" rows="3"></textarea>
+                    </label>
+                  </div>
+                  <div class="savebar">
+                    <small>保存后立即更新会话权限。</small
+                    ><button type="submit" class="primary">保存访问范围</button>
+                  </div>
+                </form>
+              </div>
+              <div class="stack">
+                <form id="deploymentForm" class="panel">
+                  <h3>部署参数</h3>
+                  <div class="notice">保存前校验并备份配置，重启后生效。</div>
+                  <div id="deploymentFields"></div>
+                  <div class="savebar">
+                    <small id="deploymentState">等待配置</small
+                    ><button type="submit" class="primary">保存部署参数</button>
+                  </div>
+                </form>
+                <div class="panel">
+                  <h3>服务维护</h3>
+                  <p class="notice">
+                    停止当前 DSH 任务不会关闭 DSH
+                    进程，后续自动唤醒仍可能启动新任务。需要保持静止时，请先暂停自动调度。
+                  </p>
+                  <div class="toolbar">
+                    <button id="restart" class="danger" data-icon="refresh">
+                      重启 Bridge</button
+                    ><a href="/?classic=1">更多维护工具 ↗</a>
+                  </div>
+                  <small style="color: var(--muted); line-height: 1.8"
+                    >如需跨机器访问，请使用 SSH
+                    端口转发连接部署机的控制台回环端口。</small
+                  >
+                </div>
+              </div>
+            </div>
+          </section>
+          <footer class="footer">
+            <span>BRIDGE / DEEPSEEK HARNESS</span
+            ><span
+              >简单连接，自在掌控。<a href="/?classic=1"> 兼容入口 ↗</a></span
+            >
+          </footer>
+        </main>
+      </div>
+    </div>
+    <div id="notice" role="status" aria-live="polite"></div>
+    <script>
+      "use strict";
+      const $ = (id) => document.getElementById(id);
+      const paths = {
+        grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+        sliders: "M4 7h16 M4 17h16 M8 4v6 M16 14v6",
+        chat: "M21 11a8 8 0 0 1-8 8H7l-4 3V11a9 9 0 0 1 18 0Z",
+        spark: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z",
+        settings:
+          "M9 3h6l1 4 4 2v6l-4 2-1 4H9l-1-4-4-2V9l4-2Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+        refresh: "M20 7a9 9 0 1 0 1 9 M20 3v5h-5",
+        terminal: "m5 7 5 5-5 5 M13 17h6",
+        arrow: "M12 19V5 m-6 6 6-6 6 6",
+        pause: "M8 5v14 M16 5v14",
+        stop: "M6 6h12v12H6z",
+        external: "M14 3h7v7 M21 3 11 13 M10 3H3v18h18v-7",
+        shield: "m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z m-4 9 3 3 5-6",
+        pulse: "M2 12h5l3-8 4 16 3-8h5",
+        chart: "M4 4v16h17 M8 15l4-6 4 3 5-7",
+        bridge: "M3 15c3-8 6-11 9-8s4 13 9 6 M3 21c3-8 6-11 9-8s4 13 9 6",
+        check: "m5 12 4 4L19 6",
+      };
+      function icon(name) {
+        return (
+          '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="' +
+          (paths[name] || paths.sliders) +
+          '"/></svg>'
+        );
+      }
+      document
+        .querySelectorAll("[data-icon]")
+        .forEach((el) =>
+          el.insertAdjacentHTML("afterbegin", icon(el.dataset.icon)),
+        );
+      const esc = (value) =>
+        String(value ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+      const query = new URLSearchParams(location.search);
+      if (query.get("token")) {
+        localStorage.setItem("consoleToken", query.get("token"));
+        query.delete("token");
+        history.replaceState(
+          {},
+          "",
+          location.pathname + (query.size ? "?" + query : "") + location.hash,
+        );
+      }
+      document.querySelectorAll('a[href^="/"]').forEach((link) => {
+        const token = localStorage.getItem("consoleToken");
+        if (token) {
+          const url = new URL(link.href);
+          url.searchParams.set("token", token);
+          link.href = url.href;
+        }
+      });
+      async function api(path, body) {
+        const token = localStorage.getItem("consoleToken");
+        const res = await fetch("/api/console/" + path, {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            "x-console-token": token || "",
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        if (res.status === 401)
+          throw new Error(
+            "令牌已失效，请通过部署机提供的带令牌地址重新打开控制台",
+          );
+        const data = await res.json();
+        if (!res.ok || data.ok === false)
+          throw new Error(data.error || "请求失败（" + res.status + "）");
+        return data;
+      }
+      let noticeTimer;
+      function notify(message, error = false) {
+        clearTimeout(noticeTimer);
+        $("notice").textContent = message;
+        $("notice").className = error ? "error" : "";
+        noticeTimer = setTimeout(
+          () => ($("notice").textContent = ""),
+          error ? 12000 : 6000,
+        );
+      }
+      function action(id, fn, event = "click") {
+        $(id).addEventListener(event, async (e) => {
+          e.preventDefault();
+          const control =
+            event === "submit"
+              ? e.target.querySelector("[type=submit]")
+              : e.currentTarget;
+          if (control.disabled) return;
+          control.disabled = true;
+          try {
+            await fn(e);
+          } catch (error) {
+            notify(error.message, true);
+          } finally {
+            control.disabled = false;
+          }
+        });
+      }
+      let currentView = "desk",
+        status = null,
+        sessions = [],
+        parameterConfig = null,
+        parameterGroup = "general",
+        deployment = null,
+        roles = [],
+        roleLoaded = "",
+        paused = null,
+        accessLoaded = false;
+      const viewNames = {
+        desk: "工作台",
+        parameters: "参数调节",
+        sessions: "会话管理",
+        persona: "角色与记忆",
+        settings: "部署与安全",
+      };
+      async function navigate(view) {
+        currentView = view;
+        document
+          .querySelectorAll("[data-page]")
+          .forEach((el) => (el.hidden = el.dataset.page !== view));
+        document.querySelectorAll("[data-view]").forEach((el) => {
+          if (el.dataset.view === view) el.setAttribute("aria-current", "page");
+          else el.removeAttribute("aria-current");
+        });
+        $("breadcrumb").textContent = viewNames[view];
+        try {
+          if (view === "parameters" && !parameterConfig) await loadParameters();
+          if (view === "sessions") await loadSessions();
+          if (view === "persona") await loadRoles();
+          if (view === "settings") await loadSettings();
+        } catch (error) {
+          notify(error.message, true);
+        }
+      }
+      document
+        .querySelectorAll("[data-view]")
+        .forEach((el) =>
+          el.addEventListener("click", () => navigate(el.dataset.view)),
+        );
+      document
+        .querySelectorAll("[data-jump]")
+        .forEach((el) =>
+          el.addEventListener("click", () => navigate(el.dataset.jump)),
+        );
+      function selectTarget(key) {
+        $("target").value = key;
+        $("overrideKey").value = key;
+      }
+      async function loadSessions() {
+        const data = await api("sessions");
+        sessions = data.sessions || [];
+        $("targets").innerHTML = sessions
+          .map((s) => '<option value="' + esc(s.key) + '"></option>')
+          .join("");
+        $("sessionMetric").textContent = sessions.length;
+        $("sessionRows").innerHTML = sessions.length
+          ? sessions
+              .map(
+                (s) =>
+                  "<tr><td>" +
+                  esc(s.key) +
+                  "<small>" +
+                  esc(s.sessionId) +
+                  "</small></td><td>" +
+                  esc(s.mode || "继承全局") +
+                  '</td><td><button data-session="' +
+                  esc(s.key) +
+                  '">控制</button> <button data-policy="' +
+                  esc(s.key) +
+                  '">策略</button></td></tr>',
+              )
+              .join("")
+          : '<tr><td colspan="3" class="empty">暂无绑定会话。可向白名单内的会话投递首条指令。</td></tr>';
+        const pending = await api("pending");
+        $("pending").textContent = pending.pending?.length
+          ? pending.pending
+              .map(
+                (p) =>
+                  p.key +
+                  " · " +
+                  (p.kind === "approval"
+                    ? "审批 " + (p.toolName || "")
+                    : "提问 " + JSON.stringify(p.questions || [])),
+              )
+              .join("\n")
+          : "暂无待处理事项";
+      }
+      $("sessionRows").addEventListener("click", (e) => {
+        const el = e.target.closest("button");
+        if (!el) return;
+        if (el.dataset.session) {
+          selectTarget(el.dataset.session);
+          navigate("desk");
+          $("command").focus();
+        }
+        if (el.dataset.policy) {
+          $("overrideKey").value = el.dataset.policy;
+          const s = sessions.find((s) => s.key === el.dataset.policy);
+          $("overrideMode").value = s.mode || status?.mode || "chat";
+          $("overridePreset").value = s.preset || "";
+          $("overrideKey").focus();
+        }
+      });
+      async function refresh() {
+        const results = await Promise.allSettled([
+          api("status"),
+          api("system"),
+          api("tokens/summary"),
+          loadSessions(),
+          api("scheduler/activity"),
+        ]);
+        let failed = false;
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i];
+          if (r.status === "rejected") {
+            failed = true;
+            if (i === 0) {
+              $("connectionBadge").textContent = "状态读取失败";
+              $("dshMetric").textContent = "未知";
+              $("dshHint").textContent = r.reason.message;
+              $("railDot").className = "dot bad";
+              status = null;
+            }
+            if (i === 1) $("busyMetric").textContent = "—";
+            if (i === 2) {
+              $("costMetric").textContent = "—";
+              $("costHint").textContent = "账本读取失败";
+            }
+            if (i === 4) {
+              paused = null;
+              $("pause").disabled = true;
+            }
+            continue;
+          }
+          const d = r.value;
+          if (i === 0) {
+            status = d;
+            const ready = d.dshReady === true;
+            $("connectionBadge").innerHTML =
+              '<span class="dot ' +
+              (ready ? "good" : "bad") +
+              '"></span>DSH ' +
+              (ready ? "已连接" : "未连接");
+            $("railDot").className = "dot " + (ready ? "good" : "bad");
+            $("dshMetric").textContent = ready ? "已连接" : "未连接";
+            $("dshHint").textContent = ready
+              ? "已同步部署实例状态"
+              : "请检查部署机上的 DSH";
+            const sl = d.snowluma;
+            const services = [
+              [
+                "terminal",
+                "DeepSeek Harness",
+                ready ? "连接正常" : "服务未就绪",
+                "DSH 会话控制",
+              ],
+              [
+                "chat",
+                "SnowLuma / QQ",
+                sl?.connected
+                  ? sl.degraded
+                    ? "连接异常"
+                    : "已连接"
+                  : "未连接",
+                "OneBot 消息网关",
+              ],
+              [
+                "spark",
+                "自动调度",
+                d.socialV2Paused ? "已暂停" : "运行中",
+                "唤醒 · 等待 · 主动交互",
+              ],
+            ];
+            $("connections").innerHTML = services
+              .map(
+                ([i, name, state, hint]) =>
+                  '<div class="connection"><span class="tile">' +
+                  icon(i) +
+                  "</span><div><strong>" +
+                  esc(name) +
+                  "</strong><small>" +
+                  esc(hint) +
+                  '</small></div><span class="state">' +
+                  esc(state) +
+                  "</span></div>",
+              )
+              .join("");
+            $("activity").textContent =
+              (Array.isArray(d.activity)
+                ? d.activity
+                : String(d.activity || "").split("\n")
+              )
+                .map((x) => (typeof x === "string" ? x : JSON.stringify(x)))
+                .slice(-12)
+                .join("\n") || "暂无运行动态";
+          }
+          if (i === 1)
+            $("busyMetric").textContent = (d.conversations || []).filter(
+              (c) =>
+                c.busy ||
+                ["running", "settling"].includes(
+                  d.scheduler?.turns?.[c.key]?.state,
+                ),
+            ).length;
+          if (i === 2) {
+            $("costMetric").textContent =
+              (d.symbol || "¥") + Number(d.totals?.cost || 0).toFixed(3);
+            $("costHint").textContent =
+              "累计 " +
+              Number(d.totals?.turns || 0).toLocaleString() +
+              " 个回合 · 估算值";
+          }
+          if (i === 4) {
+            paused = d.paused === true;
+            $("pause").innerHTML =
+              icon("pause") + (paused ? "恢复自动调度" : "暂停自动调度");
+            $("pause").disabled = false;
+          }
+        }
+        $("updated").textContent =
+          (failed ? "部分同步失败 · " : "更新于 ") +
+          new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      }
+      action("refresh", refresh);
+      action("refreshSessions", loadSessions);
+      action(
+        "commandForm",
+        async () => {
+          const key = $("target").value.trim(),
+            message = $("command").value.trim();
+          if (!message) throw new Error("请输入指令");
+          await api("notify-ai", { key, message });
+          $("command").value = "";
+          notify("指令已投递到 DSH：" + key);
+          await refresh();
+        },
+        "submit",
+      );
+      $("command").addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+          e.preventDefault();
+          $("commandForm").requestSubmit();
+        }
+      });
+      action("pause", async () => {
+        if (paused === null) throw new Error("请先刷新调度状态");
+        const data = await api("scheduler/activity", { paused: !paused });
+        notify(
+          data.paused
+            ? "自动调度已暂停；正在运行的 DSH 任务需单独停止"
+            : "自动调度已恢复",
+        );
+        await refresh();
+      });
+      action("stop", async () => {
+        const key = $("target").value.trim();
+        if (!key) throw new Error("请先选择一个会话");
+        if (
+          !confirm(
+            "停止 " +
+              key +
+              " 的当前任务并清理 DSH 排队项？后续自动唤醒仍可能创建新任务。",
+          )
+        )
+          return;
+        await api("session/stop", { key });
+        notify("DSH 当前任务已停止");
+        await refresh();
+      });
+      action(
+        "overrideForm",
+        async () => {
+          await api("conversations/set", {
+            key: $("overrideKey").value.trim(),
+            mode: $("overrideMode").value,
+            preset: $("overridePreset").value.trim(),
+          });
+          notify("会话策略已保存");
+          await loadSessions();
+        },
+        "submit",
+      );
+      action("removeOverride", async () => {
+        await api("conversations/delete", {
+          key: $("overrideKey").value.trim(),
+        });
+        notify("已恢复全局策略");
+        await loadSessions();
+      });
+      const groupNames = {
+        general: "基础",
+        wake: "唤醒",
+        send: "消息发送",
+        wait: "等待",
+        proactive: "主动交互",
+        context: "上下文",
+        sticker: "表情",
+        voice: "语音",
+        feedback: "反馈",
+        tools: "工具权限",
+      };
+      const labels = {
+        enabled: "启用",
+        agentPreset: "Agent 预设",
+        provideRecommendations: "提供行为建议",
+        autoReplyCheckMs: "自动回复检查间隔",
+        defaultMode: "默认唤醒模式",
+        recommendedDefaultInfinite: "默认无限睡眠建议",
+        preSleepWaitEnabled: "睡前等待",
+        preSleepWaitMs: "睡前等待时长",
+        recommendedSleepMinMs: "建议最短睡眠",
+        recommendedSleepMaxMs: "建议最长睡眠",
+        recommendedProbability: "建议唤醒概率",
+        recommendedKeywords: "建议唤醒关键词",
+        recommendedAtMention: "被 @ 时唤醒",
+        recommendedNameMention: "被叫名字时唤醒",
+        recommendedQuestion: "问题唤醒",
+        recommendedPoke: "戳一戳唤醒",
+        recommendedHint: "自定义建议",
+        sleepMinMs: "最短睡眠",
+        sleepMaxMs: "最长睡眠",
+        maxWakePerMinute: "每分钟最多唤醒",
+        maxWakePerHour: "每小时最多唤醒",
+        batchWindowMs: "消息合并窗口",
+        noActionLimit: "无动作回合上限",
+        maxWakeConfigReminders: "唤醒配置提醒上限",
+        burstEnabled: "连发消息",
+        burstMaxMessages: "最多连发条数",
+        burstIntervalMinMs: "连发最短间隔",
+        burstIntervalMaxMs: "连发最长间隔",
+        longGapProbability: "长停顿概率",
+        longGapMinMs: "最短长停顿",
+        longGapMaxMs: "最长长停顿",
+        maxSendPerMinute: "每分钟发送上限",
+        maxSendPerHour: "每小时发送上限",
+        maxMessageChars: "单条消息字符上限",
+        maxGapMs: "最大消息间隔",
+        gapBaseMs: "基础消息间隔",
+        gapPerCharMs: "每字符增加间隔",
+        defaultMs: "默认等待时长",
+        minMs: "最短等待",
+        maxMs: "最长等待",
+        defaultQuietMs: "默认静默等待",
+        minQuietAfterNewMs: "新消息后最短静默",
+        checkIntervalMinMs: "最短主动检查间隔",
+        checkIntervalMaxMs: "最长主动检查间隔",
+        idleThresholdMs: "空闲时长门槛",
+        probability: "触发概率",
+        recentLimit: "最近消息条数",
+        unreadLimit: "未读消息条数",
+        contextWindow: "上下文窗口",
+        maxLength: "最大长度",
+        notifyOwnerOnError: "错误时通知管理员",
+        syncTtlMs: "缓存刷新间隔",
+        maxListCount: "列表条数上限",
+        includeInPrompt: "注入提示词",
+        promptMaxStickers: "提示词内表情上限",
+        maxPerMinute: "每分钟上限",
+        maxPerHour: "每小时上限",
+        maxRemarkChars: "备注长度上限",
+        gateV2: "二代门禁",
+        schedulerV2: "二代调度器",
+        maxConcurrent: "最大并发会话",
+        chat: "对话引擎",
+        reserved: "一代仿真引擎",
+        reserved2: "二代仿真引擎",
+        injectMax: "黑话注入条数上限",
+        learnerPreset: "记忆学习预设",
+        archive: "消息归档",
+        terms: "黑话学习",
+        memory: "长期记忆",
+        getPrompt: "读取提示词",
+        getUnread: "读取未读",
+        getRecent: "读取上下文",
+        sendGroup: "发送群消息",
+        sendPrivate: "发送私聊",
+        sendMessage: "发送消息",
+        reply: "引用回复",
+        waitMessages: "等待消息",
+        markRead: "标记已读",
+        feedback: "反馈",
+        getMyRecent: "读取自身消息",
+        sendBurst: "连发消息",
+        sendPoke: "戳一戳",
+        setWakeConfig: "调整唤醒策略",
+        listStickers: "列出表情",
+        sendSticker: "发送表情",
+        collectSticker: "收集表情",
+      };
+      function leaves(object, prefix = []) {
+        return Object.entries(object || {}).flatMap(([key, value]) =>
+          value !== null && typeof value === "object" && !Array.isArray(value)
+            ? leaves(value, [...prefix, key])
+            : [{ path: [...prefix, key], value }],
+        );
+      }
+      function field({ path, value }, scope) {
+        const key = path.at(-1);
+        if (key === "ffmpegPath")
+          return '<div class="field"><span class="field-name">FFmpeg 路径</span><small>仅可在部署机 config.json 或 FFMPEG_PATH 配置</small></div>';
+        const name = labels[key] || key,
+          id = esc(scope + "-" + path.join("-")),
+          p = esc(path.join("."));
+        if (typeof value === "boolean")
+          return (
+            '<label class="field" for="' +
+            id +
+            '"><span class="field-name">' +
+            esc(name) +
+            '<input id="' +
+            id +
+            '" type="checkbox" data-path="' +
+            p +
+            '" ' +
+            (value ? "checked" : "") +
+            "></span><small>" +
+            p +
+            "</small></label>"
+          );
+        const numeric = typeof value === "number",
+          array = Array.isArray(value),
+          unit = key.endsWith("Ms")
+            ? " · 毫秒"
+            : /probability/i.test(key)
+              ? " · 0–1"
+              : "";
+        return (
+          '<label class="field" for="' +
+          id +
+          '"><span class="field-name">' +
+          esc(name) +
+          "</span>" +
+          (array
+            ? '<textarea id="' +
+              id +
+              '" rows="2" data-type="array" data-path="' +
+              p +
+              '">' +
+              esc(value.join("\n")) +
+              "</textarea>"
+            : '<input id="' +
+              id +
+              '" data-path="' +
+              p +
+              '" type="' +
+              (numeric ? "number" : "text") +
+              '" ' +
+              (numeric ? 'step="any" required' : "") +
+              ' value="' +
+              esc(value) +
+              '">') +
+          "<small>" +
+          p +
+          unit +
+          (array ? " · 每行一个值" : "") +
+          "</small></label>"
+        );
+      }
+      function collect(container) {
+        const patch = Object.create(null);
+        container.querySelectorAll("[data-path]").forEach((el) => {
+          let value =
+            el.type === "checkbox"
+              ? el.checked
+              : el.type === "number"
+                ? el.valueAsNumber
+                : el.dataset.type === "array"
+                  ? el.value
+                      .split("\n")
+                      .map((x) => x.trim())
+                      .filter(Boolean)
+                  : el.value;
+          if (typeof value === "number" && !Number.isFinite(value))
+            throw new Error("请填写有效数值");
+          const path = el.dataset.path.split(".");
+          let node = patch;
+          path.slice(0, -1).forEach((key) => {
+            node[key] ??= Object.create(null);
+            node = node[key];
+          });
+          node[path.at(-1)] = value;
+        });
+        return patch;
+      }
+      function parameterObject() {
+        return parameterGroup === "general"
+          ? Object.fromEntries(
+              Object.entries(parameterConfig).filter(
+                ([key, value]) =>
+                  !Object.hasOwn(groupNames, key) ||
+                  value === null ||
+                  typeof value !== "object",
+              ),
+            )
+          : parameterConfig[parameterGroup] || {};
+      }
+      function renderParameters() {
+        const search = $("parameterSearch").value.trim().toLowerCase();
+        const all = leaves(
+          parameterObject(),
+          parameterGroup === "general" ? [] : [parameterGroup],
+        );
+        const shown = all.filter((f) =>
+          (f.path.join(".") + " " + (labels[f.path.at(-1)] || ""))
+            .toLowerCase()
+            .includes(search),
+        );
+        $("parameterFields").innerHTML =
+          shown.map((f) => field(f, "param")).join("") ||
+          '<p class="empty">没有匹配的参数。</p>';
+        $("parameterGroup").textContent =
+          groupNames[parameterGroup] || parameterGroup;
+        $("parameterCount").textContent = shown.length + " 项参数";
+        $("parameterTabs")
+          .querySelectorAll("button")
+          .forEach((el) =>
+            el.setAttribute(
+              "aria-selected",
+              String(el.dataset.group === parameterGroup),
+            ),
+          );
+        $("parameterState").textContent = "尚未修改";
+      }
+      async function loadParameters() {
+        const d = await api("scheduler/config");
+        parameterConfig = d.config || {};
+        $("parameterTabs").innerHTML = Object.entries(groupNames)
+          .filter(
+            ([key]) =>
+              key === "general" ||
+              (parameterConfig[key] &&
+                typeof parameterConfig[key] === "object"),
+          )
+          .map(
+            ([key, name]) =>
+              '<button type="button" role="tab" data-group="' +
+              key +
+              '">' +
+              name +
+              "</button>",
+          )
+          .join("");
+        renderParameters();
+        const model = await api("dsh/model");
+        $("modelDescription").textContent =
+          model.provider +
+          " / " +
+          model.model +
+          (model.catalogSource === "dsh"
+            ? " · 已读取 DSH 实际模型能力"
+            : " · 使用内置能力清单");
+        $("effort").innerHTML = (model.options || [])
+          .map(
+            (value) =>
+              '<option value="' +
+              esc(value) +
+              '">' +
+              esc(model.labels?.[value]?.name || value) +
+              "</option>",
+          )
+          .join("");
+        $("effort").value = model.reasoningEffort;
+      }
+      let parameterDirty = false;
+      function discardParameters() {
+        if (parameterDirty && !confirm("放弃尚未保存的参数更改？"))
+          return false;
+        parameterDirty = false;
+        return true;
+      }
+      $("parameterTabs").addEventListener("click", (e) => {
+        const el = e.target.closest("[data-group]");
+        if (!el || !discardParameters()) return;
+        parameterGroup = el.dataset.group;
+        renderParameters();
+      });
+      $("parameterSearch").addEventListener("change", () => {
+        if (discardParameters()) renderParameters();
+      });
+      $("parameterFields").addEventListener("input", () => {
+        parameterDirty = true;
+        $("parameterState").textContent = "有未保存的更改";
+      });
+      action("reloadParameters", async () => {
+        if (discardParameters()) await loadParameters();
+      });
+      action(
+        "parametersForm",
+        async () => {
+          if (!parameterConfig) throw new Error("请先成功读取运行参数");
+          const patch = collect($("parameterFields"));
+          const d = await api("scheduler/config", patch);
+          parameterConfig = d.config;
+          parameterDirty = false;
+          renderParameters();
+          notify("本组参数已保存并热更新");
+        },
+        "submit",
+      );
+      action(
+        "effortForm",
+        async () => {
+          await api("dsh/effort", { reasoningEffort: $("effort").value });
+          notify("思考强度已保存，下一条消息生效");
+        },
+        "submit",
+      );
+      window.addEventListener("beforeunload", (e) => {
+        if (parameterDirty) {
+          e.preventDefault();
+          e.returnValue = "";
+        }
+      });
+      async function loadRoles() {
+        const d = await api("roles");
+        roles = d.roles || [];
+        const selected = $("rolePick").value;
+        $("rolePick").innerHTML =
+          '<option value="">新建角色</option>' +
+          roles
+            .map(
+              (name) =>
+                '<option value="' +
+                esc(name) +
+                '">' +
+                esc(name) +
+                (d.current === name ? " · 当前" : "") +
+                "</option>",
+            )
+            .join("");
+        $("rolePick").value = selected;
+      }
+      $("rolePick").addEventListener("change", async () => {
+        const name = $("rolePick").value;
+        try {
+          if (!name) {
+            roleLoaded = "";
+            $("roleName").value = "";
+            $("roleContent").value = "";
+            return;
+          }
+          const d = await api("roles/content?name=" + encodeURIComponent(name));
+          roleLoaded = name;
+          $("roleName").value = name;
+          $("roleContent").value = d.content;
+        } catch (error) {
+          notify(error.message, true);
+        }
+      });
+      action(
+        "roleForm",
+        async () => {
+          const name = $("roleName").value.trim(),
+            content = $("roleContent").value;
+          const existing = roles.includes(name);
+          if (
+            existing &&
+            name !== roleLoaded &&
+            !confirm("覆盖已存在的角色 " + name + "？")
+          )
+            return;
+          const d = await api("roles/" + (existing ? "update" : "create"), {
+            name,
+            content,
+          });
+          roleLoaded = name;
+          await loadRoles();
+          $("rolePick").value = name;
+          notify(
+            "角色已保存" +
+              (d.warnings?.length ? "：" + d.warnings.join("；") : ""),
+          );
+        },
+        "submit",
+      );
+      action("activateRole", async () => {
+        const role = $("rolePick").value;
+        if (!role) throw new Error("请先保存并选择角色");
+        await api("role", { role });
+        notify("当前角色已切换");
+        await loadRoles();
+      });
+      action("clearRole", async () => {
+        await api("role", { role: null });
+        notify("当前角色已清除");
+        await loadRoles();
+      });
+      async function loadMemory() {
+        const key = $("memoryKey").value.trim(),
+          d = await api("memory/long?key=" + encodeURIComponent(key));
+        $("memoryItems").className = "";
+        $("memoryItems").innerHTML =
+          (d.items || [])
+            .map(
+              (item) =>
+                '<div class="memory-item"><button class="danger" data-memory="' +
+                esc(item.id) +
+                '" data-key="' +
+                esc(key) +
+                '">删除</button>' +
+                esc(item.content) +
+                '<small style="display:block;color:var(--muted)">' +
+                esc(item.kind) +
+                "</small></div>",
+            )
+            .join("") || '<div class="empty">这个会话还没有长期记忆。</div>';
+      }
+      action("memoryForm", loadMemory, "submit");
+      $("memoryItems").addEventListener("click", async (e) => {
+        const el = e.target.closest("[data-memory]");
+        if (!el || !confirm("删除这条长期记忆？此操作无法撤销。")) return;
+        el.disabled = true;
+        try {
+          await api("memory/long/delete", {
+            key: el.dataset.key,
+            id: el.dataset.memory,
+            confirm: true,
+          });
+          await loadMemory();
+          notify("记忆已删除");
+        } catch (error) {
+          notify(error.message, true);
+        } finally {
+          el.disabled = false;
+        }
+      });
+      async function loadSettings() {
+        accessLoaded = false;
+        deployment = null;
+        const [access, settings] = await Promise.all([
+          api("whitelist"),
+          api("settings"),
+        ]);
+        $("owner").value = access.ownerQQ || "";
+        for (const [id, group, kind] of [
+          ["allowGroups", "allow", "groups"],
+          ["allowPrivate", "allow", "private"],
+          ["denyGroups", "deny", "groups"],
+          ["denyPrivate", "deny", "private"],
+        ])
+          $(id).value = (access[group]?.[kind] || []).join("\n");
+        if (status) {
+          $("mode").value = status.mode;
+          $("closedPreset").value = status.closedAgentPreset || "";
+        }
+        deployment = settings;
+        const editable = {
+          architecture: {
+            ...settings.running?.architecture,
+            ...settings.configured?.architecture,
+            schedulerV2: {
+              ...settings.running?.architecture?.schedulerV2,
+              ...settings.configured?.architecture?.schedulerV2,
+            },
+          },
+          modes: {
+            engine: {
+              ...settings.running?.modes?.engine,
+              ...settings.configured?.modes?.engine,
+            },
+          },
+          memory: {
+            enabled:
+              settings.configured?.memory?.enabled ??
+              settings.running?.memory?.enabled ??
+              true,
+            learnerPreset:
+              settings.configured?.memory?.learnerPreset ??
+              settings.running?.memory?.learnerPreset ??
+              "qq-chat",
+            terms: {
+              enabled:
+                settings.configured?.memory?.terms?.enabled ??
+                settings.running?.memory?.terms?.enabled ??
+                true,
+              injectMax:
+                settings.configured?.memory?.terms?.injectMax ??
+                settings.running?.memory?.terms?.injectMax ??
+                8,
+            },
+          },
+        };
+        $("deploymentFields").innerHTML = leaves(editable)
+          .map((f) => field(f, "deploy"))
+          .join("");
+        $("deploymentState").textContent = "保存后重启生效";
+        accessLoaded = true;
+      }
+      action(
+        "modeForm",
+        async () => {
+          if (!status) throw new Error("请先刷新运行状态");
+          const d = await api("mode", {
+            mode: $("mode").value,
+            closedAgentPreset: $("closedPreset").value.trim(),
+          });
+          notify(
+            d.dshSynced === false
+              ? "仅本地保存：DSH 同步失败，下次轮询可能回滚"
+              : "全局模式已更新",
+            d.dshSynced === false,
+          );
+          await refresh();
+        },
+        "submit",
+      );
+      function numberList(id) {
+        return $(id)
+          .value.split(/[\s,，]+/)
+          .filter(Boolean)
+          .map((value) => {
+            if (
+              !/^\d+$/.test(value) ||
+              !Number.isSafeInteger(Number(value)) ||
+              Number(value) <= 0
+            )
+              throw new Error("QQ / 群号必须为有效正整数");
+            return Number(value);
+          });
+      }
+      action(
+        "accessForm",
+        async () => {
+          if (!accessLoaded) throw new Error("请先成功读取访问配置");
+          if (
+            !$("owner").value.trim() &&
+            !confirm("清除管理员后将无法通过 QQ 进行管理或审批。继续？")
+          )
+            return;
+          await api("whitelist", {
+            ownerQQ: $("owner").value.trim(),
+            allow: {
+              groups: numberList("allowGroups"),
+              private: numberList("allowPrivate"),
+            },
+            deny: {
+              groups: numberList("denyGroups"),
+              private: numberList("denyPrivate"),
+            },
+          });
+          notify("访问范围已更新");
+          await refresh();
+        },
+        "submit",
+      );
+      action(
+        "deploymentForm",
+        async () => {
+          if (!deployment) throw new Error("请重新读取部署配置");
+          await api("settings", {
+            ...collect($("deploymentFields")),
+            revision: deployment.revision,
+            apply: true,
+          });
+          deployment = null;
+          notify(
+            "配置已校验、备份并保存，重启 Bridge 后生效；再次编辑请重新进入此页面",
+          );
+        },
+        "submit",
+      );
+      action("restart", async () => {
+        if (
+          !confirm(
+            "重启 Bridge 会中断当前连接。只有守护进程管理的实例会自动恢复，继续？",
+          )
+        )
+          return;
+        const d = await api("restart", {});
+        notify(d.message || "已请求重启，请稍后刷新页面");
+      });
+      refresh().catch((error) => notify(error.message, true));
+      let refreshing = false;
+      setInterval(async () => {
+        if (document.hidden || refreshing) return;
+        refreshing = true;
+        try {
+          await refresh();
+        } catch (error) {
+          notify(error.message, true);
+        } finally {
+          refreshing = false;
+        }
+      }, 10000);
+    </script>
+  </body>
+</html>

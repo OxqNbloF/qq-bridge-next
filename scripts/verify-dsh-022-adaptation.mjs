@@ -213,7 +213,7 @@ for (const f of ['src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-
 // ── 4. 语法检查 ──
 // 受限环境里起子进程会失败，那是环境限制不是语法错
 // 这种情况明确记跳过，免得假失败淹掉真失败
-const SYNTAX_FILES = ['src/bridge.js', 'src/app.js', 'src/dsh-client.js', 'src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js', 'src/slang-learner.js', 'src/self-test.js', 'scripts/setup-dsh.mjs'];
+const SYNTAX_FILES = ['src/bridge.js', 'src/app.js', 'src/dsh-client.js', 'src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js', 'src/infra/json-extract.js', 'src/self-test.js', 'scripts/setup-dsh.mjs'];
 {
   const probe = spawnSync(process.execPath, ['--check', path.join(ROOT, 'src/dsh-client.js')], { encoding: 'utf8' });
   if (probe.error?.code === 'EPERM') {

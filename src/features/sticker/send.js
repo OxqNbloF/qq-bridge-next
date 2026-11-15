@@ -13,7 +13,6 @@ export function createStickerSender(b) {
     if (!entry) throw new Error(`找不到表情 ${stickerRef}，请先用 qq_list_stickers 获取有效 id`);
     const url = entry.url;
     if (!url) throw new Error(`表情 ${entry.id} 没有可发送的图片地址`);
-    const [kind, id] = key.split(':');
     const segments = [];
     const replyToMessageId = options.replyToMessageId;
     const atUserId = options.atUserId;
@@ -36,47 +35,13 @@ export function createStickerSender(b) {
       throw new Error(`表情 ${entry.id} 的图片下载失败（QQ CDN 网络异常或地址已失效）：${error?.message ?? error}`);
     }
     segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64') } });
-    const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
-    const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
-    const httpUrl = String(b.cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    // 与文本共用会话发送链，保证先文字后表情
-    let sendResolve;
-    let sendReject;
-    const sendResult = new Promise((resolve, reject) => {
-      sendResolve = resolve;
-      sendReject = reject;
-    });
-    // 必须局部声明，否则严格模式 ReferenceError
-    let sendChain = b.sendChainFor(key).then(async () => {
-      try {
-        // 发表情前随机停顿
-        await b.sleep(b.randInt(800, 2000));
-        assertSendAllowed();
-        const res = await b.fetch(`${httpUrl}/${action}`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(b.cfg.snowluma?.accessToken ? { authorization: `Bearer ${b.cfg.snowluma.accessToken}` } : {})
-          },
-          body: JSON.stringify(params),
-          signal: AbortSignal.timeout(15000)
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
-          const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址）' : '';
-          throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
-        }
-        sendResolve(body.data);
-      } catch (error) {
-        sendReject(error);
-      }
-    });
-    b.rememberSendChain(key, sendChain);
-    const data = await sendResult;
-    b.archiveOutgoing(key, `[表情:${entry.id}]`, data, {
-      replyTo: replyToMessageId === undefined || replyToMessageId === null || String(replyToMessageId).trim() === ''
-        ? null : String(replyToMessageId).trim(),
-      media: [{ kind: 'image', subType: 'sticker', emojiId: entry.id, summary: entry.desc || entry.localNote }],
+    const data = await b.enqueueOutbound(key, {
+      segments, ai: true, channel: 'tool', group: 'sticker', explicitAllow: true, assertSendAllowed,
+      beforeDelay: b.randInt(800, 2000), archiveText: `[表情:${entry.id}]`,
+      archiveOptions: {
+        replyTo: replyToMessageId === undefined || replyToMessageId === null || String(replyToMessageId).trim() === '' ? null : String(replyToMessageId).trim(),
+        media: [{ kind: 'image', subType: 'sticker', emojiId: entry.id, summary: entry.desc || entry.localNote }],
+      },
     });
     // 更新本地使用统计
     const updated = markStickerUsed(b.stickerEntries, entry.id, 'sticker');

@@ -1,13 +1,15 @@
 // 决定每个聊天用哪个模式、哪个预设
 // 模式和预设这些状态存在 bridge.js，这里通过 b 去读写
 // 也负责作废不再需要的会话，并清掉相关记录
+import { resolveMode } from './mode-router.js';
+import { getModeAdapter } from '../modes/registry.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { unwrap } from '../dsh-client.js';
-import { normalizeOwnerQQ, allowed } from '../policy/access.js';
+import { normalizeOwnerQQ } from '../policy/access.js';
+import { conversationGate } from '../gate/decide.js';
 import { normalizeModeInput, settingFromDshNamespace } from '../policy/mode.js';
 import { readJsonSafe } from '../store/fs-atomic.js';
-import { SessionRouter, migrateLegacyMode, canonicalConversationKey } from '../core/session-router.mjs';
 
 // 建一个管模式、预设和会话作废的小工具组
 export function createConversationPolicy(b) {
@@ -75,40 +77,20 @@ export function createConversationPolicy(b) {
     }
   }
 
-  // ── 判断每个聊天处在哪个模式 ──
-  // 是否只有管理员私聊能用，交给一个小工具判断，这里不自己拼字符串
-  let routerCache = { id: '', router: null };
-  // 按模式和主人 QQ 取出判断小工具，换过才重建
-  function sessionRouterFor(mode, ownerQQ) {
-    const id = `${mode}|${ownerQQ ?? ''}`;
-    if (routerCache.id !== id) {
-      let router = null;
-      try {
-        const { state } = migrateLegacyMode({ mode, ownerQQ });
-        router = new SessionRouter({ ownerQQ, defaultMode: mode, state });
-      } catch (error) {
-        // 建不出来时谁都不算特殊模式，宁可全拒绝
-        b.log(`会话策略路由初始化失败，closed-agent 一律拒绝：${error?.message ?? error}`);
-      }
-      routerCache = { id, router };
-    }
-    return routerCache.router;
+  const conversationEpochs = new Map();
+  const conversationEpoch = (key) => conversationEpochs.get(key) ?? 0;
+  function resolveConversationMode(key, mode = b.currentMode, cfg = b.cfg) {
+    return resolveMode(key, { globalMode: mode, defaults: cfg.modes?.defaults, overrides: b.listConversationOverrides?.().conversations, ownerQQ: cfg.ownerQQ, enabled: cfg.modes?.engine });
   }
-
-  /** 取这个聊天实际所在的模式；不是管理员私聊就返回 null */
-  function modeForKey(key, mode = b.currentMode, cfg = b.cfg) {
-    if (mode !== 'closed-agent') return mode;
-    const router = sessionRouterFor(mode, cfg.ownerQQ);
-    // 只认标准写法的 key，带前导 0 的和状态表里的对不上
-    return router && canonicalConversationKey(key) === key && router.modeFor(key) === 'closed-agent' ? 'closed-agent' : null;
-  }
+  function modeForKey(key, mode = b.currentMode, cfg = b.cfg) { return resolveConversationMode(key, mode, cfg).mode; }
 
   /** 当前模式是否允许该会话进入 */
-  function modeAllowed(key, kind, id, cfg, mode) {
-    // 封闭 agent 模式：仅 owner 私聊（边界由 session-router 判定）
-    if (mode === 'closed-agent') return modeForKey(key, mode, cfg) === 'closed-agent';
-    // chat / reserved / reserved2（仿真模式，暂同 chat 白名单）
-    return allowed(kind, id, cfg);
+  function modeAllowed(key, kind, id, cfg, mode, { listed = false } = {}) {
+    // 封闭 agent 模式：仅 owner 私聊（边界由 session-router 判定）；其余模式查会话白名单
+    mode = modeForKey(key, mode, cfg);
+    if (!mode) return false;
+    const closedAgentOk = mode === 'closed-agent';
+    return conversationGate({ kind, id, cfg, mode, closedAgentOk, listed }) === null;
   }
 
   /**
@@ -131,6 +113,11 @@ export function createConversationPolicy(b) {
 
   /** 当前模式下的会话预设；返回 undefined 表示「该模式下没有可安全使用的 preset」 */
   function modePreset(key, mode, cfg) {
+    const resolved = resolveConversationMode(key, mode, cfg);
+    mode = resolved.mode;
+    if (!mode) return undefined;
+    const explicit = resolved.source === 'conversation' ? b.listConversationOverrides?.().conversations[key] : null;
+    if (explicit?.preset) return resolvePresetName(explicit.preset, { strict: getModeAdapter(mode).toolPolicy.allowed !== 'full' }) || undefined;
     if (mode === 'closed-agent') {
       const chosen = resolvePresetName(b.closedAgentPreset);
       if (!chosen) b.log('⚠️ 无法确定 closed-agent 的 preset（DSH preset 清单未知），将按 DSH 默认 preset 建会话');
@@ -151,7 +138,10 @@ export function createConversationPolicy(b) {
 
   // 给这个聊天的模式、预设和主人信息算一个指纹
   function sessionPolicy(key) {
-    return JSON.stringify([b.currentMode, modePreset(key, b.currentMode, b.cfg) ?? '', b.currentMode === 'closed-agent' ? b.cfg.ownerQQ : null]);
+    const mode = modeForKey(key);
+    const override = resolveConversationMode(key).source === 'conversation' ? b.listConversationOverrides?.().conversations[key] : null;
+    const base = [mode, modePreset(key, b.currentMode, b.cfg) ?? '', mode === 'closed-agent' ? b.cfg.ownerQQ : null];
+    return JSON.stringify(override?.model || override?.reasoningEffort ? [...base, override.model ?? '', override.reasoningEffort ?? ''] : base);
   }
 
   // 这个聊天还是不是当前该用的那个会话
@@ -179,7 +169,6 @@ export function createConversationPolicy(b) {
     b.lastSendFailed.delete(key);
     b.activeWaits.delete(key);
     b.queuedHintAt.delete(key);
-    b.slangSubmitTimes.delete(key);
     b.feedbackTimes.delete(key);
     b.turnNoticeTimes.delete(key);
     b.wakeConfigMissCount.delete(key);
@@ -188,13 +177,40 @@ export function createConversationPolicy(b) {
   }
 
   // 作废一个聊天：删掉映射并清掉它的所有记录
-  function retireSession(key) {
+  function retireSession(key, { preserveQueue = false, preserveMemorySources = false } = {}) {
+    conversationEpochs.set(key, conversationEpoch(key) + 1);
+    b.resetOutbound?.(key);
+    if (!preserveQueue) {
+      b.cancelScheduledTurns?.(key, 'session-retired');
+      b.drainPromptQueue(key, '会话策略已变化');
+      b.sessionPromises?.delete(key);
+      b.sessionCreationPolicies?.delete(key);
+    }
     const sessionId = b.state.sessions[key];
     delete b.state.sessions[key];
     delete b.state.sessionPolicies[key];
     // 有没有建过会话都要清，否则会一直留着一堆旧记录
     forgetConversationCaches(key);
-    if (!sessionId) return;
+    b.cancelSocialTimers(key, { skipEngineCancel: preserveQueue });
+    b.clearSocialV2Timers(key, { skipEngineCancel: preserveQueue });
+    b.social.states.delete(key);
+    b.social.silentContext.delete(key);
+    const st = b.socialV2.conversations.get(key);
+    if (st) {
+      // 保留旧 token 在脱敏集合中，但撤销它的调用权限。
+      st.agentToken = crypto.randomBytes(24).toString('hex');
+      b.rememberAgentToken(key, st.agentToken);
+      st.bootstrapSent = false;
+      st.modelSeenSeqs = new Set();
+      // 保留队列时仍可能投递带旧历史的预构建 prompt，不能提前忘掉来源。
+      if (!preserveQueue && !preserveMemorySources) {
+        st.modelSourceQqs = [];
+        st.modelSourcesIncomplete = false;
+      }
+    }
+    b.disarmPendingWakeLease(key);
+    b.pendingWakeKeys.delete(key);
+    if (!sessionId) { b.saveState(); b.saveSocialV2State(); return; }
     b.reverse.delete(sessionId);
     b.forgetDeliveryCursor(sessionId);
     b.collectors.delete(sessionId);
@@ -210,20 +226,8 @@ export function createConversationPolicy(b) {
     // 作废的会话要退订，不然每次重连都会重新拉一遍历史，越积越慢
     b.api.events.forget?.(sessionId);
     const entry = b.pending.get(key);
-    if (entry) { b.clearTimeout(entry.timer); void b.cancelPendingEntry(entry).catch(() => {}); }
+    if (entry) { b.clearTimeout(entry.timer); void b.cancelPendingEntry({ ...entry, key }).catch(() => {}); }
     b.pending.delete(key);
-    b.clearSocialV2Timers(key);
-    b.cancelSocialTimers(key);
-    b.disarmPendingWakeLease(key);
-    b.pendingWakeKeys.delete(key);
-    const st = b.socialV2.conversations.get(key);
-    if (st) {
-      // 保留旧 token 在脱敏集合中，但撤销它的调用权限。
-      st.agentToken = crypto.randomBytes(24).toString('hex');
-      b.rememberAgentToken(key, st.agentToken);
-      st.bootstrapSent = false;
-      st.modelSeenSeqs = new Set();
-    }
     b.saveState();
     b.saveSocialV2State();
     stopRetiredSessionWork(sessionId, key);
@@ -234,10 +238,13 @@ export function createConversationPolicy(b) {
   function reconcileSessionPolicies() {
     // 预设清单还没拿到时不要作废，不然一次网络抖动会把所有聊天全清掉
     if (b.dshPresetIds.length === 0) return;
+    for (const [key, policy] of b.sessionCreationPolicies ?? []) {
+      if (policy !== sessionPolicy(key)) retireSession(key);
+    }
     for (const [key, sessionId] of Object.entries(b.state.sessions)) {
       if (!isCurrentSession(key, sessionId)) retireSession(key);
     }
   }
 
-  return { refreshMode, refreshPresetList, modeForKey, modeAllowed, resolvePresetName, modePreset, isSessionAllowedInCurrentMode, sessionPolicy, isCurrentSession, stopRetiredSessionWork, forgetConversationCaches, retireSession, reconcileSessionPolicies };
+  return { modeAdapterForKey: (key) => getModeAdapter(modeForKey(key)), resolveConversationMode, conversationEpoch, refreshMode, refreshPresetList, modeForKey, modeAllowed, resolvePresetName, modePreset, isSessionAllowedInCurrentMode, sessionPolicy, isCurrentSession, stopRetiredSessionWork, forgetConversationCaches, retireSession, reconcileSessionPolicies };
 }

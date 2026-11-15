@@ -1,24 +1,25 @@
-// 看图端点与统一发送端点 /api/send/group|private|reply
+// 看图端点与统一发送端点 /api/agent/send/group|private|reply
+import { rememberModelSources } from '../../../memory/model-sources.js';
+import { modelMessageVisible } from '../../../gate/model-visibility.js';
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import { unquoteJsonString } from '../../../policy/audit.js';
-import { SENSITIVE_RE } from '../../../sensitive.js';
 
 // 注册看图与发送路由
 export function createToolSendRoutes(b) {
   return async function toolSendRoutes(rq) {
     // 图片/表情查询端点
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/images/message') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/images/message') {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       const messageId = String(rq.url.searchParams.get('messageId') ?? '').trim();
       const agentToken = String(rq.req.headers['x-agent-token'] ?? '').trim();
       const keyMatch = /^(group|private):(\d+)$/.exec(key);
       if (!keyMatch) { rq.sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
       if (!messageId) { rq.sendJson({ ok: false, error: 'messageId 不能为空' }, 400); return; }
-      if (b.currentMode === 'reserved2' && !agentToken) {
+      if (b.modeForKey(key) === 'reserved2' && !agentToken) {
         rq.sendJson({ ok: false, error: 'reserved2 模式读取图片必须携带 agent token' }, 403);
         return;
       }
-      if (b.currentMode === 'chat' || b.currentMode === 'reserved') {
+      if (!rq.toolPolicy && ['chat', 'reserved'].includes(b.modeForKey(key) ?? b.currentMode)) {
         rq.sendJson({ ok: false, error: '一代 chat/reserved 模式图片已自动内联，按需图片工具仅 reserved2 模式可用' }, 403);
         return;
       }
@@ -40,6 +41,17 @@ export function createToolSendRoutes(b) {
         rq.sendJson({ ok: false, error: '工具未启用：qq_get_message_images' }, 403);
         return;
       }
+      const st = b.getSocialV2State(key);
+      const epoch = b.conversationEpoch?.(key);
+      const mode = b.modeForKey(key);
+      const findSource = () => [...(st.recentMessages ?? []), ...(st.unread ?? []),
+        ...(b.social?.recentMessages?.get(key) ?? [])].find(m => m &&
+          (String(m.messageId ?? '') === messageId || String(m.seq ?? '') === messageId));
+      const source = findSource();
+      if ((source && !modelMessageVisible(b, key, source)) || (!source && b.cfg.architecture?.gateV2)) {
+        rq.sendJson({ ok: false, error: '成员策略不允许读取图片来源或来源已不在可验证窗口内' }, 403);
+        return;
+      }
       const media = b.findMessageMedia(key, messageId);
       if (!media.length) {
         rq.sendJson({ ok: true, messageId, media: [], images: [], note: '该消息没有可读取的图片/表情元数据' });
@@ -47,6 +59,20 @@ export function createToolSendRoutes(b) {
       }
       try {
         const images = await b.fetchMediaData(media);
+        const currentSource = findSource();
+        if (b.getSocialV2State(key) !== st || epoch !== b.conversationEpoch?.(key) ||
+            mode !== b.modeForKey(key) ||
+            !b.modeAllowed(key, kind, id, b.cfg, b.currentMode) ||
+            (agentToken && (!b.agentTokenOk(key, agentToken) || !b.v2ToolEnabled('getImages') ||
+              (b.modeForKey(key) === 'reserved2' && (b.socialV2.paused || b.cfg.socialV2?.enabled === false)))) ||
+            (source && !modelMessageVisible(b, key, source)) ||
+            (currentSource && !modelMessageVisible(b, key, currentSource)) ||
+            (!currentSource && b.cfg.architecture?.gateV2)) {
+          rq.sendJson({ ok: false, error: '等待期间图片来源已不可读取，请重新读取会话' }, 403);
+          return;
+        }
+        // 图片结果没有 userId；在曝光前显式保留其来源，不能依赖 HTTP wrapper。
+        rememberModelSources(b, key, [source, currentSource]);
         rq.sendJson({ ok: true, messageId, media, images });
       } catch (error) {
         b.log(`图片查询失败 ${key} ${messageId}: ${error?.message ?? error}`);
@@ -56,11 +82,11 @@ export function createToolSendRoutes(b) {
     }
 
     // 统一发送端点
-    if (rq.req.method === 'POST' && (rq.url.pathname === '/api/send/group' || rq.url.pathname === '/api/send/private' || rq.url.pathname === '/api/send/reply')) {
+    if (rq.req.method === 'POST' && (rq.url.pathname === '/api/agent/send/group' || rq.url.pathname === '/api/agent/send/private' || rq.url.pathname === '/api/agent/send/reply')) {
       const body = await rq.readBody();
-      const token = String(body.token ?? '').trim();
-      const isPrivate = rq.url.pathname === '/api/send/private';
-      const isReply = rq.url.pathname === '/api/send/reply';
+      const token = String((rq.toolPolicy || rq.req.headers['x-agent-token'] !== undefined ? rq.req.headers['x-agent-token'] : body.token) ?? '').trim();
+      const isPrivate = rq.url.pathname === '/api/agent/send/private';
+      const isReply = rq.url.pathname === '/api/agent/send/reply';
       const targetId = isPrivate ? String(body.userId ?? '').trim() : String(body.groupId ?? '').trim();
       const message = unquoteJsonString(String(body.message ?? '').trim());
       // 三个端点都可带引用 id，是否引用由下游判断
@@ -68,22 +94,18 @@ export function createToolSendRoutes(b) {
       const atUserId = body.atUserId ?? null;
       const key = isPrivate ? `private:${targetId}` : `group:${targetId}`;
       // 发送工具只限 closed-agent 与 reserved2，防被塞东西越权
-      if (b.currentMode === 'chat' || b.currentMode === 'reserved') {
+      if (!rq.toolPolicy && ['chat', 'reserved'].includes(b.modeForKey(key) ?? b.currentMode)) {
         rq.sendJson({ ok: false, error: '发送工具仅限 closed-agent / reserved2 模式使用' }, 403);
         return;
       }
-      if (b.socialV2.paused && token) {
+      if (b.socialV2.paused && token && (!rq.toolPolicy || b.modeForKey(key) === 'reserved2')) {
         rq.sendJson({ ok: false, error: 'AI 已暂停，当前不允许执行发送工具' }, 403);
         return;
       }
       if (!targetId || !message) { rq.sendJson({ ok: false, error: '目标 id 和 message 不能为空' }, 400); return; }
-      if (isPrivate && atUserId) { rq.sendJson({ ok: false, error: '私聊不需要 @' }, 400); return; }
-      if (isReply && (replyToMessageId === undefined || replyToMessageId === null || String(replyToMessageId).trim() === '')) {
-        rq.sendJson({ ok: false, error: 'replyToMessageId 不能为空' }, 400);
-        return;
-      }
-      if (b.currentMode === 'reserved2' && !token) { rq.sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
-      if (token && !b.agentTokenOk(key, token)) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+      if (b.modeForKey(key) === 'reserved2' && !token) { rq.sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
+      if ((rq.toolPolicy || token) && !b.agentTokenOk(key, token)) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+      if (body.token !== undefined && String(body.token).trim() !== token) { rq.sendJson({ ok: false, error: '请求体与请求头令牌不一致' }, 403); return; }
       const flag = isPrivate ? 'sendPrivate' : (isReply ? 'reply' : 'sendGroup');
       if (token && !b.v2ToolEnabled(flag)) { rq.sendJson({ ok: false, error: `工具未启用：${flag}` }, 403); return; }
       if (b.shouldBlockSilentReply(key)) {
@@ -98,41 +120,10 @@ export function createToolSendRoutes(b) {
         rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403);
         return;
       }
-      if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
-        rq.sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
-        return;
-      }
-      let quotedInfo = null;
-      let actualReplyToMessageId = replyToMessageId;
-      if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
-        const stForReply = b.getSocialV2State(key);
-        const resolved = await b.resolveReplyTargetV2(stForReply, kind, id, String(replyToMessageId).trim());
-        if (!resolved) {
-          rq.sendJson({ ok: false, error: '无法解析被引用消息，请确认 message id 正确且属于当前会话（可用 qq_get_message_detail 查看）' }, 400);
-          return;
-        }
-        quotedInfo = resolved.info;
-        actualReplyToMessageId = resolved.messageId;
-      }
-      const sendCfg = b.cfg.socialV2?.send ?? {};
-      const maxChars = Math.max(1, Number(sendCfg.maxMessageChars) || 500);
-      if (message.length > maxChars) { rq.sendJson({ ok: false, error: `单条消息不能超过 ${maxChars} 字` }, 400); return; }
-      if (SENSITIVE_RE.test(message)) { rq.sendJson({ ok: false, error: '消息含敏感信息，已阻止发送' }, 403); return; }
-      // st/now 须在 try 外声明，catch 要用它们回滚额度
       const st = b.getSocialV2State(key);
       const now = Date.now();
       try {
-        const maxPerMinute = Number(sendCfg.maxSendPerMinute) || 0;
-        const maxPerHour = Number(sendCfg.maxSendPerHour) || 0;
-        const recentMinute = (st.sendTimes || []).filter((t) => now - t < 60000).length;
-        const recentHour = (st.sendTimes || []).filter((t) => now - t < 3600000).length;
-        if ((maxPerMinute > 0 && recentMinute + 1 > maxPerMinute) || (maxPerHour > 0 && recentHour + 1 > maxPerHour)) {
-          rq.sendJson({ ok: false, error: '发送频率超限，请稍后再试' }, 429);
-          return;
-        }
-        st.sendTimes.push(now);
-        if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
-        const sentMessages = await b.sendMessagesV2(key, [message], [], actualReplyToMessageId, atUserId);
+        const sentMessages = await b.sendMessagesV2(key, [message], [], replyToMessageId, atUserId, flag, { resolveReply: true, requireReply: isReply });
         b.recordSentMessagesV2(key, sentMessages);
         st.lastAiReplyAt = now;
         st.lastActionAt = now;
@@ -141,22 +132,14 @@ export function createToolSendRoutes(b) {
         b.log(`[send] ${rq.url.pathname} ${key}: 成功 ${sentMessages.length}/1 条`);
         b.appendActivity(`${key} [send] 成功 ${sentMessages.length}/1 条：${message.slice(0, 80)}`);
         if (sentMessages.length > 0) b.scheduleReplyCheckV2(key);
-        rq.sendJson({ ok: true, key, sent: sentMessages.length, failed: sentMessages.length ? 0 : 1, quoted: quotedInfo });
+        rq.sendJson({ ok: true, key, sent: sentMessages.length, failed: sentMessages.length ? 0 : 1, quoted: sentMessages.quoted });
       } catch (error) {
         if (error?.sent?.length) {
           b.recordSentMessagesV2(key, error.sent);
           b.log(`[send] ${rq.url.pathname} ${key} 部分成功 ${error.sent.length}/1 条，已记录已发消息`);
         }
-        // 回滚未发出消息预占的额度，防假 429
-        const sentCount = Array.isArray(error?.sent) ? error.sent.length : 0;
-        const failedCount = Math.max(0, 1 - sentCount);
-        for (let i = 0; i < failedCount; i++) {
-          const idx = st.sendTimes.indexOf(now);
-          if (idx >= 0) st.sendTimes.splice(idx, 1);
-        }
-        if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
         b.saveSocialV2State();
-        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, error?.statusCode ?? 500);
       }
       return;
     }

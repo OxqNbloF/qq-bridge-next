@@ -19,8 +19,6 @@ export const DEFAULT_SOCIAL_V2_TOOLS = Object.freeze({
   setWakeConfig: true,
   markRead: true,
   memory: true,
-  slangQuery: true,
-  slangSubmit: true,
   getImages: true,
   getForwardMsg: true,
   sendPoke: true,
@@ -37,5 +35,8 @@ export const DEFAULT_SOCIAL_V2_TOOLS = Object.freeze({
 /** 与默认值浅合并，非对象输入视为未配置 */
 export function resolveSocialV2Tools(configured) {
   const own = configured && typeof configured === 'object' && !Array.isArray(configured) ? configured : {};
-  return { ...DEFAULT_SOCIAL_V2_TOOLS, ...own };
+  const next = { ...DEFAULT_SOCIAL_V2_TOOLS, ...own };
+  delete next.slangQuery;
+  delete next.slangSubmit;
+  return next;
 }
