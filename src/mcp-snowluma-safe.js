@@ -477,7 +477,7 @@ server.tool(
 // 群成员列表用 v2 形态（key + token），两种模式都可用
 server.tool(
   'qq_get_group_members',
-  '列出指定群的成员（只读）：QQ 号、昵称、群名片。等特定的人、要 @ 某个人、或需要确认谁在群里时用；QQ 号取返回里的 userId。只返回白名单群，且只读取桥接允许的会话。',
+  '列出指定群的成员（只读）：成员标识（memberRef，开启 QQ 暴露时为 userId）、昵称、群名片。等特定的人、要 @/拍一拍某个人、或需要确认谁在群里时用；目标参数可直接传返回里的 memberRef（member-*）。只返回白名单群，且只读取桥接允许的会话。',
   {
     key: z.string().describe('会话 key，格式 group:群号'),
     token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】；所有模式必填，包括 closed-agent）'),
@@ -697,7 +697,7 @@ server.tool(
       triggers: z.object({
         atMention: z.boolean().optional().describe('被 @ 或引用自己时唤醒'),
         nameMention: z.boolean().optional().describe('被叫名字/昵称时唤醒'),
-        speakerIds: z.array(z.union([z.number(), z.string()])).max(20).optional().describe('指定群友 QQ 号数组：这些群友中任意一位发言时唤醒（可选，最多 20 个，不设置则不启用；私聊不适用，设置会被桥接清除；可从 qq_get_active_members / qq_get_group_members / qq_get_message_detail 的 userId/user_id 获取）'),
+        speakerIds: z.array(z.union([z.number(), z.string()])).max(20).optional().describe('指定群友数组：这些群友中任意一位发言时唤醒（可选，最多 20 个，不设置则不启用；私聊不适用，设置会被桥接清除；可传 qq_get_active_members / qq_get_group_members / qq_get_message_detail 返回的 memberRef（member-* 标识）或 QQ 号）'),
         keywords: z.union([z.array(z.union([z.string(), z.number()])), z.string()]).optional().describe('出现任意关键词时唤醒；可传数组或逗号/顿号/空白分隔的字符串'),
         question: z.boolean().optional().describe('被直接提问/点名挑战时唤醒'),
         poke: z.boolean().optional().describe('有人拍一拍时唤醒（群聊包括拍你和拍别人，私聊为对方拍你）'),
@@ -772,7 +772,7 @@ server.tool(
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
     messages: z.union([z.string(), z.array(z.string()).min(1)]).describe('要发送的内容：字符串=一条；数组=分多条'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-    atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中用于点名某个人；与引用二选一即可，不要滥用）'),
+    atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员标识（可传最近消息 / qq_get_active_members / qq_get_group_members / qq_get_message_detail 返回的 memberRef（member-* 标识）或 QQ 号；与引用二选一即可，不要滥用）'),
     gapMode: z.enum(['auto', 'fixed', 'byLength']).optional().describe('auto=桥接随机；fixed=固定间隔；byLength=按字数计算'),
     gapMs: z.number().optional().describe('fixed 模式下的统一间隔（毫秒）'),
     gaps: z.array(z.number()).optional().describe('fixed 模式下逐条间隔（长度=条数-1）')
@@ -813,11 +813,11 @@ server.tool(
 if (cfg.socialV2?.tools?.sendPoke !== false) {
   server.tool(
     'qq_send_poke',
-    '发送 QQ 拍一拍（群聊/私聊）。适合用“戳一下”代替一句废话、提醒对方、自然回应别人的拍一拍，或偶尔主动戳一下正在聊的人/熟人——这样更拟真；但别频繁，真人不会一直戳人。群聊必须传 targetUserId（要拍的群友 QQ 号，可从 qq_get_active_members / qq_get_message_detail 的 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。reserved2 下必须携带会话令牌 token，发送会受桥接白名单与发送频率限制。',
+    '发送 QQ 拍一拍（群聊/私聊）。适合用“戳一下”代替一句废话、提醒对方、自然回应别人的拍一拍，或偶尔主动戳一下正在聊的人/熟人——这样更拟真；但别频繁，真人不会一直戳人。群聊必须传 targetUserId（可从最近消息 / qq_get_active_members / qq_get_group_members / qq_get_message_detail 返回的 memberRef（member-* 标识）或 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。reserved2 下必须携带会话令牌 token，发送会受桥接白名单与发送频率限制。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      targetUserId: z.union([z.number(), z.string()]).optional().describe('要拍的群友 QQ 号（群聊必填；私聊可选）')
+      targetUserId: z.union([z.number(), z.string()]).optional().describe('要拍的群友 memberRef（member-* 标识）或 QQ 号（群聊必填；私聊可选）')
     },
     async ({ key, token, targetUserId }) => {
       try {
@@ -952,7 +952,7 @@ server.tool(
       meaning: z.string().optional().describe('term 的含义，词汇记忆必填'),
       usage: z.string().optional().describe('词汇用法'),
       example: z.string().optional().describe('词汇示例'),
-      target: z.string().optional().describe('memberImpression 的 QQ 或无歧义称呼；alias 必须使用明确 QQ'),
+      target: z.string().optional().describe('memberImpression 的 member-* 标识、无歧义称呼或 QQ；alias 必须使用明确 QQ'),
       participants: z.array(z.string()).optional().describe('activeTopic 的参与者列表'),
       pendingQuestion: z.string().optional().describe('activeTopic 里还没问出口的问题'),
       motivation: z.string().optional().describe('pendingThought 的动机，如 curiosity/sociability'),
@@ -1146,7 +1146,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
       stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）'),
       replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-      atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中可选，私聊不可用）')
+      atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 memberRef（member-* 标识）或 QQ 号（群聊中可选，私聊不可用）')
     },
     async ({ key, token, stickerId, replyToMessageId, atUserId }) => {
       try {

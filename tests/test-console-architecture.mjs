@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import { adaptLegacyConfig, migrateLegacyConfig } from '../src/infra/legacy-config.js';
 import { loadConfig } from '../src/infra/config.js';
+import { lightMemoryToPoolItems } from '../src/memory/light.js';
 import { resolveApiPath } from '../src/policy/api-paths.js';
 
 async function boot(mode = 'reserved2', config = {}, files = {}) {
@@ -269,5 +270,64 @@ test('P8 控制台保存写入新配置键，保留未知字段和新键优先�
     assert.equal(file.memory.archive.customArchive, true);
     assert.deepEqual(file.custom, { retained: true });
     assert.equal(migrateLegacyConfig(file).changes.length, 0);
+  } finally { await f.close(); }
+});
+
+test('控制台删除 ongoing 与 impression 同步清理实时状态和未认领池缓存，后续保存不再复活', async () => {
+  const unclaimedItems = lightMemoryToPoolItems('group:789', {
+    activeTopics: [{ text: '未认领待删话题', lastMentionAt: Date.now() }],
+    pendingThoughts: [],
+    memberImpressions: { '33333': { displayName: '小李', traits: ['喜欢猫'], interactionCount: 1, lastSeenAt: Date.now() } },
+  });
+  const files = {
+    'state/pool/items.jsonl': `${unclaimedItems.map((it) => JSON.stringify(it)).join('\n')}\n`,
+  };
+  const f = await boot('reserved2', { allow: { groups: ['456', '789'], private: ['123'] } }, files);
+  try {
+    const st = f.h.getSocialV2State('group:456');
+    const now = Date.now();
+    st.activeTopics = [{ text: '待删话题', lastMentionAt: now }, { text: '保留话题', lastMentionAt: now }];
+    st.pendingThoughts = [{ text: '待删念头', createdAt: now, expiresAt: now + 60000 }];
+    st.memberImpressions = { '22222': { displayName: '小王', traits: ['爱喝茶'], interactionCount: 2, lastSeenAt: now } };
+    f.h.saveSocialV2State(true);
+
+    const liveItems = f.h.memoryPool.query().filter((it) => it.conv_id === 'group:456');
+    const topicItem = liveItems.find((it) => it.kind === 'ongoing' && it.subtype === 'topic' && it.content === '待删话题');
+    const thoughtItem = liveItems.find((it) => it.kind === 'ongoing' && it.subtype === 'thought' && it.content === '待删念头');
+    const impressionItem = liveItems.find((it) => it.kind === 'impression' && it.subject_uid === '22222');
+    assert.ok(topicItem && thoughtItem && impressionItem);
+
+    for (const id of [topicItem.id, thoughtItem.id, impressionItem.id]) {
+      const del = await f.call('/api/console/memory/long/delete', { key: 'group:456', id, confirm: true });
+      assert.equal(del.status, 200, JSON.stringify(del));
+    }
+    assert.deepEqual(st.activeTopics.map((t) => t.text), ['保留话题']);
+    assert.deepEqual(st.pendingThoughts, []);
+    assert.equal(st.memberImpressions['22222'], undefined);
+    const promptRes = await f.call('/api/agent/prompt?key=group:456', null, true);
+    assert.equal(promptRes.status, 200);
+    const promptMem = String(promptRes.body.memory ?? '');
+    assert.ok(!promptMem.includes('待删话题') && !promptMem.includes('待删念头') && !promptMem.includes('爱喝茶'));
+    assert.ok(promptMem.includes('保留话题'));
+
+    const unclaimedPool = f.h.memoryPool.query().filter((it) => it.conv_id === 'group:789');
+    assert.equal(unclaimedPool.length, 2);
+    for (const it of unclaimedPool) {
+      const del = await f.call('/api/console/memory/long/delete', { key: 'group:789', id: it.id, confirm: true });
+      assert.equal(del.status, 200, JSON.stringify(del));
+    }
+
+    // 触发新一轮写盘（saveLightMemory），确认已删除的活跃条与未认领缓存条目都不复活
+    st.lastActionAt = now + 1;
+    f.h.saveSocialV2State(true);
+    assert.deepEqual(
+      f.h.memoryPool.query().filter((it) => it.conv_id === 'group:456').map((it) => it.content),
+      ['保留话题'],
+    );
+    assert.deepEqual(f.h.memoryPool.query().filter((it) => it.conv_id === 'group:789'), []);
+
+    const claimed = f.h.getSocialV2State('group:789');
+    assert.deepEqual(claimed.activeTopics, []);
+    assert.deepEqual(claimed.memberImpressions, {});
   } finally { await f.close(); }
 });

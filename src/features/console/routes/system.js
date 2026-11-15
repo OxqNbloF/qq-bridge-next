@@ -41,8 +41,10 @@ export function createConsoleSystemRoutes(b) {
       const body = await rq.readBody();
       const key = canonicalV2Key(body.key);
       if (!key || typeof body.id !== 'string' || body.confirm !== true) { rq.sendJson({ ok: false, error: '需要会话 key、条目 id 和删除确认' }, 400); return; }
-      if (!b.memoryPool.query().some((item) => item.id === body.id && item.conv_id === key)) { rq.sendJson({ ok: false, error: '记忆条目不存在' }, 404); return; }
+      const target = b.memoryPool.query().find((item) => item.id === body.id && item.conv_id === key);
+      if (!target) { rq.sendJson({ ok: false, error: '记忆条目不存在' }, 404); return; }
       b.memoryPool.update((items) => items.filter((item) => item.id !== body.id || item.conv_id !== key));
+      b.removeLightMemoryItem?.(key, target);
       b.memoryIndex.drop(key);
       b.removeMemoryView({ convId: key });
       b.appendActivity(`控制台删除记忆 ${key} ${body.id}`);

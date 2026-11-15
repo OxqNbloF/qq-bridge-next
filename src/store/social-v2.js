@@ -8,7 +8,7 @@ import { truncateText, truncateTextTail } from '../md-to-plain.js';
 import { canonicalV2Key } from '../policy/access.js';
 import { readJsonSafe, atomicWriteJson } from '../store/fs-atomic.js';
 import { migrateDocument, stampSchema } from '../store/schema.js';
-import { LIGHT_MEMORY_KINDS, lightMemoryToPoolItems, lightMemoryFromPoolItems, normalizeMemberImpressions } from '../memory/light.js';
+import { LIGHT_MEMORY_KINDS, lightMemoryToPoolItems, lightMemoryFromPoolItems, normalizeMemberImpressions, removeLightMemoryEntry } from '../memory/light.js';
 
 // 创建二代会话状态存储
 export function createSocialV2Store(b) {
@@ -51,6 +51,28 @@ export function createSocialV2Store(b) {
   function forgetLightMemory(key) {
     if (key === undefined) poolMemory.clear();
     else poolMemory.delete(key);
+  }
+  /** 同步删除实时状态和未认领池缓存里的轻量记忆条目，防止提示词残留和下次写池复活 */
+  function removeLightMemoryItem(key, target) {
+    const canonical = canonicalV2Key(key);
+    if (!canonical || !target || typeof target !== 'object') return false;
+    let changedPool = false;
+    let changedLive = false;
+    const pooled = poolMemory.get(canonical);
+    if (pooled && removeLightMemoryEntry(pooled, canonical, target)) {
+      changedPool = true;
+      if (!pooled.activeTopics.length && !pooled.pendingThoughts.length && !Object.keys(pooled.memberImpressions).length) {
+        poolMemory.delete(canonical);
+      }
+    }
+    const live = b.socialV2.conversations.get(canonical);
+    if (live && removeLightMemoryEntry(live, canonical, target)) changedLive = true;
+    if (!changedPool && !changedLive) return false;
+    savedMemorySignature = null;
+    savedMemoryFull = null;
+    if (changedLive) saveSocialV2State(true);
+    else if (!b.socialV2.storeReadOnlyReason) saveLightMemory(true);
+    return true;
   }
   // 有变化才写池，返回池里是否已有当前记忆；false 时须留 json 副本
   // 简化处理：崩溃会丢最近一次刷新，数据多了再改成追加写
@@ -501,5 +523,5 @@ export function createSocialV2Store(b) {
   }
 
   return {
-    seenForwardIds, seenMessageIds, getSocialV2State, loadSocialV2State, saveSocialV2State, flushSocialV2State, markSocialV2Dirty, forgetLightMemory, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2 };
+    seenForwardIds, seenMessageIds, getSocialV2State, loadSocialV2State, saveSocialV2State, flushSocialV2State, markSocialV2Dirty, forgetLightMemory, removeLightMemoryItem, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2 };
 }

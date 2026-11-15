@@ -1,4 +1,5 @@
 import { modelMemberVisible, modelMessageVisible } from '../../../gate/model-visibility.js';
+import { resolveMemberTarget } from '../../../identity/target.js';
 import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
 // 二代仿真内部 Agent API：配置、状态、未读、唤醒、发送
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
@@ -555,11 +556,21 @@ export function createToolSocialV2Routes(b) {
       if (input.triggers && typeof input.triggers === 'object' && 'poke' in input.triggers) {
         next.triggers.poke = input.triggers.poke === true;
       }
-      // 指定成员只留正整数 QQ 号，非法值清空，防绕过防永眠
-      next.triggers.speakerIds = b.normalizeSpeakerIdsV2(next.triggers.speakerIds);
-      // 私聊不适用指定成员触发，清除
+      // 指定成员只留正整数 QQ 号（支持传入 memberRef / 唯一称呼转换），非法值清空，防绕过防永眠
       if (key.startsWith('private:')) {
         next.triggers.speakerIds = [];
+      } else {
+        const rawSpeakers = Array.isArray(next.triggers.speakerIds)
+          ? next.triggers.speakerIds
+          : String(next.triggers.speakerIds ?? '').split(/[,，\s]+/);
+        const resolvedSpeakers = [];
+        for (const item of rawSpeakers) {
+          const raw = String(item ?? '').trim();
+          if (!raw) continue;
+          if (/^[1-9]\d*$/.test(raw)) { resolvedSpeakers.push(raw); continue; }
+          try { resolvedSpeakers.push(await resolveMemberTarget(b, key, raw, { fieldName: 'speakerIds', state: st })); } catch {}
+        }
+        next.triggers.speakerIds = b.normalizeSpeakerIdsV2(resolvedSpeakers);
       }
       // 防永眠：无限期潜水须至少有一个触发条件
       if (next.infinite) {
@@ -894,12 +905,16 @@ export function createToolSocialV2Routes(b) {
           blocked.statusCode = 403;
           throw blocked;
         }
-        const pokeText = kind === 'group' ? `[拍一拍] 我拍了拍 ${targetUserId}` : '[拍一拍] 我拍了拍你';
-        await b.enqueueOutbound(key, { ai: true, channel: 'tool', assertSendAllowed: sendGuard, rateScope: 'tool', pokeTarget: targetUserId,
+        const pokeIntent = {
+          ai: true, channel: 'tool', assertSendAllowed: sendGuard, rateScope: 'tool', pokeTarget: targetUserId,
           action: kind === 'group' ? 'group_poke' : 'send_poke',
-          params: kind === 'group' ? { group_id: id, user_id: Number(targetUserId) } : { user_id: id },
-          archiveText: pokeText, archiveOptions: { media: [{ kind: 'poke', summary: String(targetUserId || id) }] },
-        });
+          params: kind === 'group' ? { group_id: id, user_id: /^[1-9]\d*$/.test(targetUserId) ? Number(targetUserId) : 0 } : { user_id: id },
+          archiveText: kind === 'group' ? `[拍一拍] 我拍了拍 ${targetUserId}` : '[拍一拍] 我拍了拍你',
+          archiveOptions: { media: [{ kind: 'poke', summary: String(targetUserId || id) }] },
+        };
+        await b.enqueueOutbound(key, pokeIntent);
+        const resolvedTarget = pokeIntent.pokeTarget || targetUserId;
+        const pokeText = kind === 'group' ? `[拍一拍] 我拍了拍 ${resolvedTarget}` : '[拍一拍] 我拍了拍你';
         st.lastActionAt = now;
         st.lastAiReplyAt = now;
         st.wakeConfig.noActionCount = 0;
@@ -918,7 +933,7 @@ export function createToolSocialV2Routes(b) {
           hasMedia: false,
           forwardIds: [],
           hasForward: false,
-          poke: { targetId: targetUserId || String(id), targetIsSelf: false, groupId: kind === 'group' ? String(id) : null },
+          poke: { targetId: resolvedTarget || String(id), targetIsSelf: false, groupId: kind === 'group' ? String(id) : null },
           time: Date.now()
         });
         const recentLimit = Number(b.cfg.socialV2?.context?.recentLimit) || 100;
@@ -927,9 +942,9 @@ export function createToolSocialV2Routes(b) {
         st.preSleepWaitObservedAt = 0;
         st.preSleepWaitAccumMs = 0;
         b.saveSocialV2State();
-        b.log(`[reserved2] 工具拍一拍 ${key}${kind === 'group' ? ' -> ' + targetUserId : ''}`);
-        b.appendActivity(`${key} [reserved2] 工具拍一拍${kind === 'group' ? ' -> ' + targetUserId : ''}`);
-        rq.sendJson({ ok: true, key, kind, targetUserId: targetUserId || String(id) });
+        b.log(`[reserved2] 工具拍一拍 ${key}${kind === 'group' ? ' -> ' + resolvedTarget : ''}`);
+        b.appendActivity(`${key} [reserved2] 工具拍一拍${kind === 'group' ? ' -> ' + resolvedTarget : ''}`);
+        rq.sendJson({ ok: true, key, kind, targetUserId: resolvedTarget || String(id) });
       } catch (error) {
         b.log(`[reserved2] 工具拍一拍失败 ${key}:`, error?.message ?? error);
         rq.sendJson({ ok: false, error: `拍一拍失败：${error?.message ?? error}` }, error?.statusCode ?? 500);

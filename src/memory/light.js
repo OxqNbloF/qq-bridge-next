@@ -1,5 +1,6 @@
 // 轻量记忆和记忆池条目互相转换；没有来源的先当成待确认
 import crypto from 'node:crypto';
+import { memberRef } from '../identity/project-core.js';
 import { boundedSources, mergeSources } from './sources.js';
 
 export const LIGHT_MEMORY_KINDS = ['ongoing', 'impression'];
@@ -76,4 +77,42 @@ export function normalizeMemberImpressions(key, values, resolve) {
   return out;
 }
 
-export const impressionRef = id => `member-${crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 16)}`;
+export const impressionRef = memberRef;
+
+/** 从单个轻量记忆对象（conversations 条目或未认领池缓存）删除匹配池条目的内容 */
+export function removeLightMemoryEntry(mem, key, target) {
+  if (!mem || typeof mem !== 'object' || !target || typeof target !== 'object') return false;
+  let changed = false;
+  if (target.kind === 'ongoing') {
+    const matchTopic = !target.subtype || target.subtype === 'topic';
+    const matchThought = !target.subtype || target.subtype === 'thought';
+    if (matchTopic && Array.isArray(mem.activeTopics)) {
+      const next = mem.activeTopics.filter((t) => {
+        if (!t || !t.text) return true;
+        return !(itemId('ongoing', key, 'topic', t.text) === target.id || (typeof target.content === 'string' && String(t.text) === target.content));
+      });
+      if (next.length !== mem.activeTopics.length) {
+        mem.activeTopics = next;
+        changed = true;
+      }
+    }
+    if (matchThought && Array.isArray(mem.pendingThoughts)) {
+      const next = mem.pendingThoughts.filter((t) => {
+        if (!t || !t.text) return true;
+        return !(itemId('ongoing', key, 'thought', t.text) === target.id || (typeof target.content === 'string' && String(t.text) === target.content));
+      });
+      if (next.length !== mem.pendingThoughts.length) {
+        mem.pendingThoughts = next;
+        changed = true;
+      }
+    }
+  } else if (target.kind === 'impression' && mem.memberImpressions && typeof mem.memberImpressions === 'object') {
+    for (const name of Object.keys(mem.memberImpressions)) {
+      if (itemId('impression', key, 'member', name) === target.id || (typeof target.subject_uid === 'string' && name === target.subject_uid)) {
+        delete mem.memberImpressions[name];
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}

@@ -1,5 +1,6 @@
 // 表情发送、备注与收藏
 import { canonicalV2Key } from '../../policy/access.js';
+import { resolveMemberTarget } from '../../identity/target.js';
 import { findSticker, markStickerUsed, stickerForScope, applyStickerNote } from '../../sticker-lib.js';
 
 // 创建表情发送函数，b 为桥接访问器
@@ -23,8 +24,8 @@ export function createStickerSender(b) {
       segments.push({ type: 'reply', data: { id: rid } });
     }
     if (atUserId !== undefined && atUserId !== null && String(atUserId).trim() !== '') {
-      const at = String(atUserId).trim();
-      if (!/^\d+$/.test(at)) throw new Error('atUserId 必须是正整数 QQ 号，且不能为 all');
+      if (String(canonicalV2Key(key) ?? key).startsWith('private:')) throw Object.assign(new Error('私聊不需要 @'), { statusCode: 400 });
+      const at = await resolveMemberTarget(b, key, atUserId, { fieldName: 'atUserId' });
       segments.push({ type: 'at', data: { qq: at } });
     }
     // 在桥接内安全下载，不能把 URL 交给网关重抓

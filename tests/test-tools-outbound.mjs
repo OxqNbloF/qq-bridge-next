@@ -13,6 +13,7 @@ import { createModeDispatch } from '../src/conversations/mode-dispatch.js';
 import { buildEnvelope } from '../src/pipeline/envelope.js';
 import { createSendTimeline } from '../src/features/send/timeline.js';
 import { createOutbound } from '../src/outbound/router.js';
+import { memberRef } from '../src/identity/project-core.js';
 import { prepareOutboundItems } from '../src/outbound/validation.js';
 
 const enabled = { chat: true, 'closed-agent': true, reserved: true, reserved2: true };
@@ -1090,4 +1091,92 @@ test('C-05 / R-04：分条中途收紧字数仅拒绝超长段、放行后续短
     }
     void st;
   } finally { await h.close(); }
+});
+
+test('隐藏 QQ 时读接口返回可用 memberRef，拍一拍/@/表情/@与唤醒指定人均可解析并失败关闭', async () => {
+  const f = await fixture('reserved2', {
+    architecture: { gateV2: true },
+    identity: { exposeQqInPrompt: false },
+    socialV2: { sticker: { enabled: true }, tools: { sendSticker: true, setWakeConfig: true } },
+  }, {
+    safeFetchBuffer: async () => ({ buffer: Buffer.from('fixture-image') }),
+  });
+  try {
+    const policy = JSON.stringify({
+      schemaVersion: 1,
+      groups: { [f.key]: { mode: 'all', rules: { 789: { flags: { respond: true, converse: true, context: false, memory: true } } } } },
+    });
+    fs.writeFileSync(f.h.MEMBER_POLICY_FILE, policy);
+    f.h.loadMemberPolicy();
+    f.h.observeIdentity({ qq: '22222', group: '456', nickname: '小王' });
+    f.h.observeIdentity({ qq: '23456', group: '456', nickname: '群友' });
+    const membersData = [
+      { user_id: 22222, nickname: '小王', card: '唯一王哥', role: 'member' },
+      { user_id: 23456, nickname: '未发言成员', card: '', role: 'member' },
+      { user_id: 33333, nickname: '重名', card: '重名', role: 'member' },
+      { user_id: 44444, nickname: '重名', card: '重名', role: 'member' },
+      { user_id: 789, nickname: '隐藏成员', card: '隐藏成员', role: 'member' },
+    ];
+    const origRequest = f.h.bot.request.bind(f.h.bot);
+    f.h.bot.request = async (action, params) => (action === 'get_group_member_list' ? membersData : origRequest(action, params));
+    f.h.bot.getGroupMemberList = async () => membersData;
+    f.h.bot.getMessage = async () => ({
+      message_id: 9001, group_id: 456, sender: { user_id: 22222, nickname: '小王' }, message: [{ type: 'text', data: { text: '在吗' } }],
+    });
+    const st = f.h.getSocialV2State(f.key);
+    st.recentMessages = [{ seq: 1, messageId: '9001', sender: '小王', userId: '22222', text: '在吗', time: Date.now() }];
+    st.unread = [...st.recentMessages];
+
+    const groupMembers = await f.call(`/api/agent/group-members?key=${f.key}`);
+    const activeMembers = await f.call(`/api/agent/active-members?key=${f.key}`);
+    const detail = await f.call(`/api/agent/message-detail?key=${f.key}&messageId=9001`);
+    const recent = await f.call(`/api/agent/recent?key=${f.key}`);
+    const unread = await f.call(`/api/agent/unread?key=${f.key}`);
+    for (const res of [groupMembers, activeMembers, detail, recent, unread]) {
+      assert.equal(res.status, 200, JSON.stringify(res));
+      assert.doesNotMatch(JSON.stringify(res.body), /22222|23456|userId|user_id/);
+    }
+    const ref22222 = memberRef('22222');
+    const ref23456 = memberRef('23456');
+    assert.equal(activeMembers.body.members[0].memberRef, ref22222);
+    assert.equal(detail.body.info.memberRef, ref22222);
+    assert.equal(recent.body.messages[0].memberRef, ref22222);
+    assert.equal(unread.body.messages[0].memberRef, ref22222);
+    const listedRefs = new Map(groupMembers.body.members.map((m) => [m.nickname, m.memberRef]));
+    assert.equal(listedRefs.get('未发言成员'), ref23456);
+    assert.equal(listedRefs.get('隐藏成员'), undefined);
+
+    const pokes = [];
+    f.h.bot.raw = async (action, params) => { pokes.push({ action, params }); return {}; };
+    const pokeRes = await f.call('/api/agent/send-poke', { key: f.key, targetUserId: ref23456 });
+    assert.equal(pokeRes.status, 200, JSON.stringify(pokeRes));
+    assert.doesNotMatch(JSON.stringify(pokeRes.body), /23456/);
+    assert.deepEqual(pokes, [{ action: 'group_poke', params: { group_id: 456, user_id: 23456 } }]);
+
+    const msgRes = await f.call('/api/agent/send-message', { key: f.key, messages: ['叫一下'], atUserId: ref22222 });
+    assert.equal(msgRes.status, 200, JSON.stringify(msgRes));
+    const groupRes = await f.call('/api/agent/send/group', { key: f.key, groupId: '456', message: '点名', atUserId: '未发言成员' });
+    assert.equal(groupRes.status, 200, JSON.stringify(groupRes));
+    const sentAt = f.h.calls.http.filter((call) => call.url.endsWith('/send_group_msg')).map((call) => call.body.message[0].data.qq);
+    assert.deepEqual(sentAt, ['22222', '23456']);
+
+    const stickerRes = await f.call('/api/agent/send-sticker', { key: f.key, stickerId: 'fixture-sticker', atUserId: ref22222 });
+    assert.equal(stickerRes.status, 200, JSON.stringify(stickerRes));
+    const stickerMsg = f.h.calls.http.filter((call) => call.url.endsWith('/send_group_msg')).at(-1).body.message;
+    assert.deepEqual(stickerMsg[0], { type: 'at', data: { qq: '22222' } });
+
+    const wakeRes = await f.call('/api/agent/wake-config', {
+      key: f.key,
+      config: { mode: 'active', infinite: false, triggers: { speakerIds: [ref22222, ref23456] } },
+    });
+    assert.equal(wakeRes.status, 200, JSON.stringify(wakeRes));
+    assert.deepEqual(st.wakeConfig.triggers.speakerIds, ['22222', '23456']);
+
+    // 失败关闭：未知 member-*、其他会话 member-*、context=false 隐藏成员、重名昵称、通用称呼都拒绝
+    for (const badTarget of [memberRef('999999'), memberRef('789'), '重名', '群友']) {
+      assert.equal((await f.call('/api/agent/send-poke', { key: f.key, targetUserId: badTarget })).status, 400, `poke ${badTarget}`);
+      assert.equal((await f.call('/api/agent/send-message', { key: f.key, messages: ['hi'], atUserId: badTarget })).status, 400, `msg ${badTarget}`);
+      assert.equal((await f.call('/api/agent/send-sticker', { key: f.key, stickerId: 'fixture-sticker', atUserId: badTarget })).status, 400, `sticker ${badTarget}`);
+    }
+  } finally { await f.close(); }
 });

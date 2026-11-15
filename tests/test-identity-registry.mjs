@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { emptyIdentityDocument, recordObservedAlias, redactIdentityAliases, recordUnresolvedAlias, resolveAlias, upsertObservedAlias, validateIdentityDocument } from '../src/identity/registry.js';
+import { memberRef } from '../src/identity/project-core.js';
 import { createIdentityStore } from '../src/identity/store.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
@@ -408,5 +409,17 @@ test('HTTP 与 MCP 投影共用共享核心且掩码语义一致', async () => {
   assert.equal(httpOut.messages[0].conv, 'group:456', '会话 key 原样保留');
   assert.equal(httpOut.messages[0].user_id, undefined);
   assert.equal(httpOut.messages[0].sender.user_id, undefined);
+  assert.equal(httpOut.messages[0].memberRef, memberRef('22222'));
+  assert.equal(httpOut.messages[0].sender.memberRef, memberRef('22222'));
   assert.equal(httpOut.messages[0].text, '@王哥 QQ:群友 请看 王哥 和 123');
+  // 第二次投影时即使 hex digest 中碰巧出现已知 QQ 片段，memberRef 也必须原样保留
+  const digestDigits = memberRef('22222').match(/[1-9]\d{0,5}/)?.[0];
+  if (digestDigits) {
+    const doubleProjected = createIdentityProjection({
+      cfg,
+      identitySnapshot: () => ({ people: { [digestDigits]: { displayName: '冲突QQ' } } }),
+      identityDisplayName: (id) => (id === digestDigits ? '冲突QQ' : null),
+    }).projectForModel(httpOut);
+    assert.equal(doubleProjected.messages[0].memberRef, memberRef('22222'));
+  }
 });

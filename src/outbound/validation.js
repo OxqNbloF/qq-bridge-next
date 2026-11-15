@@ -1,4 +1,5 @@
 import { splitForQQ } from '../md-to-plain.js';
+import { resolveMemberTarget } from '../identity/target.js';
 
 export function planOutboundTimeline(b, text, socialCfg) {
     const src = String(text ?? '').replace(/\r\n/g, '\n').trim();
@@ -72,12 +73,21 @@ export async function validateOutboundReferences(b, key, intent, items) {
   const [kind, id] = key.split(':');
   let quoted = null;
   if (intent.pokeTarget !== undefined) {
-    const target = String(intent.pokeTarget);
-    if (kind === 'group' && !target) throw outboundError('群聊拍一拍必须指定 targetUserId（要拍的群友 QQ 号）');
-    if (target && !/^[1-9]\d*$/.test(target)) throw outboundError('targetUserId 必须是正整数 QQ 号');
+    const rawTarget = String(intent.pokeTarget).trim();
+    if (kind === 'group' && !rawTarget) throw outboundError('群聊拍一拍必须指定 targetUserId（要拍的群友 memberRef 或 QQ 号）');
+    const target = rawTarget ? await resolveMemberTarget(b, key, rawTarget, { fieldName: 'targetUserId' }) : '';
     if (kind === 'group') {
       const error = await b.assertGroupMember(Number(id), target);
       if (error) throw outboundError(error, 403);
+    }
+    intent.pokeTarget = target;
+    for (const item of items) {
+      item.pokeTarget = target;
+      if (intent.action === 'group_poke') {
+        item.params = { group_id: Number(id), user_id: Number(target) };
+        item.archiveText = `[拍一拍] 我拍了拍 ${target}`;
+        item.archiveOptions = { ...(item.archiveOptions ?? {}), media: [{ kind: 'poke', summary: target }] };
+      }
     }
   }
   for (const item of items) {
@@ -87,14 +97,14 @@ export async function validateOutboundReferences(b, key, intent, items) {
     if (intent.noReply && reply) throw outboundError('qq_send_burst 暂不支持引用，请使用 qq_reply');
     if (reply && !/^-?[1-9]\d*$/.test(reply)) throw outboundError('replyToMessageId 必须是非零整数（消息 id 可能为负数）');
     if (at && kind === 'private') throw outboundError('私聊不需要 @');
-    if (at && !/^[1-9]\d*$/.test(at)) throw outboundError('atUserId 必须是正整数 QQ 号，且不能为 all');
+    const resolvedAt = at ? await resolveMemberTarget(b, key, at, { fieldName: 'atUserId' }) : '';
     if (reply && intent.resolveReply) {
       const resolved = await b.resolveReplyTargetV2(b.getSocialV2State(key), kind, Number(id), reply);
       if (!resolved) throw outboundError('无法解析被引用消息，请确认 message id 正确且属于当前会话（可用 qq_get_message_detail 查看）');
       item.replyTo = resolved.messageId;
       quoted = resolved.info;
     } else if (reply) item.replyTo = reply;
-    if (at) item.at = at;
+    if (resolvedAt) item.at = resolvedAt;
   }
   return quoted;
 }

@@ -3,6 +3,8 @@
 // 没匹配到就返回 ROUTE_NEXT，交给后面的路由接着找
 // 登录和权限在 bridge.js 前面都查过了，这里不重复也不绕过
 import { modelMemberVisible, modelMessageVisible } from '../../../gate/model-visibility.js';
+import { MEMBER_REF_RE } from '../../../identity/project-core.js';
+import { resolveMemberTarget } from '../../../identity/target.js';
 import { impressionRef } from '../../../memory/light.js';
 import { assertMemoryWriteAllowed } from '../../../memory/write-guard.js';
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
@@ -32,7 +34,7 @@ export function createToolContextRoutes(b) {
     }
   }
 
-  function impressionTarget(key, text, state) {
+  async function impressionTarget(key, text, state) {
     const target = String(text ?? '').trim();
     if (/^[1-9]\d{0,15}$/.test(target)) return target;
     const resolved = b.resolveIdentityAlias({ conv: key, group: key.startsWith('group:') ? key.slice(6) : null, text: target });
@@ -40,7 +42,11 @@ export function createToolContextRoutes(b) {
     const hits = Object.entries(state?.memberImpressions ?? {}).filter(([id, item]) => id === target || impressionRef(id) === target || item.displayName === target).map(([id]) => id);
     if (resolved?.qq) hits.push(resolved.qq);
     const unique = [...new Set(hits)];
-    return unique.length === 1 ? unique[0] : null;
+    if (unique.length === 1) return unique[0];
+    if (!unique.length && MEMBER_REF_RE.test(target)) {
+      return await resolveMemberTarget(b, key, target, { fieldName: 'target', state, allowDisplayName: false }).catch(() => null);
+    }
+    return null;
   }
   return async function toolContextRoutes(rq) {
     if (['/api/agent/memory', '/api/agent/memory-append', '/api/agent/memory-remove', '/api/agent/memory-clear'].includes(rq.url.pathname)) {
@@ -448,9 +454,10 @@ export function createToolContextRoutes(b) {
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('memory')) { rq.sendJson({ ok: false, error: '工具未启用：qq_memory_append' }, 403); return; }
       if (category === 'memberImpression') {
-        const qq = impressionTarget(key, extra.target, b.getSocialV2State(key));
-        if (!qq) { rq.sendJson({ ok: false, error: '群友称呼无法唯一解析，请指定 QQ' }, 400); return; }
-        extra.targetName = b.identityDisplayName(qq, key.startsWith('group:') ? key.slice(6) : null) || (/^[1-9]\d*$/.test(String(extra.target)) ? '群友' : String(extra.target));
+        const rawTarget = String(extra.target ?? '').trim();
+        const qq = await impressionTarget(key, extra.target, b.getSocialV2State(key));
+        if (!qq) { rq.sendJson({ ok: false, error: '群友称呼无法唯一解析，请指定 member-* 标识或 QQ' }, 400); return; }
+        extra.targetName = b.identityDisplayName(qq, key.startsWith('group:') ? key.slice(6) : null) || (/^[1-9]\d*$/.test(rawTarget) || MEMBER_REF_RE.test(rawTarget) ? '群友' : rawTarget);
         extra.target = qq;
       }
       const st = b.getSocialV2State(key);
@@ -501,8 +508,8 @@ export function createToolContextRoutes(b) {
         if (cleanNewExtra.motivation !== undefined) st.pendingThoughts[idx].motivation = String(cleanNewExtra.motivation).slice(0, 50);
         if (cleanNewExtra.expiresAtMs !== undefined) st.pendingThoughts[idx].expiresAt = Date.now() + Math.max(0, Number(cleanNewExtra.expiresAtMs) || 0);
       } else if (category === 'memberImpression' && st.memberImpressions && typeof st.memberImpressions === 'object') {
-        const oldTarget = impressionTarget(key, target, st);
-        if (!oldTarget) { rq.sendJson({ ok: false, error: '找不到唯一的群友印象，请指定 QQ' }, 404); return; }
+        const oldTarget = await impressionTarget(key, target, st);
+        if (!oldTarget) { rq.sendJson({ ok: false, error: '找不到唯一的群友印象，请指定 member-* 标识或 QQ' }, 404); return; }
         if (oldTarget.startsWith('legacy:')) { rq.sendJson({ ok: false, error: '未解析的历史印象只读，请指定 QQ 重新记录' }, 400); return; }
         if (['__proto__', 'constructor', 'prototype'].includes(oldTarget)) { rq.sendJson({ ok: false, error: '非法的群友名字' }, 400); return; }
         assertMemoryWriteAllowed(b, key, { state: st, targetQq: oldTarget });
@@ -513,7 +520,7 @@ export function createToolContextRoutes(b) {
           return;
         }
         const im = st.memberImpressions[oldTarget];
-        const newTarget = cleanNewExtra.target ? impressionTarget(key, cleanNewExtra.target, st) : oldTarget;
+        const newTarget = cleanNewExtra.target ? await impressionTarget(key, cleanNewExtra.target, st) : oldTarget;
         if (newTarget !== oldTarget) { rq.sendJson({ ok: false, error: '印象不能改变所属 QQ，请移除再添加' }, 400); return; }
         if (!newTarget || ['__proto__', 'constructor', 'prototype'].includes(newTarget)) { rq.sendJson({ ok: false, error: '非法的群友名字' }, 400); return; }
         im.sourceMessageIds = [];
@@ -588,7 +595,7 @@ export function createToolContextRoutes(b) {
       } else if (category === 'pendingThought' && Array.isArray(st.pendingThoughts)) {
         st.pendingThoughts = st.pendingThoughts.filter((t) => String(t?.text ?? '') !== content);
       } else if (category === 'memberImpression' && st.memberImpressions && typeof st.memberImpressions === 'object') {
-        const resolved = impressionTarget(key, target, st);
+        const resolved = await impressionTarget(key, target, st);
         if (!resolved || !Object.hasOwn(st.memberImpressions, resolved)) { rq.sendJson({ ok: false, error: '找不到唯一的群友印象' }, 404); return; }
         delete st.memberImpressions[resolved];
       }
