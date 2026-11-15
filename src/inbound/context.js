@@ -5,7 +5,7 @@ import { segmentsToText } from './normalize.js';
 export function createInboundContext({ getBot, log }) {
   // 群成员名片缓存，供 @ 识别用
   const groupMemberNameCache = new Map(); // `groupId:userId` -> { name, ts }
-  const GROUP_MEMBER_NAME_TTL_MS = 5 * 60 * 1000;
+  const GROUP_MEMBER_NAME_TTL_MS = 24 * 60 * 60 * 1000;
   // 清理过期的群名片缓存
   function pruneGroupMemberNameCache() {
     const now = Date.now();

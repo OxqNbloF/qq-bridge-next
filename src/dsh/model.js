@@ -26,8 +26,10 @@ export function createDshModel(b) {
     const selectionEpoch = b.modelSelectionEpoch;
     if (modelAppliedSessions.get(sessionId) === selectionEpoch) return 'applied';
     const provider = String(b.cfg.dsh?.provider || 'deepseek-official');
-    const model = String(b.cfg.dsh?.model || 'deepseek-flash');
-    const configuredEffort = String(b.cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    const key = b.reverse?.get(sessionId);
+    const override = key && b.resolveConversationMode?.(key).source === 'conversation' ? b.listConversationOverrides().conversations[key] : null;
+    const model = String(override?.model || b.cfg.dsh?.model || 'deepseek-flash');
+    const configuredEffort = String(override?.reasoningEffort || b.cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
     const effort = configuredEffort === REASONING_EFFORT_NONE ? '' : configuredEffort;
     let lastError = null;
     // 先带 reasoningEffort 选模型，被拒再去掉 effort 重试

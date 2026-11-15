@@ -11,6 +11,6 @@
   ],
   "allowPaths": [
     "docs/guides/VOICE.md",
-    "scripts/console-ui-"
+    "tests/"
   ]
 }

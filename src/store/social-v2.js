@@ -1,13 +1,14 @@
 // 二代仿真会话状态的读写与消息入账
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { sanitizeForwardId } from '../forward.js';
 import { sanitizeMediaSummary } from '../inbound/normalize.js';
 import { truncateText, truncateTextTail } from '../md-to-plain.js';
 import { canonicalV2Key } from '../policy/access.js';
 import { readJsonSafe, atomicWriteJson } from '../store/fs-atomic.js';
 import { migrateDocument, stampSchema } from '../store/schema.js';
-import { LIGHT_MEMORY_KINDS, lightMemoryToPoolItems, lightMemoryFromPoolItems } from '../memory/light.js';
+import { LIGHT_MEMORY_KINDS, lightMemoryToPoolItems, lightMemoryFromPoolItems, normalizeMemberImpressions, removeLightMemoryEntry } from '../memory/light.js';
 
 // 创建二代会话状态存储
 export function createSocialV2Store(b) {
@@ -36,11 +37,42 @@ export function createSocialV2Store(b) {
     if (!mem) return;
     poolMemory.delete(key);
     Object.assign(st, mem);
+    normalizeImpressions(key, st);
+  }
+  function normalizeImpressions(key, st) {
+    const next = normalizeMemberImpressions(key, st.memberImpressions, name => b.resolveIdentityAlias({ conv: key, group: key.startsWith('group:') ? key.slice(6) : null, text: name }));
+    if (JSON.stringify(next) === JSON.stringify(st.memberImpressions)) return;
+    for (const file of [b.SOCIAL_V2_FILE, path.join(path.dirname(b.SOCIAL_V2_FILE), 'pool', 'items.jsonl')]) {
+      if (fs.existsSync(file) && !fs.existsSync(file + '.bak-identity-memory')) fs.copyFileSync(file, file + '.bak-identity-memory', fs.constants.COPYFILE_EXCL);
+    }
+    st.memberImpressions = next;
   }
   /** 会话重置时丢掉未认领的池记忆（不传 key 丢全部） */
   function forgetLightMemory(key) {
     if (key === undefined) poolMemory.clear();
     else poolMemory.delete(key);
+  }
+  /** 同步删除实时状态和未认领池缓存里的轻量记忆条目，防止提示词残留和下次写池复活 */
+  function removeLightMemoryItem(key, target) {
+    const canonical = canonicalV2Key(key);
+    if (!canonical || !target || typeof target !== 'object') return false;
+    let changedPool = false;
+    let changedLive = false;
+    const pooled = poolMemory.get(canonical);
+    if (pooled && removeLightMemoryEntry(pooled, canonical, target)) {
+      changedPool = true;
+      if (!pooled.activeTopics.length && !pooled.pendingThoughts.length && !Object.keys(pooled.memberImpressions).length) {
+        poolMemory.delete(canonical);
+      }
+    }
+    const live = b.socialV2.conversations.get(canonical);
+    if (live && removeLightMemoryEntry(live, canonical, target)) changedLive = true;
+    if (!changedPool && !changedLive) return false;
+    savedMemorySignature = null;
+    savedMemoryFull = null;
+    if (changedLive) saveSocialV2State(true);
+    else if (!b.socialV2.storeReadOnlyReason) saveLightMemory(true);
+    return true;
   }
   // 有变化才写池，返回池里是否已有当前记忆；false 时须留 json 副本
   // 简化处理：崩溃会丢最近一次刷新，数据多了再改成追加写
@@ -89,11 +121,12 @@ export function createSocialV2Store(b) {
         wakeTimes: [],
         sendTimes: [],
         stickerCollectTimes: [],
-        pendingWakeTimer: null,
-        sleepTimer: null,
-        replyCheckTimer: null,
-        proactiveTimer: null,
-        rateLimitRetryTimer: null,
+        ...(b.cfg.architecture?.schedulerV2?.reserved2 === true || b.cfg.modes?.engine?.reserved2 === true ? {} : {
+          pendingWakeTimer: null, sleepTimer: null, replyCheckTimer: null, proactiveTimer: null, rateLimitRetryTimer: null,
+        }),
+        ...(b.cfg.architecture?.schedulerV2?.reserved2 === true || b.cfg.modes?.engine?.reserved2 === true ? {} : {
+          pendingWakeTimer: null, sleepTimer: null, replyCheckTimer: null, proactiveTimer: null, rateLimitRetryTimer: null,
+        }),
         lastIncomingAt: 0,
         preSleepWaitSatisfiedAt: 0,
         preSleepWaitObservedAt: 0,
@@ -101,6 +134,8 @@ export function createSocialV2Store(b) {
         lastUnreadSeq: 0,
         lastReadThroughSeq: 0,
         modelSeenSeqs: new Set(),
+        modelSourceQqs: [],
+        modelSourcesIncomplete: Boolean(b.state?.sessions?.[key]),
         activeTopics: [],
         pendingThoughts: [],
         memberImpressions: {}
@@ -167,10 +202,12 @@ export function createSocialV2Store(b) {
             wakeTimes: Array.isArray(val.wakeTimes) ? val.wakeTimes : [],
             sendTimes: Array.isArray(val.sendTimes) ? val.sendTimes : [],
             stickerCollectTimes: Array.isArray(val.stickerCollectTimes) ? val.stickerCollectTimes : [],
-            pendingWakeTimer: null,
-            sleepTimer: null,
-            replyCheckTimer: null,
-            proactiveTimer: null,
+            ...(b.cfg.architecture?.schedulerV2?.reserved2 === true || b.cfg.modes?.engine?.reserved2 === true ? {} : {
+              pendingWakeTimer: null, sleepTimer: null, replyCheckTimer: null, proactiveTimer: null,
+            }),
+            ...(b.cfg.architecture?.schedulerV2?.reserved2 === true || b.cfg.modes?.engine?.reserved2 === true ? {} : {
+              pendingWakeTimer: null, sleepTimer: null, replyCheckTimer: null, proactiveTimer: null,
+            }),
             lastIncomingAt: Number(val.lastIncomingAt) || 0,
             preSleepWaitSatisfiedAt: Number(val.preSleepWaitSatisfiedAt) || 0,
             preSleepWaitObservedAt: Number(val.preSleepWaitObservedAt) || 0,
@@ -180,6 +217,9 @@ export function createSocialV2Store(b) {
               ? Math.min(val.lastReadThroughSeq, Number(val.lastUnreadSeq) || 0) : 0,
             modelSeenSeqs: new Set(),
             activeTopics: Array.isArray(val.activeTopics) ? val.activeTopics : [],
+            modelSourceQqs: Array.isArray(val.modelSourceQqs) ? [...new Set(val.modelSourceQqs.filter(qq => /^[1-9]\d{0,15}$/.test(String(qq))).map(String))] : [],
+            // 老状态无法恢复已被窗口淘汰的 DSH 历史，必须重建会话后再写派生记忆。
+            modelSourcesIncomplete: val.modelSourcesIncomplete === true || (!Array.isArray(val.modelSourceQqs) && Boolean(b.state?.sessions?.[key])),
             pendingThoughts: Array.isArray(val.pendingThoughts) ? val.pendingThoughts : [],
             memberImpressions: (() => {
               const rawImp = (val.memberImpressions && typeof val.memberImpressions === 'object') ? val.memberImpressions : {};
@@ -198,9 +238,11 @@ export function createSocialV2Store(b) {
           }
           // 仍用默认唤醒配置的会话同步到当前默认参数
           b.refreshDefaultWakeConfigV2(st);
+          for (const message of st.recentMessages) if (!message.isSelf && message.userId && message.sender) b.observeIdentity({ qq: String(message.userId), group: key.startsWith('group:') ? key.slice(6) : null, card: key.startsWith('group:') ? message.sender : undefined, nickname: key.startsWith('private:') ? message.sender : undefined });
           // json 里有这三个字段就用 json 的（写池未成功时的最新副本）
           if (LIGHT_MEMORY_FIELDS.some((field) => field in val)) poolMemory.delete(key);
           else claimPoolMemory(key, st);
+          normalizeImpressions(key, st);
           b.rememberAgentToken(key, st.agentToken);
           b.socialV2.conversations.set(key, st);
           // 从存下来的消息里重新找出本聊天见过的转发编号
@@ -266,7 +308,7 @@ export function createSocialV2Store(b) {
   // 立即保存二代状态（先写池再写 json）
   function saveSocialV2State(forceMemory = false) {
     if (flushTimer) { b.clearTimeout(flushTimer); flushTimer = null; }
-    if (b.socialV2.storeReadOnlyReason) return;
+    if (b.socialV2.storeReadOnlyReason) return false;
     try {
       const obj = stampSchema('social-v2', { paused: b.socialV2.paused, conversations: Object.create(null) });
       for (const [key, st] of b.socialV2.conversations) {
@@ -288,6 +330,8 @@ export function createSocialV2Store(b) {
           preSleepWaitAccumMs: st.preSleepWaitAccumMs || 0,
           lastUnreadSeq: st.lastUnreadSeq || 0,
           lastReadThroughSeq: st.lastReadThroughSeq || 0,
+          modelSourceQqs: st.modelSourceQqs ?? [],
+          modelSourcesIncomplete: st.modelSourcesIncomplete === true,
           seenForwardIds: Array.from(seenForwardIds.get(key) || []).slice(-1000)
         };
       }
@@ -302,16 +346,22 @@ export function createSocialV2Store(b) {
         }
       }
       atomicWriteJson(b.SOCIAL_V2_FILE, obj);
+      if (JSON.stringify(JSON.parse(fs.readFileSync(b.SOCIAL_V2_FILE, 'utf8'))) !== JSON.stringify(obj)) {
+        throw new Error('socialV2 状态持久化验证失败');
+      }
       dirty = false;
       memoryStale = !forceMemory;
+      return true;
     } catch (error) {
       dirty = true;
       b.log('保存 socialV2 状态失败:', error?.message ?? error);
+      return false;
     }
   }
 
   // 二代消息记录：去重、整理媒体、写进最近列表和未读
-  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = []) {
+  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = [], { unread = true, converse = true, noContext = false, sourceQqs = [] } = {}) {
+    if (converse === false) return;
     const st = getSocialV2State(key);
     const recentLimit = Number(b.cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(b.cfg.socialV2?.context?.unreadLimit) || 30;
@@ -357,10 +407,12 @@ export function createSocialV2Store(b) {
       }
     }
     const msg = {
-      seq: (st.lastUnreadSeq || 0) + 1,
+      // 不计入回应的消息不进未读也不占 seq，否则会堵住已读水位
+      seq: unread ? (st.lastUnreadSeq || 0) + 1 : undefined,
       messageId: msgId,
       sender,
       userId: userId != null ? String(userId) : null,
+      sourceQqs: [...new Set([userId, ...sourceQqs].filter(qq => /^[1-9]\d{0,15}$/.test(String(qq ?? ''))).map(String))],
       text: truncateText(String(textContent), 200),
       plain: truncateText(String(plainContent ?? textContent), 200),
       tail: truncateTextTail(String(plainContent ?? textContent), 200),
@@ -372,16 +424,18 @@ export function createSocialV2Store(b) {
       hasMedia: safeMedia.length > 0,
       forwardIds: safeForwardIds,
       hasForward: safeForwardIds.length > 0,
-      time: Date.now()
+      time: Date.now(),
+      // 历史里不给模型看；还在未读里时是当前输入，照常给
+      ...(noContext ? { noContext: true } : {})
     };
-    st.lastUnreadSeq = msg.seq;
+    if (unread) st.lastUnreadSeq = msg.seq;
     st.lastIncomingAt = Date.now();
     st.preSleepWaitSatisfiedAt = 0; // 有新消息，沉睡前等待/观察作废
     st.preSleepWaitObservedAt = 0;
     st.preSleepWaitAccumMs = 0;
     st.recentMessages.push(msg);
     if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
-    st.unread.push(msg);
+    if (unread) st.unread.push(msg);
     if (st.unread.length > unreadLimit) st.unread.splice(0, st.unread.length - unreadLimit);
     const lowerPlain = String(plainContent ?? textContent ?? '');
     for (const t of st.activeTopics || []) {
@@ -394,7 +448,7 @@ export function createSocialV2Store(b) {
   }
 
   // 拍一拍写入消息流，让 AI 看到谁拍了谁
-  function appendSocialV2Poke(key, { sender, userId, targetId, targetIsSelf, isOwner = false, groupId = null, action = '', suffix = '' }) {
+  function appendSocialV2Poke(key, { sender, userId, targetId, targetIsSelf, isOwner = false, groupId = null, action = '', suffix = '', unread = true, converse = true, noContext = false, sourceQqs = [] }) {
     const st = getSocialV2State(key);
     const recentLimit = Number(b.cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(b.cfg.socialV2?.context?.unreadLimit) || 30;
@@ -404,10 +458,11 @@ export function createSocialV2Store(b) {
     const suffixText = suffix ? ` ${String(suffix)}` : '';
     const text = `[拍一拍] ${actor} ${actionText} ${target}${suffixText}`.slice(0, 200);
     const msg = {
-      seq: (st.lastUnreadSeq || 0) + 1,
+      seq: converse !== false && unread ? (st.lastUnreadSeq || 0) + 1 : undefined,
       messageId: null,
       sender: actor,
       userId: userId != null ? String(userId) : null,
+      sourceQqs: [...new Set([userId, ...sourceQqs].filter(qq => /^[1-9]\d{0,15}$/.test(String(qq ?? ''))).map(String))],
       text,
       plain: text,
       tail: text,
@@ -421,17 +476,21 @@ export function createSocialV2Store(b) {
       forwardIds: [],
       hasForward: false,
       poke: { targetId: targetId != null ? String(targetId) : null, targetIsSelf: !!targetIsSelf, groupId: groupId != null ? String(groupId) : null },
-      time: Date.now()
+      time: Date.now(),
+      ...(noContext ? { noContext: true } : {}),
     };
-    st.lastUnreadSeq = msg.seq;
+    if (converse === false) return msg;
+    if (unread) st.lastUnreadSeq = msg.seq;
     st.lastIncomingAt = Date.now();
     st.preSleepWaitSatisfiedAt = 0;
     st.preSleepWaitObservedAt = 0;
     st.preSleepWaitAccumMs = 0;
     st.recentMessages.push(msg);
     if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
-    st.unread.push(msg);
-    if (st.unread.length > unreadLimit) st.unread.splice(0, st.unread.length - unreadLimit);
+    if (unread) {
+      st.unread.push(msg);
+      if (st.unread.length > unreadLimit) st.unread.splice(0, st.unread.length - unreadLimit);
+    }
     markSocialV2Dirty();
     return msg;
   }
@@ -464,5 +523,5 @@ export function createSocialV2Store(b) {
   }
 
   return {
-    seenForwardIds, seenMessageIds, getSocialV2State, loadSocialV2State, saveSocialV2State, flushSocialV2State, markSocialV2Dirty, forgetLightMemory, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2 };
+    seenForwardIds, seenMessageIds, getSocialV2State, loadSocialV2State, saveSocialV2State, flushSocialV2State, markSocialV2Dirty, forgetLightMemory, removeLightMemoryItem, appendSocialV2Message, appendSocialV2Poke, recordSentMessagesV2 };
 }

@@ -48,8 +48,12 @@ export function createSessionStore(b) {
   // 一次写完地存回 sessions.json
   function saveState() {
     // 一次写完，避免 .tmp 被占用和权限不一致
-    if (!stateWritable) return; // 读坏时不回写，防止永久丢失
-    atomicWriteJson(b.STATE_FILE, stampSchema('sessions', b.state));
+    if (!stateWritable) return false; // 读坏时不回写，防止永久丢失
+    const doc = stampSchema('sessions', b.state);
+    atomicWriteJson(b.STATE_FILE, doc);
+    // 隐私重置必须能确认撤销映射已落盘，不能把只读/静默未写当成功。
+    if (JSON.stringify(JSON.parse(fs.readFileSync(b.STATE_FILE, 'utf8'))) !== JSON.stringify(doc)) throw new Error('会话映射持久化验证失败');
+    return true;
   }
 
   return { loadState, saveState };

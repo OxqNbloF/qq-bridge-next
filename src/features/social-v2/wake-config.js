@@ -157,9 +157,10 @@ export function createWakeConfigV2(b) {
       (Array.isArray(tr.keywords) && tr.keywords.length > 0) || tr.question || Number(tr.probability) > 0 ||
       tr.speakerIds.length > 0 || timed;
     if (!wakeable) {
-      if (st.sleepTimer) {
-        b.clearTimeout(st.sleepTimer);
-        st.sleepTimer = null;
+      const runtime = b.schedulerRuntime?.(key, st) ?? st;
+      if (runtime.sleepTimer) {
+        (b.clearSchedulerTimer ?? b.clearTimeout)(runtime.sleepTimer);
+        runtime.sleepTimer = null;
       }
       st.wakeConfig = defaultWakeConfigV2();
       if (!opts.skipSave) b.saveSocialV2State();

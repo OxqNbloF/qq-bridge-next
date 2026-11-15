@@ -1,14 +1,25 @@
 // 二代仿真唤醒调度：回复检查、忙判定、合并、定时器
 import { boundedTimerDelay } from '../../infra/async.js';
+import { wakePriority, isDirectedReason, isTimerReason } from '../../scheduler/trigger.js';
 
 // 创建二代唤醒调度器
 export function createSchedulerV2(b) {
+  const clearTimer = b.clearSchedulerTimer ?? b.clearTimeout;
+  const setTimer = (key, slot, run, delay) => b.schedulerSetTimer ? b.schedulerSetTimer(key, slot, run, delay) : b.setTimeout(run, delay);
+  function cancelPendingWakeV2(key, st = b.socialV2.conversations.get(key)) {
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (runtime?.pendingWakeTimer) clearTimer(runtime.pendingWakeTimer);
+    if (runtime) { runtime.pendingWakeTimer = null; runtime.pendingWakeReason = null; }
+    if (b.schedulerEnabled?.(key)) b.turnEngine.cancelBatches(key);
+  }
+
   // 取消会话的回复检查定时器
   function cancelReplyCheckV2(key) {
     const st = b.socialV2.conversations.get(key);
-    if (!st || !st.replyCheckTimer) return;
-    b.clearTimeout(st.replyCheckTimer);
-    st.replyCheckTimer = null;
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (!st || !runtime.replyCheckTimer) return;
+    clearTimer(runtime.replyCheckTimer);
+    runtime.replyCheckTimer = null;
   }
 
   // 安排一次回复检查
@@ -16,8 +27,9 @@ export function createSchedulerV2(b) {
     if (b.cfg.socialV2?.enabled === false) return;
     if (b.socialV2.paused || b.modeForKey(key) !== 'reserved2') return;
     const st = b.getSocialV2State(key);
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
     // 已有唤醒在排队时不重复安排
-    if (st.pendingWakeTimer || st.sleepTimer || st.replyCheckTimer) return;
+    if (runtime.pendingWakeTimer || runtime.sleepTimer || runtime.replyCheckTimer || (b.schedulerEnabled?.(key) && b.turnEngine.stats(key).state === 'batching')) return;
     let delay = boundedTimerDelay(Number(b.cfg.socialV2?.autoReplyCheckMs) || 30000, 30000, 1000);
     const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
     const recentSelf = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 15000);
@@ -25,32 +37,37 @@ export function createSchedulerV2(b) {
     if (askedQuestion) delay = Math.round(delay * 1.5);
     if (recentSelf.length >= 3) delay = Math.round(delay * 1.3);
     delay = boundedTimerDelay(delay, 30000, 1000);
-    st.replyCheckTimer = b.setTimeout(() => {
-      st.replyCheckTimer = null;
+    runtime.replyCheckTimer = setTimer(key, 'replyCheckTimer', () => {
+      runtime.replyCheckTimer = null;
       void b.sendWakePromptV2(key, 'replyCheck').catch((error) => b.log(`[reserved2] replyCheck 唤醒异常 ${key}:`, error?.message ?? error));
     }, delay);
-    st.replyCheckTimer.unref?.();
+    runtime.replyCheckTimer.unref?.();
     b.log(`[reserved2] 已安排回复检查唤醒 ${key}，${Math.round(delay / 1000)}s 后检查`);
   }
 
   /** 会话此刻忙的原因，仅用于日志 */
   function busyReasonV2(key, st) {
-    if (st?.pendingWakeTimer) return 'pendingWakeTimer';
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (b.schedulerEnabled?.(key) && b.turnEngine.isBusy(key)) return 'turnEngine';
+    if (runtime?.pendingWakeTimer) return 'pendingWakeTimer';
     if (b.pendingWakeKeys.has(key)) return 'pendingWakeKey';
     const q = b.promptQueues.get(key);
     if (q?.running) return 'promptRunning';
     if (q && q.queue.length > 0) return 'promptQueued';
     const sid = b.state.sessions[key];
     if (sid) {
-      const startedAt = Number(b.v2TurnStartAt.get(sid));
-      if (Number.isFinite(startedAt) && startedAt > 0 && Date.now() - startedAt < b.TURN_BUSY_LEASE_MS) return 'turn';
+      const busy = b.isSessionTurnBusy ? b.isSessionTurnBusy(sid)
+        : (Number.isFinite(Number(b.v2TurnStartAt.get(sid))) && Number(b.v2TurnStartAt.get(sid)) > 0 && Date.now() - Number(b.v2TurnStartAt.get(sid)) < b.TURN_BUSY_LEASE_MS);
+      if (busy) return 'turn';
     }
     return 'unknown';
   }
 
   // 判断会话此刻是否忙
   function isConversationBusyV2(key, st) {
-    if (st && st.pendingWakeTimer) return true;
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (b.schedulerEnabled?.(key)) return b.turnEngine.stats(key).state !== 'idle';
+    if (st && runtime.pendingWakeTimer) return true;
     if (b.pendingWakeKeys.has(key)) return true;
     const q = b.promptQueues.get(key);
     if (q && (q.running || q.queue.length > 0)) return true;
@@ -61,7 +78,7 @@ export function createSchedulerV2(b) {
     const hasTurn = Number.isFinite(startedAt) && startedAt > 0;
     const collector = b.collectors.has(sid);
     if (!hasTurn) return false;
-    if (Date.now() - startedAt < b.TURN_BUSY_LEASE_MS) return true;
+    if (b.isSessionTurnBusy ? b.isSessionTurnBusy(sid) : Date.now() - startedAt < b.TURN_BUSY_LEASE_MS) return true;
     if (collector && !b.turnLeaseNoted.has(sid)) {
       b.turnLeaseNoted.add(sid);
       b.log(`[reserved2] 回合判忙租约已过期（${sid}，起始 ${Math.round((Date.now() - startedAt) / 60000)} 分钟前），解除忙碌；collector 保留，迟到回复仍会 flush`);
@@ -69,39 +86,12 @@ export function createSchedulerV2(b) {
     return false;
   }
 
-  const WAKE_PRIORITY = {
-    private: 100,
-    atMention: 90,
-    question: 80,
-    speaker: 75,
-    nameMention: 70,
-    keyword: 60,
-    anyMessage: 50,
-    replyCheck: 40,
-    timeout: 30,
-    proactiveCheck: 20
-  };
-
-  // 唤醒原因取冒号前的基名算优先级
-  function wakePriorityV2(reason) {
-    const base = String(reason ?? '').split(':')[0];
-    return WAKE_PRIORITY[base] ?? 0;
-  }
-
-  // 与未读无关的定时器类唤醒原因
-  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin']);
-  // 是否点名类唤醒（私聊/@/名字/拍一拍）
-  function isDirectedWakeReason(reason) {
-    return ['private', 'atMention', 'nameMention', 'poke'].includes(String(reason ?? '').split(':')[0]);
-  }
-
-  // 是否定时器类唤醒
-  function isTimerWakeReason(reason) {
-    return TIMER_WAKE_REASONS.has(String(reason ?? '').split(':')[0]);
-  }
+  function wakePriorityV2(reason) { return wakePriority(reason); }
+  function isDirectedWakeReason(reason) { return isDirectedReason(reason); }
+  function isTimerWakeReason(reason) { return isTimerReason(reason); }
 
   // 安排一次唤醒，合并窗口内按优先级合并
-  function scheduleWakeV2(key, reason) {
+  function scheduleWakeV2(key, reason, decision = null) {
     if (b.cfg.socialV2?.enabled === false) return;
     if (b.socialV2.paused) return;
     if (!b.isSessionAllowedInCurrentMode(key)) {
@@ -109,41 +99,50 @@ export function createSchedulerV2(b) {
       return;
     }
     const st = b.getSocialV2State(key);
-    if (st.pendingWakeTimer) {
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    b.observeWakeCandidate?.(key, reason, boundedTimerDelay(Number(st.wakeConfig?.batchWindowMs) || 8000, 8000, 1000, 3600000), decision);
+    if (b.schedulerEnabled?.(key)) {
+      cancelReplyCheckV2(key);
+      if (runtime.sleepTimer) { clearTimer(runtime.sleepTimer); runtime.sleepTimer = null; }
+      const batchMs = boundedTimerDelay(Number(st.wakeConfig?.batchWindowMs) || 8000, 8000, 1000, 3600000);
+      void b.scheduleWakeTurn(key, reason, batchMs, decision).catch((error) => b.log(`[scheduler] 唤醒调度失败 ${key}:`, error?.message ?? error));
+      return;
+    }
+    if (runtime.pendingWakeTimer) {
       // 合并窗口内按优先级升级最终原因
-      const cur = st.pendingWakeReason || reason;
+      const cur = runtime.pendingWakeReason || reason;
       if (wakePriorityV2(reason) > wakePriorityV2(cur)) {
-        st.pendingWakeReason = reason;
+        runtime.pendingWakeReason = reason;
         b.log(`[reserved2] 合并窗口内升级唤醒原因 ${key}: ${cur} -> ${reason}`);
       }
       return;
     }
     if (isConversationBusyV2(key, st)) {
-      if (!Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons = [];
+      if (!Array.isArray(runtime.pendingWakeReasons)) runtime.pendingWakeReasons = [];
       const seq = st.lastUnreadSeq || 0;
-      if (!st.pendingWakeReasons.some((r) => r && r.reason === reason && r.seq === seq)) {
-        st.pendingWakeReasons.push({ reason, seq });
+      if (!runtime.pendingWakeReasons.some((r) => r && r.reason === reason && r.seq === seq)) {
+        runtime.pendingWakeReasons.push({ reason, seq });
         // 有界队列：最多保留 20 条
-        if (st.pendingWakeReasons.length > 20) st.pendingWakeReasons.splice(0, st.pendingWakeReasons.length - 20);
+        if (runtime.pendingWakeReasons.length > 20) runtime.pendingWakeReasons.splice(0, runtime.pendingWakeReasons.length - 20);
       }
       b.log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}，原因=${busyReasonV2(key, st)}）`);
       return;
     }
     cancelReplyCheckV2(key); // 真实唤醒已接管，取消普通回复检查
-    if (st.sleepTimer) {
-      b.clearTimeout(st.sleepTimer);
-      st.sleepTimer = null;
+    if (runtime.sleepTimer) {
+      clearTimer(runtime.sleepTimer);
+      runtime.sleepTimer = null;
     }
-    st.pendingWakeReason = reason;
+    runtime.pendingWakeReason = reason;
     const batchMs = boundedTimerDelay(Number(st.wakeConfig?.batchWindowMs) || 8000, 8000, 1000, 3600000);
-    st.pendingWakeTimer = b.setTimeout(() => {
-      st.pendingWakeTimer = null;
-      const finalReason = st.pendingWakeReason || reason;
-      st.pendingWakeReason = null;
+    runtime.pendingWakeTimer = setTimer(key, 'pendingWakeTimer', () => {
+      runtime.pendingWakeTimer = null;
+      const finalReason = runtime.pendingWakeReason || reason;
+      runtime.pendingWakeReason = null;
       void b.sendWakePromptV2(key, finalReason).catch((error) => b.log(`[reserved2] 计划唤醒异常 ${key}:`, error?.message ?? error));
     }, batchMs);
     // unref 定时器，不阻止进程退出
-    st.pendingWakeTimer.unref?.();
+    runtime.pendingWakeTimer.unref?.();
     b.log(`[reserved2] 计划唤醒 ${key}（${reason}），${Math.round(batchMs / 1000)}s 后发送`);
   }
 
@@ -152,10 +151,12 @@ export function createSchedulerV2(b) {
    * 定时器类不看未读，否则到点唤醒会被吞掉
    */
   function replayPendingWakeReasonsV2(key) {
+    if (b.schedulerEnabled?.(key)) { void b.turnEngine.replay(); return null; }
     const st = b.getSocialV2State(key);
-    if (!Array.isArray(st.pendingWakeReasons) || !st.pendingWakeReasons.length) return null;
-    const item = st.pendingWakeReasons.shift();
-    if (!item || typeof item !== 'object') return st.pendingWakeReasons.length ? replayPendingWakeReasonsV2(key) : null;
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (!Array.isArray(runtime.pendingWakeReasons) || !runtime.pendingWakeReasons.length) return null;
+    const item = runtime.pendingWakeReasons.shift();
+    if (!item || typeof item !== 'object') return runtime.pendingWakeReasons.length ? replayPendingWakeReasonsV2(key) : null;
     if (isTimerWakeReason(item.reason)) {
       if (item.reason === 'timeout') {
         b.log(`[reserved2] ${key} 补收繁忙期间到期的潜水定时器`);
@@ -180,7 +181,7 @@ export function createSchedulerV2(b) {
       return { reason: item.reason, action: 'replayed' };
     }
     b.log(`[reserved2] ${key} 繁忙期间唤醒 ${item.reason}@seq${item.seq} 已被当前回合处理，跳过补发`);
-    if (st.pendingWakeReasons.length) return replayPendingWakeReasonsV2(key);
+    if (runtime.pendingWakeReasons.length) return replayPendingWakeReasonsV2(key);
     return { reason: item.reason, action: 'skipped' };
   }
 
@@ -189,10 +190,11 @@ export function createSchedulerV2(b) {
     if (b.cfg.socialV2?.enabled === false) return;
     if (!b.isSessionAllowedInCurrentMode(key)) return;
     const st = b.getSocialV2State(key);
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
     cancelReplyCheckV2(key); // 有限睡眠已接管，取消回复检查
-    if (st.sleepTimer) {
-      b.clearTimeout(st.sleepTimer);
-      st.sleepTimer = null;
+    if (runtime.sleepTimer) {
+      clearTimer(runtime.sleepTimer);
+      runtime.sleepTimer = null;
     }
     if (b.socialV2.paused) return;
     const wc = st.wakeConfig;
@@ -206,29 +208,30 @@ export function createSchedulerV2(b) {
     }
     // 超长定时器分 100 秒小步续期，防溢出和时钟跳变
     const MAX_TIMEOUT_MS = 100009;
-    if (delay > MAX_TIMEOUT_MS) {
-      st.sleepTimer = b.setTimeout(() => {
-        st.sleepTimer = null;
+    if (delay > MAX_TIMEOUT_MS && !b.schedulerEnabled?.(key)) {
+      runtime.sleepTimer = setTimer(key, 'sleepTimer', () => {
+        runtime.sleepTimer = null;
         setupSleepTimerV2(key);
       }, MAX_TIMEOUT_MS);
-      st.sleepTimer.unref?.();
+      runtime.sleepTimer.unref?.();
       b.log(`[reserved2] 设置远未来有限潜水定时器 ${key}，首段 ${Math.round(MAX_TIMEOUT_MS / 1000)} 秒后续期`);
       return;
     }
-    st.sleepTimer = b.setTimeout(() => {
-      st.sleepTimer = null;
+    runtime.sleepTimer = setTimer(key, 'sleepTimer', () => {
+      runtime.sleepTimer = null;
       void b.sendWakePromptV2(key, 'timeout').catch((error) => b.log(`[reserved2] 睡眠到期唤醒异常 ${key}:`, error?.message ?? error));
     }, delay);
-    st.sleepTimer.unref?.();
+    runtime.sleepTimer.unref?.();
     b.log(`[reserved2] 设置有限潜水定时器 ${key}，剩余 ${Math.round(delay / 1000)}s`);
   }
 
   // 取消主动机会定时器
   function cancelProactiveCheckV2(key) {
     const st = b.socialV2.conversations.get(key);
-    if (!st || !st.proactiveTimer) return;
-    b.clearTimeout(st.proactiveTimer);
-    st.proactiveTimer = null;
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (!st || !runtime.proactiveTimer) return;
+    clearTimer(runtime.proactiveTimer);
+    runtime.proactiveTimer = null;
   }
 
   // 安排下一次主动机会检查
@@ -237,13 +240,14 @@ export function createSchedulerV2(b) {
     if (b.socialV2.paused || b.modeForKey(key) !== 'reserved2') return;
     if (!b.isSessionAllowedInCurrentMode(key)) return;
     const st = b.getSocialV2State(key);
-    if (st.proactiveTimer) return;
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
+    if (runtime.proactiveTimer) return;
     const p = b.cfg.socialV2?.proactive ?? {};
     const min = boundedTimerDelay(Number(p.checkIntervalMinMs) || 1800000, 1800000, 60000);
     const max = boundedTimerDelay(Number(p.checkIntervalMaxMs) || 5400000, 5400000, min);
     const delay = boundedTimerDelay(Math.floor(min + Math.random() * (max - min)), min, 60000);
-    st.proactiveTimer = b.setTimeout(() => {
-      st.proactiveTimer = null;
+    runtime.proactiveTimer = setTimer(key, 'proactiveTimer', () => {
+      runtime.proactiveTimer = null;
       b.ensureWakeableV2(st, { key });
       const idleThreshold = Number(p.idleThresholdMs) || 15 * 60 * 1000;
       const idle = Date.now() - (st.lastIncomingAt || 0);
@@ -262,36 +266,38 @@ export function createSchedulerV2(b) {
       }
       scheduleProactiveCheckV2(key);
     }, delay);
-    st.proactiveTimer.unref?.();
+    runtime.proactiveTimer.unref?.();
     b.log(`[reserved2] 已安排主动机会检查 ${key}，约 ${Math.round(delay / 60000)}min 后`);
   }
 
   // 清掉某会话的全部二代定时器
-  function clearSocialV2Timers(key) {
+  function clearSocialV2Timers(key, { skipEngineCancel = false } = {}) {
+    if (!skipEngineCancel) b.cancelScheduledTurns?.(key, 'timers-cleared');
     const st = b.socialV2.conversations.get(key);
+    const runtime = b.schedulerRuntime?.(key, st) ?? st;
     if (!st) return;
-    if (st.pendingWakeTimer) {
-      b.clearTimeout(st.pendingWakeTimer);
-      st.pendingWakeTimer = null;
+    if (runtime.pendingWakeTimer) {
+      clearTimer(runtime.pendingWakeTimer);
+      runtime.pendingWakeTimer = null;
     }
-    st.pendingWakeReason = null;
-    if (st.sleepTimer) {
-      b.clearTimeout(st.sleepTimer);
-      st.sleepTimer = null;
+    runtime.pendingWakeReason = null;
+    if (runtime.sleepTimer) {
+      clearTimer(runtime.sleepTimer);
+      runtime.sleepTimer = null;
     }
-    if (st.replyCheckTimer) {
-      b.clearTimeout(st.replyCheckTimer);
-      st.replyCheckTimer = null;
+    if (runtime.replyCheckTimer) {
+      clearTimer(runtime.replyCheckTimer);
+      runtime.replyCheckTimer = null;
     }
-    if (st.proactiveTimer) {
-      b.clearTimeout(st.proactiveTimer);
-      st.proactiveTimer = null;
+    if (runtime.proactiveTimer) {
+      clearTimer(runtime.proactiveTimer);
+      runtime.proactiveTimer = null;
     }
-    if (st.rateLimitRetryTimer) {
-      b.clearTimeout(st.rateLimitRetryTimer);
-      st.rateLimitRetryTimer = null;
+    if (runtime.rateLimitRetryTimer) {
+      clearTimer(runtime.rateLimitRetryTimer);
+      runtime.rateLimitRetryTimer = null;
     }
-    if (Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons.length = 0;
+    if (Array.isArray(runtime.pendingWakeReasons)) runtime.pendingWakeReasons.length = 0;
   }
 
   // 清掉所有会话的二代定时器
@@ -304,5 +310,5 @@ export function createSchedulerV2(b) {
     b.messageMediaStore.clear();
   }
 
-  return { cancelReplyCheckV2, scheduleReplyCheckV2, busyReasonV2, isConversationBusyV2, wakePriorityV2, isDirectedWakeReason, isTimerWakeReason, scheduleWakeV2, replayPendingWakeReasonsV2, setupSleepTimerV2, cancelProactiveCheckV2, scheduleProactiveCheckV2, clearSocialV2Timers, clearAllSocialV2Timers };
+  return { cancelPendingWakeV2, cancelReplyCheckV2, scheduleReplyCheckV2, busyReasonV2, isConversationBusyV2, wakePriorityV2, isDirectedWakeReason, isTimerWakeReason, scheduleWakeV2, replayPendingWakeReasonsV2, setupSleepTimerV2, cancelProactiveCheckV2, scheduleProactiveCheckV2, clearSocialV2Timers, clearAllSocialV2Timers };
 }

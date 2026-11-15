@@ -1,45 +1,16 @@
+import { modelMessageVisible, modelStateKey } from '../../gate/model-visibility.js';
+import { evaluateTrigger } from '../../scheduler/trigger.js';
 // 判断一条消息要不要叫醒 AI，以及算「已经读到哪里了」
 // 只有真的给 AI 看过的消息，才算它读过
 
 export function createTriggersV2(b) {
   // 看这条消息要不要叫醒 AI，并说出是什么原因
   function evaluateWakeTriggerV2(key, st, event, kind, textContent, plainContent, quoteTargetIsSelf) {
-    if (kind === 'private') return 'private';
-    const tr = st.wakeConfig?.triggers ?? {};
-    if (tr.anyMessage) return 'anyMessage';
-    if (tr.atMention) {
-      const atSelf = Array.isArray(event?.message) && event.message.some((seg) => seg?.type === 'at' && String(seg.data?.qq) === String(event?.self_id ?? ''));
-      if (atSelf || quoteTargetIsSelf) return 'atMention';
-    }
-    if (tr.nameMention && b.selfNickname) {
-      // 只看当前这条消息本身的字，不看它引用的旧消息
-      // 不然引用一条提到名字的旧消息也会把它叫醒，白白花钱
-      const lower = String(plainContent ?? '').toLowerCase();
-      if (lower.includes('@' + b.selfNickname.toLowerCase()) || lower.includes(b.selfNickname.toLowerCase())) return 'nameMention';
-    }
-    if (Array.isArray(tr.keywords) && tr.keywords.length) {
-      const lower = String(plainContent ?? '').toLowerCase();
-      for (const kw of tr.keywords) {
-        const kwStr = String(kw ?? '').toLowerCase();
-        if (!kwStr) continue;
-        // 短的英文或数字要整词匹配，免得 ADS 里的 DS 也算
-        if (/^[a-z0-9]+$/.test(kwStr) && kwStr.length <= 4) {
-          if (new RegExp(`\\b${kwStr}\\b`, 'i').test(lower)) return `keyword:${kw}`;
-        } else if (lower.includes(kwStr)) {
-          return `keyword:${kw}`;
-        }
-      }
-    }
-    if (tr.question && b.isDirectedAtAi(plainContent)) return 'question';
-    if (Array.isArray(tr.speakerIds) && tr.speakerIds.length) {
-      const speakerId = String(event?.user_id ?? event?.sender?.user_id ?? '');
-      if (speakerId && tr.speakerIds.some((id) => String(id) === speakerId)) {
-        const senderLabel = event?.sender?.card || event?.sender?.nickname || speakerId;
-        return `speaker:${senderLabel}`;
-      }
-    }
-    if (Number(tr.probability) > 0 && Math.random() < Number(tr.probability)) return 'probability';
-    return null;
+    return evaluateTrigger({
+      kind, triggers: st.wakeConfig?.triggers ?? {}, event, plainContent, quoteTargetIsSelf,
+      names: [...new Set([b.selfNickname, ...b.identityAliases(String(event?.self_id ?? ''), key.startsWith('group:') ? key.slice(6) : null)].filter(Boolean))],
+      directed: b.isDirectedAtAi(plainContent), random: Math.random(),
+    });
   }
 
   // 只有真的给模型看过的消息才算读过；这个记录只在内存里，重启后要重新读
@@ -50,9 +21,11 @@ export function createTriggersV2(b) {
     const lowestBuffered = seqs.length ? Math.min(...seqs) : Infinity;
     const lastUnread = Number.isSafeInteger(st.lastUnreadSeq) ? st.lastUnreadSeq : 0;
     let through = Number.isSafeInteger(st.lastReadThroughSeq) ? st.lastReadThroughSeq : 0;
-    // 一条消息要么给模型看过，要么已经不在未读里了，才算读过
-    // 这样不会跳过还等着给模型看的新消息
-    const reachable = (seq) => seen.has(seq) || (seq < lowestBuffered && seq <= lastUnread);
+    // 当前隐藏的消息可安全跳过，但不记成展示回执；策略恢复后须重新判断。
+    // 可见消息仍必须确实展示，不能越过未展示的可见缺口。
+    const key = modelStateKey(b, st);
+    const hidden = new Set(st.unread.filter((message) => !modelMessageVisible(b, key, message)).map((message) => message.seq));
+    const reachable = (seq) => seen.has(seq) || hidden.has(seq) || (seq < lowestBuffered && seq <= lastUnread);
     while (through < lastUnread && reachable(through + 1)) through += 1;
     return through;
   }
@@ -70,7 +43,9 @@ export function createTriggersV2(b) {
 
   // 检查模型要求把已读位置推进到哪儿
   function requestedReadThroughSeqV2(st, body, isAgent) {
-    if (!Object.prototype.hasOwnProperty.call(body, 'throughSeq')) return null;
+    if (!Object.prototype.hasOwnProperty.call(body, 'throughSeq')) {
+      return isAgent && b.cfg?.architecture?.gateV2 ? readThroughSeqV2(st) : null;
+    }
     const seq = body.throughSeq;
     const max = isAgent ? readThroughSeqV2(st) : st.lastUnreadSeq;
     if (!Number.isSafeInteger(seq) || seq < 0 || seq > max || seq > st.lastUnreadSeq) {

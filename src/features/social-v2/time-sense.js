@@ -1,3 +1,4 @@
+import { modelMessageVisible, modelStateKey } from '../../gate/model-visibility.js';
 // 让 AI 知道消息是多久以前的，别把旧话当成刚说的
 export function createTimeSenseV2(b) {
   // 醒来先算清楚：消息多旧、为什么被叫醒，再决定怎么开口
@@ -43,10 +44,10 @@ export function createTimeSenseV2(b) {
   }
 
   /** 生成「消息多旧、该怎么接话」的一段规则文字 */
-  function buildTimeSenseLine(st) {
+  function buildTimeSenseLine(st, key = modelStateKey(b, st)) {
     const now = Date.now();
-    const newest = [...(Array.isArray(st.unread) ? st.unread : [])].reverse().find((m) => m && !m.isSelf)
-      || [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])].reverse().find((m) => m && !m.isSelf)
+    const newest = [...(Array.isArray(st.unread) ? st.unread : [])].reverse().find((m) => m && !m.isSelf && modelMessageVisible(b, key, m))
+      || [...(Array.isArray(st.recentMessages) ? st.recentMessages : [])].reverse().find((m) => m && !m.isSelf && modelMessageVisible(b, key, m))
       || null;
     if (!newest) return '';
     const ageText = b.describeAge(newest.time, now);
@@ -87,7 +88,8 @@ export function createTimeSenseV2(b) {
     const maxRecent = bounded('wakeRecentLimit', 4, 0, 20);
     // 一次快照只取一次 now：同一批消息的 ago 必须彼此可比。
     const now = Date.now();
-    const newestIncoming = [...(Array.isArray(st.unread) ? st.unread : [])].reverse()
+    const visibleUnread = st.unread.filter((m) => modelMessageVisible(b, key, m));
+    const newestIncoming = [...visibleUnread].reverse()
       .find((m) => m && !m.isSelf) || null;
     const newestAgo = newestIncoming ? b.describeAge(newestIncoming.time, now) : '';
     const packet = {
@@ -96,10 +98,10 @@ export function createTimeSenseV2(b) {
       // now / newestAgo 让模型不必自己换算：最新一条多旧，直接写在快照头上。
       now: localClockText(now),
       ...(newestAgo ? { newestAgo } : {}),
-      unreadCount: st.unread.length,
+      unreadCount: visibleUnread.length,
       includedUnreadCount: 0,
       readThroughSeq: b.readThroughSeqV2(st),
-      partial: st.unread.length > 0
+      partial: visibleUnread.length > 0
     };
     // 试着放一条消息，超过字数就撤回
     const tryAdd = (field, msg) => {
@@ -107,21 +109,21 @@ export function createTimeSenseV2(b) {
       packet[field].push(b.compactModelMessage(msg, { now }));
       packet.includedUnreadCount = packet.messages.length;
       packet.readThroughSeq = b.readThroughSeqV2(st, [...packet.messages, ...packet.recent]);
-      packet.partial = packet.messages.length < st.unread.length;
+      packet.partial = packet.messages.length < visibleUnread.length;
       if (JSON.stringify(packet).length <= maxChars) return true;
       packet[field].pop();
       packet.includedUnreadCount = packet.messages.length;
       packet.readThroughSeq = previousThrough;
-      packet.partial = packet.messages.length < st.unread.length;
+      packet.partial = packet.messages.length < visibleUnread.length;
       return false;
     };
     if (b.v2ToolEnabled('getUnread')) {
       // 从最旧的未读开始，不能悄悄跳过没看过的消息
-      for (const msg of st.unread.slice(0, maxUnread)) if (!tryAdd('messages', msg)) break;
+      for (const msg of visibleUnread.slice(0, maxUnread)) if (!tryAdd('messages', msg)) break;
     }
     if (b.v2ToolEnabled('getRecent') && maxRecent > 0) {
       const unread = new Set(st.unread.map((m) => m.seq));
-      const recent = st.recentMessages.filter((m) => !Number.isSafeInteger(m.seq) || !unread.has(m.seq)).slice(-maxRecent);
+      const recent = st.recentMessages.filter((m) => modelMessageVisible(b, key, m) && (!Number.isSafeInteger(m.seq) || !unread.has(m.seq))).slice(-maxRecent);
       for (const msg of recent.reverse()) if (!tryAdd('recent', msg)) break;
       packet.recent.reverse();
     }
@@ -129,11 +131,11 @@ export function createTimeSenseV2(b) {
   }
 
   // 算这次回复前该等多久
-  function replyTimingV2(st) {
+  function replyTimingV2(st, key = null) {
     const minimum = Number(b.cfg.socialV2?.wait?.minQuietAfterNewMs);
     const minQuietMs = Number.isFinite(minimum) ? Math.max(0, minimum) : 10000;
     const maxQuietMs = Math.max(minQuietMs, Math.min(120000, Number(b.cfg.socialV2?.wait?.maxMs) || 600000));
-    const quietMs = Math.min(maxQuietMs, Math.max(minQuietMs, Math.round(b.suggestQuietMsV2(st)) || 0));
+    const quietMs = Math.min(maxQuietMs, Math.max(minQuietMs, Math.round(b.suggestQuietMsV2(st, key)) || 0));
     const value = Number(st.lastIncomingAt);
     const elapsedMs = Number.isFinite(value) && value > 0 ? Math.max(0, Date.now() - value) : 0;
     return { purpose: 'reply', quietMs, remainingQuietMs: Math.max(0, quietMs - elapsedMs) };
@@ -142,8 +144,9 @@ export function createTimeSenseV2(b) {
   // 告诉 AI 自己的昵称和 QQ 号，别把 @自己 当成别人
   function selfIdentityTextV2() {
     const name = String(b.selfDisplayName || '').trim();
-    const id = String(b.selfUserId || '').trim();
-    if (!name && !id) return '';
+    const rawId = String(b.selfUserId || '').trim();
+    const id = b.cfg.identity?.exposeQqInPrompt === true ? rawId : '';
+    if (!name && !rawId) return '';
     const label = name ? `「${name}」` : '（昵称未取到）';
     const idText = id ? `（QQ ${id}）` : '';
     const callBits = name

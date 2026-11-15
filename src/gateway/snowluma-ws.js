@@ -6,12 +6,12 @@ export function createSnowlumaWs(b) {
     bot.onPrivateMessage(async (event) => {
       // 自己发的消息跳过，免得 AI 回自己
       if (String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-      try { await b.handleIncoming('private', event.user_id, event, b.cfg); } catch (error) { b.log('处理私聊消息出错:', error?.message ?? error); }
+      try { await b.acceptPipelineMessage('private', event, b.cfg); } catch (error) { b.log('处理私聊消息出错:', error?.message ?? error); }
     });
     bot.onGroupMessage(async (event) => {
       if (String(event?.sender?.user_id ?? '') === String(event?.self_id ?? '')
         || String(event?.user_id ?? '') === String(event?.self_id ?? '')) return;
-      try { await b.handleIncoming('group', event.group_id, event, b.cfg); } catch (error) { b.log('处理群消息出错:', error?.message ?? error); }
+      try { await b.acceptPipelineMessage('group', event, b.cfg); } catch (error) { b.log('处理群消息出错:', error?.message ?? error); }
     });
     bot.onNotice('notify', async (event) => {
       try { await b.handlePokeNotice(event); } catch (error) { b.log('处理拍一拍事件出错:', error?.message ?? error); }
@@ -75,6 +75,7 @@ export function createSnowlumaWs(b) {
       bot.getLoginInfo().then((login) => {
         if (login?.nickname) {
           b.selfNickname = String(login.nickname).toLowerCase();
+          if (login.user_id) b.observeIdentity({ qq: String(login.user_id), nickname: String(login.nickname) });
           b.selfDisplayName = String(login.nickname).trim();
           b.log(`机器人昵称: ${login.nickname}`);
         }

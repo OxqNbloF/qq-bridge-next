@@ -1,3 +1,8 @@
+import { createMemoryAPI } from './memory/api.js';
+import { createIdentityProjection } from './identity/projection.js';
+import { createAliasMemory } from './memory/aliases.js';
+import { createInboundCommands } from './inbound/commands.js';
+import { createOutbound } from './outbound/router.js';
 import { resolveInstalledPreset, synchronizePreset } from './preset-sync.js';
 import { renderPatch } from './preset-patch.js';
 import { readJsonSafe, readConfigObject, renameWithRetry, atomicWriteJson, atomicWriteText } from './store/fs-atomic.js';
@@ -44,7 +49,10 @@ import { segmentsToText, sanitizeMediaSummary, extractMediaFromSegments } from '
 import { createInboundMedia } from './inbound/media.js';
 import { createInboundContext } from './inbound/context.js';
 import { createForwardMediaRegistry } from './inbound/forward.js';
+import { createModeMemory } from './conversations/mode-memory.js';
+import { createModeDispatch } from './conversations/mode-dispatch.js';
 import { createInboundFilter } from './inbound/filter.js';
+import { createPipelineAccept } from './pipeline/accept.js';
 import { createPokeHandler } from './inbound/poke.js';
 import { createRecallHandler } from './inbound/recall.js';
 import { createConversationPolicy } from './conversations/policy.js';
@@ -60,19 +68,20 @@ import { createSessionStore } from './store/sessions.js';
 import { createFeedbackStore } from './store/feedback.js';
 import { createInitialPromptStore } from './store/initial-prompts.js';
 import { createConversationStore } from './store/conversations.js';
+import { createMemberPolicyStore } from './store/member-policy.js';
+import { createIdentityStore } from './identity/store.js';
 import { createMemoryPool } from './store/pool.js';
 import { writeMemoryView, removeMemoryView } from './store/views.js';
 import { createCompressCursor } from './memory/cursor.js';
+import { createMemoryLearnerSession } from './memory/learner-session.js';
 import { createMemoryCompressor } from './memory/compress.js';
 import { createMemoryIndex, loadSqlite } from './memory/index.js';
-import { createSlangPoolStore } from './features/slang/pool.js';
+import { createTerms } from './memory/terms.js';
+import { createContextPreamble } from './memory/preamble.js';
 import { createSocialV2Store } from './store/social-v2.js';
 import { createDeliveryCursors } from './store/delivery-cursors.js';
 import { createArchiveWiring } from './store/archive-wiring.js';
 import { createUsageRecorder } from './features/usage/record.js';
-import { createSlangInject } from './features/slang/inject.js';
-import { createSlangWindow } from './features/slang/window.js';
-import { createSlangLearning } from './features/slang/learning.js';
 import { createStickerSender } from './features/sticker/send.js';
 import { createStickerStore } from './features/sticker/store.js';
 import { createVoiceSender } from './features/voice/send.js';
@@ -100,6 +109,7 @@ import { createRoleState } from './features/roles/state.js';
 import { createPresetPrompts } from './features/presets/prompt.js';
 import { createRoleCards } from './features/roles/card.js';
 import { createDshDeliver } from './dsh/deliver.js';
+import { createSchedulerExecutor } from './scheduler/executor.js';
 import { createDshSession } from './dsh/session.js';
 import { createDshWatch } from './dsh/watch.js';
 import { createDshModel } from './dsh/model.js';
@@ -107,20 +117,6 @@ import { hardenStateDirAcl } from './infra/state-acl.js';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
-import {
-  upsertSlangEntry,
-  buildSlangContext,
-  buildExtractionPrompt,
-  buildResearchPrompt,
-  parseExtractionJson,
-  parseResearchJson,
-  createSlangEntry,
-  mergeEvidence,
-  normalizeSlangScope,
-  slangScopeVisible,
-  SLANG_STATUS,
-  SLANG_MAX_ENTRIES
-} from './slang-learner.js';
 import {
   loadStickerStore,
   saveStickerStore,
@@ -145,7 +141,9 @@ const app = {
   get DSH_CONTROL_TIMEOUT_MS() { return DSH_CONTROL_TIMEOUT_MS; },
   get FEEDBACK_FILE() { return FEEDBACK_FILE; },
   get CONVERSATIONS_FILE() { return CONVERSATIONS_FILE; },
+  get MEMBER_POLICY_FILE() { return MEMBER_POLICY_FILE; },
   get INITIAL_PROMPTS_FILE() { return INITIAL_PROMPTS_FILE; },
+  get IDENTITY_FILE() { return IDENTITY_FILE; },
   get KNOWN_AGENT_TOKENS() { return KNOWN_AGENT_TOKENS; },
   get memoryPool() { return memoryPool; },
   get REJECT_WORDS() { return REJECT_WORDS; },
@@ -153,8 +151,6 @@ const app = {
   get ROLE_STATE_FILE() { return ROLE_STATE_FILE; },
   get ROOT() { return ROOT; },
   get SEND_TIMEOUT_MS() { return SEND_TIMEOUT_MS; },
-  get SLANG_FILE() { return SLANG_FILE; },
-  get SLANG_SESSION_FILE() { return SLANG_SESSION_FILE; },
   get SOCIAL_V2_FILE() { return SOCIAL_V2_FILE; },
   get SPACE_SPLIT_HINT() { return SPACE_SPLIT_HINT; },
   get STATE_DIR() { return STATE_DIR; },
@@ -206,16 +202,17 @@ const ROOT = path.resolve(__dirname, '..');
 const STATE_DIR = path.join(ROOT, 'state');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
-const SLANG_FILE = path.join(STATE_DIR, 'slang.json'); // 旧版黑话库，只在第一次启动时导入
 const POOL_FILE = path.join(STATE_DIR, 'pool', 'items.jsonl');
-// 所有记忆共用的一个存储：黑话和聊天记忆都放这里
+// 所有记忆共用的一个存储：词汇和聊天记忆都放这里
 const memoryPool = createMemoryPool({ file: POOL_FILE });
-const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');
+const MEMORY_SESSION_FILE = path.join(STATE_DIR, 'memory-session.json');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 // 操作者给每个会话写的开场说明，单独存一个文件。
 // 重置聊天不会清掉它，群还没说过话时也能先写。
 const INITIAL_PROMPTS_FILE = path.join(STATE_DIR, 'initial-prompts.json');
 const CONVERSATIONS_FILE = path.join(STATE_DIR, 'conversations.json');
+const MEMBER_POLICY_FILE = path.join(STATE_DIR, 'member-policy.json');
+const IDENTITY_FILE = path.join(STATE_DIR, 'identity.json');
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
 const FEEDBACK_FILE = path.join(STATE_DIR, 'feedback.json');
 const TOOL_LOG_FILE = path.join(STATE_DIR, 'tool-calls.jsonl');
@@ -348,16 +345,6 @@ function assembleSticker() {
   Object.assign(app, createStickerSender(app));
 }
 
-// ── 黑话：学习、窗口、写进提示词 ──
-function assembleSlang() {
-  // 黑话的学习会话和抽取；代码在 features/slang/learning.js
-  Object.assign(app, createSlangLearning(app));
-  // 收集待学习的消息并限制提交频率；代码在 features/slang/window.js
-  Object.assign(app, createSlangWindow(app));
-  // 把学到的黑话展示并写进提示词；代码在 features/slang/inject.js
-  Object.assign(app, createSlangInject(app));
-}
-
 // ── DSH 会话策略、离线补投、探活 ──
 function assembleDshLifecycle() {
   // 聊天模式和预设的处理、会话退役；代码在 conversations/policy.js
@@ -380,6 +367,7 @@ function assembleHttp() {
 
 // ── 发送：分条时间线、二代发送、出站守卫 ──
 function assembleSendV2() {
+  Object.assign(app, createOutbound(app));
   // 分条发送的时间线；代码在 features/send/timeline.js
   Object.assign(app, createSendTimeline(app));
   // 二代发送主流程；代码在 features/send/v2.js
@@ -400,16 +388,24 @@ function assembleSocialV2Store() {
 function assembleConversationStores() {
   // 每个会话单独的策略设置；代码在 store/conversations.js
   Object.assign(app, createConversationStore(app));
+  // 群成员四项策略；代码在 store/member-policy.js
+  Object.assign(app, createMemberPolicyStore(app));
+  Object.assign(app, createIdentityStore(app));
+  Object.assign(app, createIdentityProjection(app));
   // 操作者给每个会话写的开场说明；代码在 store/initial-prompts.js
   Object.assign(app, createInitialPromptStore(app));
 }
 
 // ── 轻量记忆、记忆压缩、只读资料 ──
 function assembleMemory() {
+  Object.assign(app, createMemoryLearnerSession(app));
+  Object.assign(app, createContextPreamble(app));
+  Object.assign(app, createAliasMemory(app));
   // 参与度提示、静默时长和轻量记忆；代码在 social-v2/participation.js
   Object.assign(app, createParticipationV2(app));
   // 把聊天记录压成长期记忆并提供只读查询；代码在 memory/compress.js
   Object.assign(app, createMemoryCompressor(app));
+  app.memoryAPI = createMemoryAPI(app);
 }
 
 // ── 一代仿真：状态机、提示词、调度 ──
@@ -445,7 +441,11 @@ function assembleWakeV2() {
 // ── 进来的消息：入口、提问、撤回、拍一拍 ──
 function assembleInbound() {
   // QQ 消息进到程序的总入口；代码在 inbound/filter.js
+  Object.assign(app, createModeMemory(app));
+  Object.assign(app, createModeDispatch(app));
+  Object.assign(app, createInboundCommands(app));
   Object.assign(app, createInboundFilter(app));
+  Object.assign(app, createPipelineAccept(app));
   // 等待回答的提问和审批；代码在 conversations/pending.js
   Object.assign(app, createPendingQuestions(app));
   // 处理撤回消息；代码在 inbound/recall.js
@@ -521,10 +521,10 @@ async function main() {
     get sendChainFor() { return sendChainFor; },
     get sessionEpoch() { return sessionEpoch; }, set sessionEpoch(v) { sessionEpoch = v; },
     get singleLineForQQ() { return singleLineForQQ; },
-    get slangEntries() { return slangEntries; }, set slangEntries(v) { slangEntries = v; },
-    get slangLearnerSessionId() { return slangLearnerSessionId; }, set slangLearnerSessionId(v) { slangLearnerSessionId = v; },
-    get slangStoreWritable() { return slangStoreWritable; },
-    get slangTaskChain() { return slangTaskChain; }, set slangTaskChain(v) { slangTaskChain = v; },
+    get terms() { return terms; },
+    get termsWritable() { return termsWritable; },
+    get memoryLearnerSessionId() { return memoryLearnerSessionId; }, set memoryLearnerSessionId(v) { memoryLearnerSessionId = v; },
+    get MEMORY_SESSION_FILE() { return MEMORY_SESSION_FILE; },
     get snowlumaHealthSnapshot() { return snowlumaHealthSnapshot; },
     get social() { return social; },
     get socialV2() { return socialV2; },
@@ -558,7 +558,7 @@ async function main() {
   // 存档开关只在启动时读一次，中途改了要重启才生效。
   const messageArchive = cfg.archive.enabled
     ? ctx.register('archive', createMessageArchive({
-      dir: ctx.paths.archive, log, maxShardBytes: cfg.archive.maxShardMb * 1024 * 1024,
+      dir: ctx.paths.archive, log, onRedact: (key, id) => app.forgetMemorySource(key, id), maxShardBytes: cfg.archive.maxShardMb * 1024 * 1024,
     }))
     : null;
   if (messageArchive) log(`消息池 archive 已启用：${path.relative(ROOT, ctx.paths.archive)}（全量原文，只追加）`);
@@ -587,22 +587,13 @@ async function main() {
   // 收发消息时同步存档，失败只记日志；代码在 archive-wiring.js
   const { archiveSafely, archiveIncoming, archiveOutgoing } = Object.assign(app, createArchiveWiring(app));
 
-  // ── 学习群里的黑话和网络用语 ──
-  let slangEntries = [];
-  // 读文件失败时暂停写入，否则会用空数据覆盖硬盘上的词条。
-  let slangStoreWritable = true;
-  // 黑话保存在记忆池里；代码在 store/pool.js 和 slang/pool.js
-  const { loadSlangEntries } = Object.assign(app, createSlangPoolStore({ pool: memoryPool, legacyFile: SLANG_FILE, log }));
-  try {
-    slangEntries = loadSlangEntries();
-  } catch (error) {
-    slangStoreWritable = false;
-    log(`⚠️ 黑话库加载失败，已暂停写入以免覆盖磁盘数据（修好后重启即可恢复）：${error?.message ?? error}`);
-  }
+  let termsWritable = true;
+  const terms = createTerms({ pool: memoryPool, file: POOL_FILE, legacyFile: path.join(STATE_DIR, 'slang.json'), config: () => cfg.memory.terms, sanitize: (text) => app.sanitizeUntrustedText(app.redactKnownTokensOnly(text)) });
+  try { terms.migrate(); }
+  catch (error) { termsWritable = false; log(`⚠️ 词汇记忆迁移失败，保留原文件并停止写入：${error.message}`); }
   const feedbackTimes = new Map();      // 每个会话的最近反馈时间，防止太频繁
   const learnerSessions = new Set();    // 正在学习的会话，不连 QQ、不发消息
-  let slangLearnerSessionId = null;
-  let slangTaskChain = Promise.resolve();
+  let memoryLearnerSessionId = null;
 
   // 表情库读不出来时只读不写，避免把空库写回去清掉学到的内容。
   let stickerEntries = [];
@@ -636,7 +627,6 @@ async function main() {
 
   assembleSticker();
 
-  assembleSlang();
 
   if (!cfg.allow.private.length && !cfg.allow.groups.length && cfg.allowAllWhenEmpty) {
     log('⚠️  白名单为空且 allowAllWhenEmpty=true：将转发所有私聊/群聊消息给 agent');
@@ -704,8 +694,8 @@ async function main() {
     priceTable,
     // 学习会话单独记账，认不出的会话算作未归属。
     resolveKey: (sessionId) => reverse.get(sessionId)
-      ?? (learnerSessions.has(sessionId) || (slangLearnerSessionId && sessionId === slangLearnerSessionId)
-        ? 'internal:黑话学习'
+      ?? (learnerSessions.has(sessionId) || (memoryLearnerSessionId && sessionId === memoryLearnerSessionId)
+        ? 'internal:记忆整理'
         : undefined)
   });
 
@@ -832,7 +822,9 @@ async function main() {
   assembleMemory();
 
   // DSH 消息投递队列；代码在 dsh/deliver.js
-  const { deliverPromptNow, deliverPrompt, processPromptQueue, drainPromptQueue, drainAllPromptQueues, promptQueues } = Object.assign(app, createDshDeliver(app));
+  const { promptQueues, promptActors, deliverPromptNow, deliverPrompt, processPromptQueue, drainPromptQueue, drainAllPromptQueues } = Object.assign(app, createDshDeliver(app));
+
+  Object.assign(app, createSchedulerExecutor(app));
 
   assembleSimulationV1();
 
@@ -857,10 +849,19 @@ async function main() {
 
   // ── 启动流程：从这里开始才真正执行 ──
   // 启动时先加载上次的数据；这些调用要放在所有模块装好之后。
+  app.loadIdentity();
   app.loadSocialV2State();
   // 加载操作者预写的开场说明，文件损坏时只读不写。
   app.loadInitialPrompts();
   app.loadConversationOverrides();
+  // 成员策略只在 gateV2 打开时加载和迁移，关着时不读不写
+  if (cfg.architecture.gateV2) {
+    app.loadMemberPolicy();
+    try {
+      const report = app.migrateIgnoreList();
+      if (report.migrated.length) log(`已把 ignore.sendQQ 迁移为成员策略：${report.migrated.length} 条，跳过 ${report.skipped.length} 条`);
+    } catch (error) { log(`⚠️ ignore.sendQQ 迁移未执行：${error?.message ?? error}`); }
+  }
 
   // 这里启动的只是一个定时心跳，是否真的参与由模式决定。
   if (cfg.social?.enabled !== false) {

@@ -1,3 +1,4 @@
+import { adaptLegacyConfig } from './legacy-config.js';
 // 读取 config.json 并套默认值；读坏就抛，不静默回落
 import { normalizeOwnerQQ, normalizeIdList } from '../policy/access.js';
 import { REASONING_EFFORT_DEFAULT, normalizeReasoningEffort } from '../policy/mode.js';
@@ -6,7 +7,8 @@ import { DEFAULT_SOCIAL_V2_TOOLS, resolveSocialV2Tools } from '../policy/tool-de
 // 读取配置并合并默认值
 export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, log = () => {}, roleInjectMaxCharsDefault = 8000 }) {
   const p = configFile;
-  const file = readJsonSafe(p, null, true);
+  const raw = readJsonSafe(p, null, true);
+  const file = raw && typeof raw === 'object' && !Array.isArray(raw) ? adaptLegacyConfig(raw) : raw;
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
   const cfg = {
     dsh: {
@@ -55,17 +57,6 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
     security: {
       interceptNotify: true,
       ...(file.security ?? {})
-    },
-    slang: {
-      enabled: true,
-      extractMinMessages: 10,
-      extractCooldownMs: 5 * 60 * 1000,
-      inferenceThresholds: [2, 4, 8],
-      injectMax: 8,
-      learnerPreset: 'qq-chat',
-      workspaceTitle: 'QQ 黑话学习',
-      autoResearch: true,
-      ...(file.slang ?? {})
     },
     social: {
       enabled: true,
@@ -310,8 +301,33 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
   // 记忆压缩默认关闭，需要先打开消息存档
   {
     const memory = file.memory && typeof file.memory === 'object' && !Array.isArray(file.memory) ? file.memory : {};
-    cfg.memory = { ...memory, enabled: memory.enabled === true };
+    cfg.memory = { ...memory, enabled: memory.enabled === true, learnerPreset: memory.learnerPreset ?? file.slang?.learnerPreset ?? 'qq-chat', workspaceTitle: memory.workspaceTitle ?? file.slang?.workspaceTitle ?? 'QQ 记忆整理', terms: { enabled: true, injectMax: 8, maxPerConv: 200, ...file.slang, ...memory.terms } };
+    delete cfg.memory.terms.learnerPreset;
+    delete cfg.memory.terms.workspaceTitle;
+    delete cfg.memory.terms.autoResearch;
+    delete cfg.memory.terms.extractMinMessages;
+    delete cfg.memory.terms.extractCooldownMs;
+    delete cfg.memory.terms.inferenceThresholds;
   }
 
+  cfg.identity = { enabled: true, learnFromChat: true, renderAliasTableMax: 20, ...file.identity, exposeQqInPrompt: file.identity?.exposeQqInPrompt ?? cfg.socialV2?.privacy?.exposeUserId === true };
+
+  // 架构改造灰度开关，默认全关（docs/architecture-refactor.md §12）
+  cfg.modes = {
+    engine: Object.fromEntries(['chat', 'closed-agent', 'reserved', 'reserved2'].map((mode) => [mode, file.modes?.engine?.[mode] === true])),
+    defaults: Object.fromEntries(['group', 'private'].flatMap((kind) => {
+      const mode = file.modes?.defaults?.[kind];
+      if (mode === undefined) return [];
+      if (!['chat', 'reserved', 'reserved2'].includes(mode)) throw new Error(`modes.defaults.${kind} 只允许 chat/reserved/reserved2`);
+      return [[kind, mode]];
+    })),
+  };
+  cfg.architecture = {
+    gateV2: file.architecture?.gateV2 === true,
+    schedulerV2: {
+      ...Object.fromEntries(['chat', 'closed-agent', 'reserved', 'reserved2', 'shadow'].map((mode) => [mode, file.architecture?.schedulerV2?.[mode] === true])),
+      maxConcurrent: Math.min(64, Math.max(1, Math.floor(Number(file.architecture?.schedulerV2?.maxConcurrent) || 4))),
+    },
+  };
   return cfg;
 }

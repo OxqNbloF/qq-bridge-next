@@ -92,7 +92,7 @@ function readShardLines(file) {
  * @param {number} [opts.idWindow] 每个会话记多少个已见编号
  */
 export function createMessageArchive({
-  dir, now = () => Date.now(), log = () => {}, maxShardBytes = 64 * 1024 * 1024, idWindow = 5000,
+  dir, now = () => Date.now(), log = () => {}, maxShardBytes = 64 * 1024 * 1024, idWindow = 5000, onRedact = () => {},
 } = {}) {
   if (!dir) throw new Error('createMessageArchive: 缺少 dir');
   /** 每个会话的目录、最后序号和已见编号 */
@@ -215,6 +215,10 @@ export function createMessageArchive({
       media: pickMediaMeta(input.media),
     };
     if (record.plain === undefined || record.plain === record.text) delete record.plain;
+    // 该成员不计入上下文：留作底账，但不得再流回模型（压缩会跳过）
+    if (input.no_context === true) record.no_context = true;
+    // 包含被引用正文的作者；压缩前后必须复查全部来源，而不只发消息的人。
+    if (Array.isArray(input.sourceQqs)) record.sourceQqs = [...new Set(input.sourceQqs.map(String))];
     record.hash = contentHash(record);
     writeLine(conv, record, atMs);
     conv.lastSeq = record.seq;
@@ -267,12 +271,13 @@ export function createMessageArchive({
 
   /**
    * 隐私删除：清空该消息正文/昵称/媒体，保留 seq 与 msg_id
-   * @returns {number} 被改写的行数
+   * @returns {{changed:number, found:boolean, cleanup:{ok:boolean, errors:string[]}}} 归档与派生清理分别报告
    */
   function redact(convId, msgId) {
     const conv = open(convId);
     const target = String(msgId ?? '');
     let changed = 0;
+    let found = false;
     for (const shard of shardsOf(conv.dirPath)) {
       const file = path.join(conv.dirPath, shard.name);
       let raw;
@@ -282,7 +287,9 @@ export function createMessageArchive({
         if (!line.trim()) return line;
         let rec;
         try { rec = JSON.parse(line); } catch { return line; }
-        if (rec?.type !== 'message' || String(rec.msg_id) !== target || rec.redacted === true) return line;
+        if (rec?.type !== 'message' || String(rec.msg_id) !== target) return line;
+        found = true;
+        if (rec.redacted === true) return line;
         hit = true;
         changed += 1;
         return JSON.stringify({ ...rec, nick: '', text: '', plain: undefined, media: [], hash: null, redacted: true });
@@ -293,7 +300,17 @@ export function createMessageArchive({
       fs.renameSync(tmp, file);
       if (conv.current?.file === file) conv.current.bytes = fs.statSync(file).size;
     }
-    return changed;
+    let cleanup = { ok: true, errors: [] };
+    if (found) {
+      try {
+        const result = onRedact(convId, target);
+        if (result?.ok === false) cleanup = result;
+      } catch (error) {
+        cleanup = { ok: false, errors: [String(error?.message ?? error)] };
+        log(`[archive] 归档已脱敏，派生数据清理未完成，需重试：${error?.message ?? error}`);
+      }
+    }
+    return { changed, found, cleanup };
   }
 
   /**

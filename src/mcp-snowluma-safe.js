@@ -1,3 +1,4 @@
+import { adaptLegacyConfig } from './infra/legacy-config.js';
 // 安全版 QQ MCP server：只暴露聊天动作，发送须过白名单
 import fs from 'node:fs';
 import http from 'node:http';
@@ -10,6 +11,7 @@ import { z } from 'zod';
 import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
 import { resolveSocialV2Tools } from './policy/tool-defaults.js';
+import { filterAndProjectGroupHistory as filterAndProjectGroupHistoryCore, groupAllowed } from './gate/mcp-history.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -44,7 +46,7 @@ function loadConfig() {
   try {
     let text = fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8');
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-    return JSON.parse(text);
+    return adaptLegacyConfig(JSON.parse(text));
   } catch {
     return {};
   }
@@ -57,18 +59,6 @@ function getConfig() {
   return loadConfig();
 }
 
-// 取白名单配置
-function getAccess() {
-  const c = getConfig();
-  return {
-    allowGroups: (c.allow?.groups ?? []).map(String),
-    allowPrivate: (c.allow?.private ?? []).map(String),
-    denyGroups: (c.deny?.groups ?? []).map(String),
-    denyPrivate: (c.deny?.private ?? []).map(String),
-    allowAllWhenEmpty: c.allowAllWhenEmpty === true
-  };
-}
-
 // 取 OneBot HTTP 地址与 token
 function getOneBotConfig() {
   const c = getConfig();
@@ -78,12 +68,34 @@ function getOneBotConfig() {
   };
 }
 
-// 与桥接一致：allow 为空时按 allowAllWhenEmpty 放行
-function isAllowed(allowList, denyList, id, allowAllWhenEmpty) {
-  const s = String(id);
-  if (denyList.includes(s)) return false;
-  if (allowList.length > 0) return allowList.includes(s);
-  return allowAllWhenEmpty;
+// 过滤群历史消息中 context=false / 名单拒绝的成员，并按模型视图隐藏裸 QQ 号（复用 gate/decide 与 projectForModel 口径）
+function filterAndProjectGroupHistory(groupId, data) {
+  const c = getConfig();
+  let policy = null;
+  let policyBroken = false;
+  if (c.architecture?.gateV2 === true) {
+    try {
+      let text = fs.readFileSync(path.join(ROOT, 'state', 'member-policy.json'), 'utf8');
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid member-policy');
+      policy = parsed;
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && !/Unexpected fixture file/.test(String(error?.message ?? ''))) {
+        policyBroken = true;
+      }
+    }
+  }
+  let identityPeople = {};
+  if (c.identity?.exposeQqInPrompt !== true && c.identity?.enabled !== false) {
+    try {
+      let text = fs.readFileSync(path.join(ROOT, 'state', 'identity.json'), 'utf8');
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      const parsed = JSON.parse(text);
+      if (parsed?.people && typeof parsed.people === 'object') identityPeople = parsed.people;
+    } catch {}
+  }
+  return filterAndProjectGroupHistoryCore({ groupId, data, cfg: c, policy, policyBroken, identityPeople });
 }
 
 // 把 JSON 字符串形式的单条消息还原
@@ -273,7 +285,7 @@ async function authorizeRead(key) {
 
 // 旧只读工具仅在 closed-agent 放行；用白名单判断，fail closed
 async function legacyReadToolAllowed() {
-  const status = await agentApi('/api/status');
+  const status = await agentApi('/api/agent/status');
   return String(status?.mode ?? '') === 'closed-agent';
 }
 
@@ -300,8 +312,6 @@ const TOOL_CONFIG_FLAGS = {
   qq_memory_query: 'memory',
   qq_memory_remove: 'memory',
   qq_memory_clear: 'memory',
-  qq_slang_query: 'slangQuery',
-  qq_slang_submit: 'slangSubmit',
   qq_send_voice: 'sendVoice',
   qq_list_voices: 'sendVoice',
   // 以下开关须登记，漏登记会让关闭的工具仍可见
@@ -451,10 +461,10 @@ server.tool(
       return { content: [{ type: 'text', text: `无法确认当前模式，拒绝执行：${error?.message ?? error}` }], isError: true };
     }
     try {
-      const a = getAccess();
+      const c = getConfig();
       const data = await onebot('get_group_list');
       const list = (Array.isArray(data) ? data : (data?.data ?? []))
-          .filter((g) => isAllowed(a.allowGroups, a.denyGroups, g.group_id, a.allowAllWhenEmpty))
+          .filter((g) => groupAllowed(g.group_id, c))
           .map((g) => ({ group_id: g.group_id, group_name: g.group_name }));
       return { content: [{ type: 'text', text: serializeModelData(list) }] };
     } catch (error) {
@@ -467,18 +477,17 @@ server.tool(
 // 群成员列表用 v2 形态（key + token），两种模式都可用
 server.tool(
   'qq_get_group_members',
-  '列出指定群的成员（只读）：QQ 号、昵称、群名片。等特定的人、要 @ 某个人、或需要确认谁在群里时用；QQ 号取返回里的 userId。只返回白名单群，且只读取桥接允许的会话。',
+  '列出指定群的成员（只读）：成员标识（memberRef，开启 QQ 暴露时为 userId）、昵称、群名片。等特定的人、要 @/拍一拍某个人、或需要确认谁在群里时用；目标参数可直接传返回里的 memberRef（member-*）。只返回白名单群，且只读取桥接允许的会话。',
   {
     key: z.string().describe('会话 key，格式 group:群号'),
-    token: z.string().optional().describe('会话令牌（见唤醒提示中的【会话令牌】；closed-agent 模式不需要）'),
+    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】；所有模式必填，包括 closed-agent）'),
     limit: z.number().optional().describe('最多返回多少成员，默认 50，最大 100')
   },
   async ({ key, token, limit }) => {
     try {
       const q = new URLSearchParams({ key });
       if (limit != null) q.set('limit', String(limit));
-      // 封闭模式下令牌可以为空，桥接那边也会检查
-      const data = await agentApi(`/api/socialV2/group-members?${q.toString()}`, token ? { headers: { 'x-agent-token': token } } : {});
+      const data = await agentApi(`/api/agent/group-members?${q.toString()}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取群成员失败：${error?.message ?? error}` }], isError: true };
@@ -500,15 +509,14 @@ server.tool(
     } catch (error) {
       return { content: [{ type: 'text', text: `无法确认当前模式，拒绝读取：${error?.message ?? error}` }], isError: true };
     }
-    const a = getAccess();
-    if (!isAllowed(a.allowGroups, a.denyGroups, g, a.allowAllWhenEmpty)) {
+    if (!groupAllowed(g, getConfig())) {
       return { content: [{ type: 'text', text: `拒绝：群 ${g} 不在只读白名单中` }], isError: true };
     }
     try {
       const params = { group_id: Number(g) };
       if (messageSeq !== undefined) params.message_seq = messageSeq;
       const data = await onebot('get_group_msg_history', params);
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      return { content: [{ type: 'text', text: serializeModelData(filterAndProjectGroupHistory(g, data)) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `查询失败：${error?.message ?? error}` }], isError: true };
     }
@@ -523,15 +531,15 @@ server.tool(
     groupId: z.union([z.number(), z.string()]).describe('群号（必须在白名单内）'),
     message: z.string().describe('消息文本，纯文本，不要用 Markdown 或 CQ 码'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-    token: z.string().optional().describe('二代会话令牌（reserved2 模式下必填；closed-agent 模式不需要）')
+    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】；所有模式必填，包括 closed-agent）')
   },
   async ({ groupId, message, replyToMessageId, token }) => {
     try {
       const cleanMessage = unquoteJsonString(message);
-      const data = await agentApi('/api/send/group', {
+      const data = await agentApi('/api/agent/send/group', {
         method: 'POST',
         // token 放 header，桥接按 header 识别 agent 流量
-        ...(token ? { headers: { 'x-agent-token': token } } : {}),
+        headers: { 'x-agent-token': token },
         body: JSON.stringify({ groupId: String(groupId), message: cleanMessage, replyToMessageId, token: token || undefined })
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
@@ -548,14 +556,14 @@ server.tool(
     groupId: z.union([z.number(), z.string()]).describe('群号（必须在白名单内）'),
     replyToMessageId: z.union([z.number(), z.string()]).describe('被引用/回复的消息 id（非零整数，可为负数）'),
     message: z.string().describe('要发送的文本，纯文本，不要用 Markdown 或 CQ 码'),
-    token: z.string().optional().describe('二代会话令牌（reserved2 模式下必填；closed-agent 模式不需要）')
+    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】；所有模式必填，包括 closed-agent）')
   },
   async ({ groupId, replyToMessageId, message, token }) => {
     try {
       const cleanMessage = unquoteJsonString(message);
-      const data = await agentApi('/api/send/reply', {
+      const data = await agentApi('/api/agent/send/reply', {
         method: 'POST',
-        ...(token ? { headers: { 'x-agent-token': token } } : {}),
+        headers: { 'x-agent-token': token },
         body: JSON.stringify({ groupId: String(groupId), replyToMessageId, message: cleanMessage, token: token || undefined })
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
@@ -572,14 +580,14 @@ server.tool(
     userId: z.union([z.number(), z.string()]).describe('好友 QQ 号（必须在白名单内）'),
     message: z.string().describe('消息文本，纯文本，不要用 Markdown 或 CQ 码'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-    token: z.string().optional().describe('二代会话令牌（reserved2 模式下必填；closed-agent 模式不需要）')
+    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】；所有模式必填，包括 closed-agent）')
   },
   async ({ userId, message, replyToMessageId, token }) => {
     try {
       const cleanMessage = unquoteJsonString(message);
-      const data = await agentApi('/api/send/private', {
+      const data = await agentApi('/api/agent/send/private', {
         method: 'POST',
-        ...(token ? { headers: { 'x-agent-token': token } } : {}),
+        headers: { 'x-agent-token': token },
         body: JSON.stringify({ userId: String(userId), message: cleanMessage, replyToMessageId, token: token || undefined })
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
@@ -596,7 +604,7 @@ server.tool(
   { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）') },
   async ({ key, token }) => {
     try {
-      const data = await agentApi(`/api/socialV2/prompt?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/prompt?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取提示词失败：${error?.message ?? error}` }], isError: true };
@@ -615,7 +623,7 @@ server.tool(
   },
   async ({ key, token, limit, afterSeq }) => {
     try {
-      const data = await agentApi(`/api/socialV2/unread?key=${encodeURIComponent(key)}&limit=${limit ?? 30}${afterSeq === undefined ? '' : `&afterSeq=${afterSeq}`}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/unread?key=${encodeURIComponent(key)}&limit=${limit ?? 30}${afterSeq === undefined ? '' : `&afterSeq=${afterSeq}`}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取未读消息失败：${error?.message ?? error}` }], isError: true };
@@ -634,7 +642,7 @@ server.tool(
   },
   async ({ key, token, limit, offset }) => {
     try {
-      const data = await agentApi(`/api/socialV2/recent?key=${encodeURIComponent(key)}&limit=${limit ?? 20}&offset=${offset ?? 0}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/recent?key=${encodeURIComponent(key)}&limit=${limit ?? 20}&offset=${offset ?? 0}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取最近消息失败：${error?.message ?? error}` }], isError: true };
@@ -648,7 +656,7 @@ server.tool(
   { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）') },
   async ({ key, token }) => {
     try {
-      const data = await agentApi(`/api/socialV2/state?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/state?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取状态失败：${error?.message ?? error}` }], isError: true };
@@ -666,7 +674,7 @@ server.tool(
   },
   async ({ key, token, throughSeq }) => {
     try {
-      const data = await agentApi('/api/socialV2/mark-read', { method: 'POST', body: JSON.stringify({ key, throughSeq }), headers: { 'x-agent-token': token } });
+      const data = await agentApi('/api/agent/mark-read', { method: 'POST', body: JSON.stringify({ key, throughSeq }), headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `标记已读失败：${error?.message ?? error}` }], isError: true };
@@ -689,7 +697,7 @@ server.tool(
       triggers: z.object({
         atMention: z.boolean().optional().describe('被 @ 或引用自己时唤醒'),
         nameMention: z.boolean().optional().describe('被叫名字/昵称时唤醒'),
-        speakerIds: z.array(z.union([z.number(), z.string()])).max(20).optional().describe('指定群友 QQ 号数组：这些群友中任意一位发言时唤醒（可选，最多 20 个，不设置则不启用；私聊不适用，设置会被桥接清除；可从 qq_get_active_members / qq_get_group_members / qq_get_message_detail 的 userId/user_id 获取）'),
+        speakerIds: z.array(z.union([z.number(), z.string()])).max(20).optional().describe('指定群友数组：这些群友中任意一位发言时唤醒（可选，最多 20 个，不设置则不启用；私聊不适用，设置会被桥接清除；可传 qq_get_active_members / qq_get_group_members / qq_get_message_detail 返回的 memberRef（member-* 标识）或 QQ 号）'),
         keywords: z.union([z.array(z.union([z.string(), z.number()])), z.string()]).optional().describe('出现任意关键词时唤醒；可传数组或逗号/顿号/空白分隔的字符串'),
         question: z.boolean().optional().describe('被直接提问/点名挑战时唤醒'),
         poke: z.boolean().optional().describe('有人拍一拍时唤醒（群聊包括拍你和拍别人，私聊为对方拍你）'),
@@ -706,7 +714,7 @@ server.tool(
   async ({ key, token, config, throughSeq }) => {
     try {
       const canonicalConfig = normalizeWakeArguments(config);
-      const data = await agentApi('/api/socialV2/wake-config', { method: 'POST', body: JSON.stringify({ key, config: canonicalConfig, throughSeq }), headers: { 'x-agent-token': token } });
+      const data = await agentApi('/api/agent/wake-config', { method: 'POST', body: JSON.stringify({ key, config: canonicalConfig, throughSeq }), headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `设置唤醒配置失败：${error?.message ?? error}` }], isError: true };
@@ -743,7 +751,7 @@ server.tool(
           } catch {}
         }
       }
-      const data = await agentApi('/api/socialV2/send-burst', {
+      const data = await agentApi('/api/agent/send-burst', {
         method: 'POST',
         body: JSON.stringify({ key, messages: finalMessages }),
         headers: { 'x-agent-token': token },
@@ -764,7 +772,7 @@ server.tool(
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
     messages: z.union([z.string(), z.array(z.string()).min(1)]).describe('要发送的内容：字符串=一条；数组=分多条'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-    atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中用于点名某个人；与引用二选一即可，不要滥用）'),
+    atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员标识（可传最近消息 / qq_get_active_members / qq_get_group_members / qq_get_message_detail 返回的 memberRef（member-* 标识）或 QQ 号；与引用二选一即可，不要滥用）'),
     gapMode: z.enum(['auto', 'fixed', 'byLength']).optional().describe('auto=桥接随机；fixed=固定间隔；byLength=按字数计算'),
     gapMs: z.number().optional().describe('fixed 模式下的统一间隔（毫秒）'),
     gaps: z.array(z.number()).optional().describe('fixed 模式下逐条间隔（长度=条数-1）')
@@ -789,7 +797,7 @@ server.tool(
           } catch {}
         }
       }
-      const data = await agentApi('/api/socialV2/send-message', {
+      const data = await agentApi('/api/agent/send-message', {
         method: 'POST',
         body: JSON.stringify({ key, messages: finalMessages, replyToMessageId, atUserId: atUserId ?? null, gapMode, gapMs, gaps }),
         headers: { 'x-agent-token': token },
@@ -805,15 +813,15 @@ server.tool(
 if (cfg.socialV2?.tools?.sendPoke !== false) {
   server.tool(
     'qq_send_poke',
-    '发送 QQ 拍一拍（群聊/私聊）。适合用“戳一下”代替一句废话、提醒对方、自然回应别人的拍一拍，或偶尔主动戳一下正在聊的人/熟人——这样更拟真；但别频繁，真人不会一直戳人。群聊必须传 targetUserId（要拍的群友 QQ 号，可从 qq_get_active_members / qq_get_message_detail 的 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。reserved2 下必须携带会话令牌 token，发送会受桥接白名单与发送频率限制。',
+    '发送 QQ 拍一拍（群聊/私聊）。适合用“戳一下”代替一句废话、提醒对方、自然回应别人的拍一拍，或偶尔主动戳一下正在聊的人/熟人——这样更拟真；但别频繁，真人不会一直戳人。群聊必须传 targetUserId（可从最近消息 / qq_get_active_members / qq_get_group_members / qq_get_message_detail 返回的 memberRef（member-* 标识）或 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。reserved2 下必须携带会话令牌 token，发送会受桥接白名单与发送频率限制。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      targetUserId: z.union([z.number(), z.string()]).optional().describe('要拍的群友 QQ 号（群聊必填；私聊可选）')
+      targetUserId: z.union([z.number(), z.string()]).optional().describe('要拍的群友 memberRef（member-* 标识）或 QQ 号（群聊必填；私聊可选）')
     },
     async ({ key, token, targetUserId }) => {
       try {
-        const data = await agentApi('/api/socialV2/send-poke', {
+        const data = await agentApi('/api/agent/send-poke', {
           method: 'POST',
           body: JSON.stringify({ key, targetUserId: targetUserId != null ? String(targetUserId) : '' }),
           headers: { 'x-agent-token': token },
@@ -841,7 +849,7 @@ server.tool(
   async ({ key, token, purpose, timeoutMs, minNewMessages, quietMs }) => {
     try {
       // 须走长轮询通道，fetch 的 300s 超时会断
-      const data = await agentApiLongPoll('/api/socialV2/wait', {
+      const data = await agentApiLongPoll('/api/agent/wait', {
         method: 'POST',
         body: JSON.stringify({ key, purpose, timeoutMs, minNewMessages, quietMs }),
         headers: { 'x-agent-token': token },
@@ -865,7 +873,7 @@ server.tool(
   },
   async ({ key, token, level, message }) => {
     try {
-      const data = await agentApi('/api/socialV2/feedback', {
+      const data = await agentApi('/api/agent/feedback', {
         method: 'POST',
         body: JSON.stringify({ key, level, message }),
         headers: { 'x-agent-token': token }
@@ -887,7 +895,7 @@ server.tool(
   },
   async ({ key, token, limit }) => {
     try {
-      const data = await agentApi(`/api/socialV2/my-recent?key=${encodeURIComponent(key)}&limit=${limit ?? 10}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/my-recent?key=${encodeURIComponent(key)}&limit=${limit ?? 10}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取自己消息失败：${error?.message ?? error}` }], isError: true };
@@ -905,7 +913,7 @@ server.tool(
   },
   async ({ key, token, messageId }) => {
     try {
-      const data = await agentApi(`/api/socialV2/message-detail?key=${encodeURIComponent(key)}&messageId=${encodeURIComponent(String(messageId))}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/message-detail?key=${encodeURIComponent(key)}&messageId=${encodeURIComponent(String(messageId))}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取消息详情失败：${error?.message ?? error}` }], isError: true };
@@ -923,7 +931,7 @@ server.tool(
   },
   async ({ key, token, limit }) => {
     try {
-      const data = await agentApi(`/api/socialV2/active-members?key=${encodeURIComponent(key)}&limit=${limit ?? 10}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/active-members?key=${encodeURIComponent(key)}&limit=${limit ?? 10}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取活跃成员失败：${error?.message ?? error}` }], isError: true };
@@ -933,14 +941,18 @@ server.tool(
 
 server.tool(
   'qq_memory_append',
-  '记录一条轻量记忆：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。记忆会持久化，并在后续唤醒/qq_get_prompt 中自动出现。',
+  '记录记忆（含群里的说法；term 需要 extra.meaning；alias 需要 extra.target（member-* 标识、无歧义称呼或 QQ），经两条不同消息佐证后生效；长期类别只读）：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。记忆会持久化，并在后续唤醒/qq_get_prompt 中自动出现。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).describe('记忆类别'),
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'term', 'alias']).describe('可写的记忆类别'),
     content: z.string().describe('记忆内容，例如话题、想说的话、对某人的印象标签'),
     extra: z.object({
-      target: z.string().optional().describe('memberImpression 时的群友名字/昵称'),
+      sourceMessageIds: z.array(z.string().min(1).max(128)).max(50).optional().describe('词汇或轻量记忆的来源消息号；知道来源时传入，用于精确隐私删除'),
+      meaning: z.string().optional().describe('term 的含义，词汇记忆必填'),
+      usage: z.string().optional().describe('词汇用法'),
+      example: z.string().optional().describe('词汇示例'),
+      target: z.string().optional().describe('memberImpression 或 alias 的 member-* 标识、无歧义称呼或 QQ'),
       participants: z.array(z.string()).optional().describe('activeTopic 的参与者列表'),
       pendingQuestion: z.string().optional().describe('activeTopic 里还没问出口的问题'),
       motivation: z.string().optional().describe('pendingThought 的动机，如 curiosity/sociability'),
@@ -949,7 +961,7 @@ server.tool(
   },
   async ({ key, token, category, content, extra }) => {
     try {
-      const data = await agentApi('/api/socialV2/memory-append', {
+      const data = await agentApi('/api/agent/memory-append', {
         method: 'POST',
         body: JSON.stringify({ key, category, content, extra: extra || {} }),
         headers: { 'x-agent-token': token }
@@ -963,17 +975,17 @@ server.tool(
 
 server.tool(
   'qq_memory_query',
-  '查看当前会话的轻量记忆：进行中的话题、你想说但还没说的话、对群友的印象（只读）。',
+  '查询当前会话的轻量记忆、词汇(term)、称呼(alias)或长期记忆(event/preference/commitment/summary)；长期类别由压缩器写入。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).optional().describe('可选：只看某一类记忆')
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'term', 'alias', 'event', 'preference', 'commitment', 'summary']).optional().describe('可选：只看某一类记忆')
   },
   async ({ key, token, category }) => {
     try {
       const q = new URLSearchParams({ key });
       if (category) q.set('category', category);
-      const data = await agentApi(`/api/socialV2/memory?${q.toString()}`, { headers: { 'x-agent-token': token } });
+      const data = await agentApi(`/api/agent/memory?${q.toString()}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `记忆读取失败：${error?.message ?? error}` }], isError: true };
@@ -983,17 +995,17 @@ server.tool(
 
 server.tool(
   'qq_memory_remove',
-  '删除一条轻量记忆：activeTopic/pendingThought 用 content 匹配原文删除；memberImpression 用 target 参数指定群友名字删除。',
+  '删除一条记忆：term/alias/长期类别及 activeTopic/pendingThought 用 content 匹配原文；memberImpression 用 target 指定查询返回的 member-* 标识、唯一群友称呼或明确 QQ 删除。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).describe('记忆类别'),
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'term', 'alias', 'event', 'preference', 'commitment', 'summary']).describe('记忆类别'),
     content: z.string().optional().describe('要删除的话题/想法原文（memberImpression 不需要）'),
-    target: z.string().optional().describe('memberImpression 时要删除的群友名字')
+    target: z.string().optional().describe('memberImpression 时要删除的 member-* 标识、唯一群友称呼或明确 QQ')
   },
   async ({ key, token, category, content, target }) => {
     try {
-      const data = await agentApi('/api/socialV2/memory-remove', {
+      const data = await agentApi('/api/agent/memory-remove', {
         method: 'POST',
         body: JSON.stringify({ key, category, content: content || '', target: target || '' }),
         headers: { 'x-agent-token': token }
@@ -1007,15 +1019,15 @@ server.tool(
 
 server.tool(
   'qq_memory_clear',
-  '清空轻量记忆：不传 category 清空全部；传 activeTopic/pendingThought/memberImpression 只清空对应类别。',
+  '清空轻量记忆：不传 category 只清空全部轻量记忆，保留长期记忆、词汇与称呼；传 activeTopic/pendingThought/memberImpression 只清空对应类别。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).optional().describe('要清空的类别，缺省清空全部')
+    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression', 'term', 'alias', 'event', 'preference', 'commitment', 'summary']).optional().describe('要清空的类别，缺省只清空轻量记忆')
   },
   async ({ key, token, category }) => {
     try {
-      const data = await agentApi('/api/socialV2/memory-clear', {
+      const data = await agentApi('/api/agent/memory-clear', {
         method: 'POST',
         body: JSON.stringify({ key, category: category || '' }),
         headers: { 'x-agent-token': token }
@@ -1027,63 +1039,21 @@ server.tool(
   }
 );
 
-server.tool(
-  'qq_slang_query',
-  '查看当前已确认的群聊黑话/梗/网络表达（只读）。返回已确认词条列表和格式化黑话表；遇到不熟悉的词可先查这里，再决定是否搜索/使用。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    q: z.string().optional().describe('可选搜索词，按词条/含义/用法/示例过滤')
-  },
-  async ({ key, token, q }) => {
-    try {
-      const query = q ? `&q=${encodeURIComponent(String(q))}` : '';
-      const data = await agentApi(`/api/socialV2/slang/query?key=${encodeURIComponent(key)}${query}`, { headers: { 'x-agent-token': token } });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `查询黑话失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  'qq_slang_submit',
-  '把你在群里经常看到但不确定含义/用法的陌生词、黑话、梗或网络表达提交给管理员筛选。提交后进入候选库，管理员确认后会被写入黑话提示词，成为你后续可查询和使用的记忆。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    content: z.string().describe('要提交的陌生词/黑话/梗（最多 50 字）'),
-    context: z.string().optional().describe('可选：你是在什么语境/哪条消息里看到的，帮助管理员判断')
-  },
-  async ({ key, token, content, context }) => {
-    try {
-      const data = await agentApi('/api/socialV2/slang/submit', {
-        method: 'POST',
-        body: JSON.stringify({ key, content, context: context || '' }),
-        headers: { 'x-agent-token': token }
-      });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `提交黑话失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
 // 图片/表情查看工具（一代/二代共用）
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
     'qq_get_message_images',
-    '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；二代模式下必须携带会话令牌。**动图（GIF/动态表情）会被桥接抽帧拼成多格图再给你**：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」——按格子顺序理解动作即可，不要把它当成一张九宫格照片；没有这类说明就是静态图。体积过大的图会被自动缩放/重编码，说明里会给出原始尺寸与体积；如果真的压不到可用体积，返回里会直接写明原因（例如「超过上限」），此时如实告诉对方你看不到，不要编造画面。',
+    '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；所有模式必须携带会话令牌。**动图（GIF/动态表情）会被桥接抽帧拼成多格图再给你**：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」——按格子顺序理解动作即可，不要把它当成一张九宫格照片；没有这类说明就是静态图。体积过大的图会被自动缩放/重编码，说明里会给出原始尺寸与体积；如果真的压不到可用体积，返回里会直接写明原因（例如「超过上限」），此时如实告诉对方你看不到，不要编造画面。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可为负数；二代也可用本地 seq）'),
-      token: z.string().optional().describe('二代会话令牌（reserved2 下必填，见唤醒提示中的【会话令牌】）')
+      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】；所有模式必填）')
     },
     async ({ key, messageId, token }) => {
       try {
         const q = new URLSearchParams({ key, messageId: String(messageId) });
-        const data = await agentApi(`/api/images/message?${q.toString()}`, {
-          headers: token ? { 'x-agent-token': token } : {},
+        const data = await agentApi(`/api/agent/images/message?${q.toString()}`, {
+          headers: { 'x-agent-token': token },
           timeoutMs: 180000
         });
         const images = Array.isArray(data?.images) ? data.images : [];
@@ -1126,7 +1096,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.listSticker
     async ({ key, token, query, count, refresh }) => {
       try {
         // 强制同步用 POST，GET 不能有写副作用（防 CSRF）
-        const data = await agentApi('/api/socialV2/sticker-list', {
+        const data = await agentApi('/api/agent/sticker-list', {
           method: 'POST',
           headers: { 'x-agent-token': token },
           body: JSON.stringify({ key, query: query ? String(query) : '', count, refresh: refresh === true, token })
@@ -1151,7 +1121,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerI
     async ({ key, token, stickerId }) => {
       try {
         const q = new URLSearchParams({ key, stickerId: String(stickerId) });
-        const data = await agentApi(`/api/socialV2/sticker-image?${q.toString()}`, { headers: { 'x-agent-token': token }, timeoutMs: 180000 });
+        const data = await agentApi(`/api/agent/sticker-image?${q.toString()}`, { headers: { 'x-agent-token': token }, timeoutMs: 180000 });
         if (!data?.image?.data || !data?.image?.mimeType) {
           return { content: [{ type: 'text', text: `表情没有可返回的图片：${errorText(data?.error, '未知')}` }], isError: true };
         }
@@ -1176,11 +1146,11 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
       stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）'),
       replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-      atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中可选，私聊不可用）')
+      atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 memberRef（member-* 标识）或 QQ 号（群聊中可选，私聊不可用）')
     },
     async ({ key, token, stickerId, replyToMessageId, atUserId }) => {
       try {
-        const data = await agentApi('/api/socialV2/send-sticker', {
+        const data = await agentApi('/api/agent/send-sticker', {
           method: 'POST',
           body: JSON.stringify({ key, stickerId: String(stickerId), replyToMessageId, atUserId: atUserId ?? null }),
           headers: { 'x-agent-token': token },
@@ -1206,7 +1176,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectStic
     },
     async ({ key, token, messageId, remark }) => {
       try {
-        const data = await agentApi('/api/socialV2/collect-sticker', {
+        const data = await agentApi('/api/agent/collect-sticker', {
           method: 'POST',
           body: JSON.stringify({ key, messageId: String(messageId), remark: remark || '' }),
           headers: { 'x-agent-token': token },
@@ -1234,7 +1204,7 @@ if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !==
     },
     async ({ key, token, voice, label, verify, readback }) => {
       try {
-        const data = await agentApi('/api/socialV2/send-voice', {
+        const data = await agentApi('/api/agent/send-voice', {
           method: 'POST',
           body: JSON.stringify({
             key,
@@ -1266,7 +1236,7 @@ if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !==
       try {
         const q = new URLSearchParams({ key });
         if (probe === false) q.set('probe', '0');
-        const data = await agentApi(`/api/socialV2/voices?${q.toString()}`, { headers: { 'x-agent-token': token } });
+        const data = await agentApi(`/api/agent/voices?${q.toString()}`, { headers: { 'x-agent-token': token } });
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取语音库失败：${error?.message ?? error}` }], isError: true };
@@ -1286,7 +1256,7 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
     async ({ key, token }) => {
       try {
         const q = new URLSearchParams({ key });
-        const data = await agentApi(`/api/socialV2/self-image?${q.toString()}`, { headers: { 'x-agent-token': token } });
+        const data = await agentApi(`/api/agent/self-image?${q.toString()}`, { headers: { 'x-agent-token': token } });
         if (!data?.image?.data || !data?.image?.mimeType) {
           return { content: [{ type: 'text', text: `没有可返回的形象图片：${errorText(data?.error, '未知')}` }], isError: true };
         }
@@ -1321,7 +1291,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.stickerNote
         if (note !== undefined && note !== null) payload.note = String(note);
         if (tags !== undefined && tags !== null) payload.tags = Array.isArray(tags) ? tags.map(String) : [];
         if (usage !== undefined && usage !== null) payload.usage = String(usage);
-        const data = await agentApi('/api/socialV2/sticker-note', {
+        const data = await agentApi('/api/agent/sticker-note', {
           method: 'POST',
           body: JSON.stringify(payload),
           headers: { 'x-agent-token': token }
@@ -1346,7 +1316,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerR
     },
     async ({ key, token, stickerId, remark }) => {
       try {
-        const data = await agentApi('/api/socialV2/sticker-remark', {
+        const data = await agentApi('/api/agent/sticker-remark', {
           method: 'POST',
           body: JSON.stringify({ key, stickerId: String(stickerId), remark: String(remark || '') }),
           headers: { 'x-agent-token': token }
@@ -1372,7 +1342,7 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
     async ({ key, token, id }) => {
       try {
         const q = new URLSearchParams({ key, id: String(id) });
-        const data = await agentApi(`/api/socialV2/forward-message?${q.toString()}`, {
+        const data = await agentApi(`/api/agent/forward-message?${q.toString()}`, {
           headers: { 'x-agent-token': token },
           timeoutMs: 120000
         });
@@ -1402,7 +1372,7 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
         const imageTexts = [];
         if (images.length) {
           try {
-            const mediaRes = await agentApi('/api/socialV2/forward-media', {
+            const mediaRes = await agentApi('/api/agent/forward-media', {
               method: 'POST',
               body: JSON.stringify({ key, media: images.slice(0, MAX_IMAGES) }),
               headers: { 'x-agent-token': token },

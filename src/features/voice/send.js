@@ -32,46 +32,12 @@ export function createVoiceSender(b) {
     }
     const sendPath = processed.path;
 
-    const [kind, id] = key.split(':');
-    const recordSegment = { type: 'record', data: { file: sendPath } };
-    let resolveSend;
-    let rejectSend;
-    const sendPromise = new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
-    // 必须用 let 局部声明，否则严格模式下 ReferenceError
-    let sendChain = b.sendChainFor(key).then(async () => {
-      try {
-        if (assertSendAllowed) assertSendAllowed();
-        // 语音给 60s 预算；和文本共用会话发送链，保证顺序
-        const httpUrl = String(b.cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-        const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
-        const params = kind === 'private'
-          ? { user_id: Number(id), message: [recordSegment] }
-          : { group_id: Number(id), message: [recordSegment] };
-        const res = await b.fetch(`${httpUrl}/${action}`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(b.cfg.snowluma?.accessToken ? { authorization: `Bearer ${b.cfg.snowluma.accessToken}` } : {})
-          },
-          body: JSON.stringify(params),
-          signal: AbortSignal.timeout(60000)
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
-          const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口）' : '';
-          throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
-        }
-        resolveSend(body.data);
-      } catch (error) {
-        rejectSend(error);
-      }
-    });
-    // 立刻登记链尾，否则同会话文本会插到语音前面
-    b.rememberSendChain(key, sendChain);
     try {
-      const data = await sendPromise;
-      b.archiveOutgoing(key, `[语音:${path.basename(filePath)}]`, data, {
-        media: [{ kind: 'record', file: path.basename(filePath), sizeBytes: info.size }],
+      const data = await b.enqueueOutbound(key, {
+        segments: [{ type: 'record', data: { file: sendPath } }], ai: guard, channel: guard ? 'tool' : 'console', group: 'voice',
+        assertSendAllowed: assertSendAllowed ?? b.captureSendGuard(key, { explicitAllow: true }), timeoutMs: 60000,
+        archiveText: `[语音:${path.basename(filePath)}]`,
+        archiveOptions: { media: [{ kind: 'record', file: path.basename(filePath), sizeBytes: info.size }] },
       });
       return {
         messageId: data?.message_id ?? null,

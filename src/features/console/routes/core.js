@@ -12,13 +12,14 @@ export function createConsoleCoreRoutes(b) {
     if (rq.req.method === 'GET' && rq.url.pathname === '/') {
       rq.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...rq.SECURITY_HEADERS });
       try {
-        rq.res.end(fs.readFileSync(path.join(b.ROOT, 'src', 'features', 'console', 'web', 'console.html'), 'utf8'));
+        const page = rq.url.searchParams.get('classic') === '1' ? 'console.html' : 'studio.html';
+        rq.res.end(fs.readFileSync(path.join(b.ROOT, 'src', 'features', 'console', 'web', page), 'utf8'));
       } catch {
-        rq.res.end('控制台页面缺失：qq-bridge/src/features/console/web/console.html');
+        rq.res.end('控制台页面缺失：请检查 src/features/console/web/');
       }
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/status') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/status') {
       const rs = b.readRoleState();
       // 群里的 AI 只能看到运行状态，不能看管理员才知道的信息
       if (rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call'] !== undefined) {
@@ -47,7 +48,7 @@ export function createConsoleCoreRoutes(b) {
       });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/presets') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/presets') {
       let presets = [];
       try {
         const { presets: list } = unwrap(await b.api.agentPresets.list({}), 'agentPreset.list');
@@ -56,7 +57,7 @@ export function createConsoleCoreRoutes(b) {
       rq.sendJson({ presets });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/mode') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/mode') {
       const body = await rq.readBody();
       // 新旧叫法都认，存到硬盘时统一写内部名字
       const requestedMode = normalizeModeInput(body.mode);
@@ -85,12 +86,13 @@ export function createConsoleCoreRoutes(b) {
       } catch (error) {
         b.log(`控制台：模式写穿 DSH 设置失败（${error?.message ?? error}）；本次仅写本地，下次 DSH 轮询会覆盖回滚`);
       }
+      const mixedModes = Object.values(b.cfg.modes?.engine ?? {}).some(Boolean);
       // 用整理后的名字比，模式其实没变就别清定时器
-      if (b.currentMode === 'reserved' && requestedMode !== 'reserved') {
+      if (!mixedModes && b.currentMode === 'reserved' && requestedMode !== 'reserved') {
         b.cleanupSocialForModeChange();
         b.log('控制台：模式离开一代仿真模式，清理社交状态');
       }
-      if (b.currentMode === 'reserved2' && requestedMode !== 'reserved2') {
+      if (!mixedModes && b.currentMode === 'reserved2' && requestedMode !== 'reserved2') {
         b.clearAllSocialV2Timers();
         b.drainAllPromptQueues('模式切换，已取消排队中的投递');
         b.log('控制台：模式离开二代仿真模式，清理 reserved2 定时器与排队投递');
@@ -109,7 +111,7 @@ export function createConsoleCoreRoutes(b) {
       rq.sendJson({ ok: true, mode: requestedMode, closedAgentPreset: next.closedAgentPreset, dshSynced });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/role') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/role') {
       const body = await rq.readBody();
       const rs = b.readRoleState();
       if (body.role && typeof body.role === 'string') {
@@ -128,7 +130,7 @@ export function createConsoleCoreRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/role-mode') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/role-mode') {
       const body = await rq.readBody();
       const rs = b.readRoleState();
       const mode = body.mode === 'silent' ? 'silent' : 'active';

@@ -298,7 +298,7 @@ async function cmdStatus() {
     console.log(`\n❌ SnowLuma 不可达：${error?.message ?? error}`);
   }
   try {
-    const st = await bridgeApi('/api/status');
+    const st = await bridgeApi('/api/console/status');
     console.log(`✅ 桥接在线：mode=${st.mode ?? '?'} role=${st.role ?? '?'} dshReady=${st.dshReady ?? '?'} paused=${st.socialV2Paused ?? '?'}`);
   } catch (error) {
     console.log(`⚠️ 桥接不可达（http://127.0.0.1:${consolePort}）：${error?.message ?? error}`);
@@ -376,7 +376,7 @@ async function cmdSend() {
     // 桥接不可达时退回本地判断，保证离线也能做参数检查。
     if (!has('direct')) {
       try {
-        const data = await bridgeApi('/api/voice/send', {
+        const data = await bridgeApi('/api/console/voice/send', {
           method: 'POST',
           body: JSON.stringify({ target: target.key, file: r.path, dryRun: true })
         });
@@ -388,7 +388,7 @@ async function cmdSend() {
         return;
       } catch (error) {
         if (error?.status === 404) {
-          console.log('⚠️  桥接还没有 /api/voice/send 端点（需重启桥接）；以下为本地校验结果。');
+          console.log('⚠️  桥接还没有 /api/console/voice/send 端点（需重启桥接）；以下为本地校验结果。');
         } else {
           console.log(`⚠️  桥接校验不可用（${error?.message ?? error}）；以下为本地校验结果。`);
         }
@@ -413,7 +413,7 @@ async function cmdSend() {
     result = { ok: true, direct: true, messageId: data?.message_id ?? null };
   } else {
     try {
-      result = await bridgeApi('/api/voice/send', {
+      result = await bridgeApi('/api/console/voice/send', {
         method: 'POST',
         body: JSON.stringify({
           target: target.key,
@@ -431,7 +431,7 @@ async function cmdSend() {
       });
     } catch (error) {
       if (error?.status === 404) {
-        fail('桥接还没有 /api/voice/send 端点（需要重启桥接加载新版本 bridge.js）。\n   临时可用 --direct 直连网关发送。');
+        fail('桥接还没有 /api/console/voice/send 端点（需要重启桥接加载新版本 bridge.js）。\n   临时可用 --direct 直连网关发送。');
       }
       fail(`发送失败：${error?.message ?? error}`);
     }

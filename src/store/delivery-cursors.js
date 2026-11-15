@@ -158,7 +158,7 @@ export function createDeliveryCursors(b) {
   async function replayCompletedTurns(sessionId, records) {
     const key = b.reverse.get(sessionId);
     const mode = key ? b.modeForKey(key) : b.currentMode;
-    if (mode !== 'chat' && mode !== 'closed-agent') return;
+    if (mode !== 'chat' && mode !== 'closed-agent' && !(mode === 'reserved' && b.schedulerEnabled?.(key))) return;
     if (!key || !b.isCurrentSession(key, sessionId)) return;
     const completed = completedTurnsFromRecords(records);
     if (completed.length === 0) return;
@@ -237,6 +237,7 @@ export function createDeliveryCursors(b) {
 
   // 处理会话快照，补发未交付的回复
   async function handleSessionSnapshot(sessionId, snapshot) {
+    b.prepareScheduledSnapshot?.(sessionId, snapshot?.records ?? []);
     b.recordSessionSnapshot(sessionId, snapshot);
     const records = snapshot?.records;
     if (!b.modeKnown) {
@@ -249,7 +250,7 @@ export function createDeliveryCursors(b) {
     } catch (error) {
       // 补发失败不能打断 DSH 事件流
       b.log(`重连补发快照失败 ${sessionId}: ${error?.message ?? error}`);
-    }
+    } finally { b.reconcileScheduledSnapshot?.(sessionId, records ?? []); }
   }
 
   // 模式确定后补发暂存的快照
@@ -262,7 +263,7 @@ export function createDeliveryCursors(b) {
         await runWithDeliveryLock(sessionId, () => replayCompletedTurns(sessionId, records));
       } catch (error) {
         b.log(`暂存快照补发失败 ${sessionId}: ${error?.message ?? error}`);
-      }
+      } finally { b.reconcileScheduledSnapshot?.(sessionId, records ?? []); }
     }
   }
 

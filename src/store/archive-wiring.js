@@ -4,19 +4,19 @@ export function createArchiveWiring(b) {
   /** 记账失败不能影响收发，只写日志 */
   function archiveSafely(op, fn) {
     if (!b.messageArchive) return;
-    try { fn(b.messageArchive); }
+    try { return fn(b.messageArchive); }
     catch (error) { b.log(`[archive] ${op}失败：${error?.message ?? error}`); }
   }
 
   /** 收到消息按顺序记下来：先入档，再进聊天记录，再处理 */
-  function archiveIncoming(key, event, { textContent, plainContent, mediaList }) {
-    archiveSafely('入站落盘', (archive) => {
+  function archiveIncoming(key, event, { textContent, plainContent, mediaList, noContext = false, sourceQqs }) {
+    return archiveSafely('入站落盘', (archive) => {
       const segments = Array.isArray(event?.message) ? event.message : [];
       const replySeg = segments.find((seg) => seg?.type === 'reply');
       const selfId = String(event?.self_id ?? '');
       const atBot = !!selfId && segments.some((seg) => seg?.type === 'at' && String(seg.data?.qq ?? '') === selfId);
       const t = Number(event?.time);
-      archive.append({
+      return archive.append({
         conv_id: key,
         msg_id: event?.message_id ?? event?.msg_id ?? '',
         at: Number.isFinite(t) && t > 0 ? t * 1000 : undefined,
@@ -28,6 +28,8 @@ export function createArchiveWiring(b) {
         reply_to: replySeg?.data?.id ?? null,
         at_bot: atBot,
         media: mediaList,
+        no_context: noContext,
+        sourceQqs,
       });
     });
   }

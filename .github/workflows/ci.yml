@@ -41,6 +41,9 @@ jobs:
           echo "检查了 $count 个 JS 文件"
           exit $fail
 
+      - name: 模式依赖方向
+        run: node scripts/check-mode-dependencies.mjs
+
       - name: JSON 可解析
         shell: bash
         run: |
@@ -91,3 +94,41 @@ jobs:
       # 只扫将要提交的内容，不查历史（查历史需要完整克隆仓库）。
       - name: privacy-scan --tracked-only
         run: node scripts/privacy-scan.mjs --tracked-only
+
+  audit:
+    name: 离线回归与预设契约
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 安装依赖（含 postinstall）
+        run: npm ci
+
+      - name: YAML 可解析（全部 .yml / .yaml）
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          count=0
+          while IFS= read -r f; do
+            count=$((count + 1))
+            if ! node --input-type=module -e "import fs from 'node:fs'; import yaml from 'js-yaml'; yaml.load(fs.readFileSync(process.argv[1], 'utf8'))" "$f"; then
+              echo "::error file=$f::YAML 解析失败"
+              fail=1
+            fi
+          done < <(git ls-files '*.yml' '*.yaml')
+          echo "检查了 $count 个 YAML 文件"
+          exit $fail
+
+      - name: Agent 预设补丁同步检查
+        run: node scripts/build-agent-preset-patches.mjs --check
+
+      - name: 离线回归套件（test:audit）
+        env:
+          QQ_BRIDGE_TEST_LIVE: '0'
+        run: npm run test:audit

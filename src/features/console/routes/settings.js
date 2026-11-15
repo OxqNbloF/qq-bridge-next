@@ -1,3 +1,4 @@
+import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
 // 控制台设置路由：白名单、模型、安全通知、控制台令牌
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import crypto from 'node:crypto';
@@ -13,17 +14,17 @@ import { readConfigObject, atomicWriteJson, atomicWriteText } from '../../../sto
 export function createConsoleSettingsRoutes(b) {
   return async function consoleSettingsRoutes(rq) {
     // 白名单读写（写 config.json 并热更新）
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/whitelist') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/whitelist') {
       rq.sendJson({ allow: b.cfg.allow ?? { private: [], groups: [] }, deny: b.cfg.deny ?? { private: [], groups: [] }, ownerQQ: b.cfg.ownerQQ ?? null });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/whitelist') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/whitelist') {
       const body = await rq.readBody();
       // 把一串号码整理成不重复的数字
       const toNum = (arr) => Array.isArray(arr) ? [...new Set(arr.map((x) => Number(String(x).trim())).filter((n) => Number.isFinite(n)))] : undefined;
       const configFile = path.join(b.ROOT, 'config.json');
       // 配置损坏直接 500，绝不回写
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       const allow = {
         private: toNum(body.allow?.private) ?? (file.allow?.private ?? []),
         groups: toNum(body.allow?.groups) ?? (file.allow?.groups ?? [])
@@ -45,7 +46,7 @@ export function createConsoleSettingsRoutes(b) {
       file.allow = allow;
       file.deny = deny;
       file.ownerQQ = ownerQQ;
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.allow = { private: allow.private, groups: allow.groups };
       b.cfg.deny = { private: deny.private, groups: deny.groups };
       b.cfg.ownerQQ = ownerQQ;
@@ -56,7 +57,7 @@ export function createConsoleSettingsRoutes(b) {
     }
 
     // DSH 模型与思考强度
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/dsh/model') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/dsh/model') {
       const provider = String(b.cfg.dsh?.provider || 'deepseek-official');
       const model = String(b.cfg.dsh?.model || 'deepseek-flash');
       // 档位优先用 DSH 公布的能力，失败用内置清单
@@ -104,16 +105,16 @@ export function createConsoleSettingsRoutes(b) {
       });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/dsh/effort') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/dsh/effort') {
       const body = await rq.readBody();
       let effort;
       try { effort = normalizeReasoningEffort(body.reasoningEffort); }
       catch (error) { rq.sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
       const configFile = path.join(b.ROOT, 'config.json');
       // 配置损坏直接 500，绝不回写
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.dsh = { ...(b.cfg.dsh ?? {}), reasoningEffort: effort };
       // 递增代号，运行中会话下条消息重新选模型
       b.modelSelectionEpoch += 1;
@@ -123,7 +124,7 @@ export function createConsoleSettingsRoutes(b) {
     }
 
     // 安全拦截通知设置
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/security') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/security') {
       rq.sendJson({
         security: b.cfg.security ?? { interceptNotify: true },
         // state/ 权限收紧结果，失败时控制台显示警告和命令
@@ -135,7 +136,7 @@ export function createConsoleSettingsRoutes(b) {
       });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/security') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/security') {
       const body = await rq.readBody();
       // 支持从控制台重试收紧 state/ 权限
       if (body.rehardenStateDir === true) {
@@ -145,12 +146,12 @@ export function createConsoleSettingsRoutes(b) {
         return;
       }
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       const next = { ...(file.security ?? {}), ...body };
       if (typeof next.interceptNotify === 'boolean') next.interceptNotify = next.interceptNotify;
       else if (next.interceptNotify !== undefined) next.interceptNotify = Boolean(next.interceptNotify);
       file.security = next;
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.security = { ...(b.cfg.security ?? {}), ...next };
       b.log(`控制台：安全拦截通知已更新（interceptNotify=${b.cfg.security.interceptNotify}）`);
       rq.sendJson({ ok: true, security: b.cfg.security });
@@ -177,10 +178,10 @@ export function createConsoleSettingsRoutes(b) {
         return;
       }
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       // 手动令牌写 config；随机令牌写 state/console-token
       file.consoleToken = generated ? '' : newToken;
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.consoleToken = generated ? '' : newToken;
       atomicWriteText(path.join(b.STATE_DIR, 'console-token'), newToken);
       b.consoleToken = newToken;

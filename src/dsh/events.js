@@ -1,8 +1,9 @@
 // 接收 DSH 的事件：收集一个回合，再把回复发到 QQ
 import { createTurnCollector } from '../dsh-client.js';
-import { mdToPlain } from '../md-to-plain.js';
-import { isSendToolName, isSilentMarker, SILENT_MARKER } from '../policy/audit.js';
+import { isSendToolName } from '../policy/audit.js';
 import { SENSITIVE_RE } from '../sensitive.js';
+import { createTurnWatchdog } from '../scheduler/watchdog.js';
+import { createTurnLifecycle } from '../scheduler/turn-lifecycle.js';
 
 // 创建 DSH 事件处理模块
 export function createDshEvents(b) {
@@ -18,6 +19,21 @@ export function createDshEvents(b) {
   const wakeConfigMissCount = new Map();
   // DSH 事件流 → QQ
 
+  // collector 的摄入位置随对象存活；快照只追加缺帧，不重置已收文本。
+  const collectorReceipts = new WeakMap();
+  function pushCollected(collector, event, replayCounts = null, observe = () => {}) {
+    let receipts = collectorReceipts.get(collector);
+    if (!receipts) collectorReceipts.set(collector, receipts = new Map());
+    const key = Number.isFinite(event.seq) ? `seq:${event.seq}` : JSON.stringify(event);
+    const count = (replayCounts?.get(key) ?? 0) + 1;
+    replayCounts?.set(key, count);
+    const dedupeLive = Number.isFinite(event.seq) || event?.type !== 'assistant/chunk';
+    if ((replayCounts || dedupeLive) && (receipts.get(key) ?? 0) >= count) return null;
+    receipts.set(key, replayCounts ? count : (receipts.get(key) ?? 0) + 1);
+    observe(event);
+    return collector.push(event);
+  }
+
   /** 收一条事件：只在回合开始时收集，回合结束就清掉 */
   function trackTurnEvent(sessionId, event) {
     // 记录这场对话进行到哪：开始和结束都要记
@@ -27,7 +43,7 @@ export function createDshEvents(b) {
       collector = createTurnCollector();
       b.collectors.set(sessionId, collector);
     }
-    const ended = collector ? collector.push(event) : null;
+    const ended = collector ? pushCollected(collector, event) : null;
     if (ended) {
       // 回合正常结束，马上收起收集器
       b.markTurnDelivered(sessionId, ended.turn, event?.seq);
@@ -48,7 +64,7 @@ export function createDshEvents(b) {
   const dispatchStats = { maxDepth: 0, slowestMs: 0, dropped: 0, overtime: 0 };
 
   // 把一个任务排进这个聊天的队列
-  function dispatch(sessionId, droppable, run) {
+  function dispatch(sessionId, droppable, run, onDrop = () => {}) {
     // 回滚开关：dsh.inlineDispatch=true 恢复「泵内联 await」的旧行为。
     if (b.cfg.dsh?.inlineDispatch === true) return run();
     let queue = dispatchQueues.get(sessionId);
@@ -58,12 +74,13 @@ export function createDshEvents(b) {
       let oldest = queue.tasks.findIndex((task) => task.droppable);
       if (oldest < 0 && queue.tasks.length >= DISPATCH_MAX_BACKLOG * 2) oldest = 0;
       if (oldest >= 0) {
-        queue.tasks.splice(oldest, 1);
+        const [dropped] = queue.tasks.splice(oldest, 1);
+        dropped.onDrop();
         dispatchStats.dropped += 1;
         b.log(`⚠️ 会话 ${sessionId} 出站积压超过 ${DISPATCH_MAX_BACKLOG} 条，丢弃最旧的一条回合发送`);
       }
     }
-    queue.tasks.push({ droppable, run });
+    queue.tasks.push({ droppable, run, onDrop });
     const depth = queue.tasks.length + (queue.running ? 1 : 0);
     if (depth > dispatchStats.maxDepth) dispatchStats.maxDepth = depth;
     if (depth === 5) b.log(`会话 ${sessionId} 出站队列深度 ${depth}`);
@@ -105,220 +122,14 @@ export function createDshEvents(b) {
     }
   }
 
-  // 回合卡住太久就取消：只影响这个聊天，别的照常
-  const lastEventAt = new Map(); // sessionId -> 最近一次该会话事件的时间
-  const toolCallAt = new Map(); // 会话 -> 最近一次工具调用时间，太久就不再宽容
-  const stallNoticeAt = new Map(); // key -> 上次超时提示时间（限频）
-  const STALL_NOTICE_INTERVAL_MS = 10 * 60 * 1000;
+  const { checkStalledTurns, lastEventAt, toolCallAt } = createTurnWatchdog(b, {
+    v2TurnStartAt, turnLeaseNoted, sendToolSucceededSessions, pendingSendToolCalls, toolCallNames, pendingWakeKeys, dispatch,
+  });
+  const { handleEndedTurn } = createTurnLifecycle(b, {
+    v2TurnStartAt, lastEventAt, turnLeaseNoted, sendToolSucceededSessions, pendingSendToolCalls, toolCallNames, toolCallAt,
+    pendingWakeKeys, wakeConfigUpdatedKeys, markReadCalledKeys, wakeConfigMissCount, dispatch,
+  });
   let stallTimer = null;
-
-  // 检查有没有卡死太久的回合
-  function checkStalledTurns(now = Date.now()) {
-    const stallMs = Number(b.cfg.turnStallMs ?? 5 * 60 * 1000);
-    if (!(stallMs > 0)) return [];
-    for (const [key, at] of stallNoticeAt) if (now - at >= STALL_NOTICE_INTERVAL_MS) stallNoticeAt.delete(key);
-    const stalled = [];
-    for (const sessionId of [...b.collectors.keys()]) {
-      const key = b.reverse.get(sessionId);
-      if (!key || b.modeForKey(key) === 'closed-agent') continue;
-      const last = lastEventAt.get(sessionId) ?? v2TurnStartAt.get(sessionId);
-      if (!last || now - last < stallMs) continue;
-      // 有在途工具调用（长轮询等待）不算卡死；但工具结果永远不来（DSH 丢了）时不能永久豁免。
-      if ((toolCallNames.get(sessionId)?.size ?? 0) > 0 && now - (toolCallAt.get(sessionId) ?? 0) < b.TURN_BUSY_LEASE_MS) continue;
-      stalled.push(sessionId);
-      b.log(`⚠️ 会话 ${key} 的回合 ${Math.round((now - last) / 1000)} 秒无事件，判定卡死：取消该会话当前回合并释放忙碌状态`);
-      b.appendActivity(`${key} 回合卡死，已中断`);
-      Promise.resolve().then(() => b.api.stopSessionWork(sessionId))
-        .catch((error) => b.log(`取消卡死回合失败 (${key}): ${error?.message ?? error}`));
-      b.collectors.delete(sessionId);
-      lastEventAt.delete(sessionId);
-      v2TurnStartAt.delete(sessionId);
-      turnLeaseNoted.delete(sessionId);
-      sendToolSucceededSessions.delete(sessionId);
-      pendingSendToolCalls.delete(sessionId);
-      toolCallNames.delete(sessionId);
-      toolCallAt.delete(sessionId);
-      // 这个回合的静默名额 / 退场标记作废：否则下一条真回复会被当成摘要回合吞掉、或被当成退场发言。
-      b.social.silentTurns.delete(sessionId);
-      if (b.social.exitingSessions.delete(sessionId)) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') { st.phase = 'idle'; st.activeDeadlineAt = 0; st.activeExitAt = 0; }
-      }
-      if (pendingWakeKeys.delete(key)) b.disarmPendingWakeLease(key);
-      // 繁忙期间暂存的唤醒原因现在可以补了，否则这个群要等下一条消息才会再被唤醒。
-      b.replayPendingWakeReasonsV2(key);
-      // 提示与失败通知同口径：二代内部回合不外发、静默模式不发；每会话限频。
-      if (b.modeForKey(key) !== 'reserved2' && !b.shouldBlockSilentReply(key)
-        && now - (stallNoticeAt.get(key) ?? 0) >= STALL_NOTICE_INTERVAL_MS) {
-        stallNoticeAt.set(key, now);
-        dispatch(sessionId, false, () => b.sendToQQ(key, '⚠️ 本会话处理超时，已中断', { ai: true }));
-      }
-    }
-    return stalled;
-  }
-
-  // 回合结束后把回复发到 QQ
-  async function deliverEndedTurn(key, ended, isFarewell, sendToolSucceeded) {
-    if (ended.reason.kind === 'completed' && ended.text.trim()) {
-      const plain = mdToPlain(ended.text);
-      // 只有格式没有文字就当没回复
-      if (!plain.trim()) {
-        b.log(`agent 回复为空（仅格式/空白）(${key})`);
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 空退场回合，回到观望`);
-          }
-        }
-        return;
-      }
-      // 社交模式静默标记：AI 主动选择“潜水/不接话”，不发送到 QQ
-      if (isSilentMarker(plain)) {
-        b.log(`社交模式：AI 选择静默（${SILENT_MARKER}）(${key})`);
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 退场选择静默，回到观望`);
-          }
-        }
-        return;
-      }
-      // 本回合已经通过 MCP 发送工具成功发出消息：跳过自动转发，避免重复发送。
-      if (sendToolSucceeded) {
-        b.log(`工具已发送消息，跳过自动转发 (${key})`);
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 工具发送后退场完成，回到观望`);
-          }
-        }
-        return;
-      }
-      // 审计（对完整文本执行，避免截断漏判；这里只判断，不发送，避免双重发送）
-      const hasKnownToken = b.hasKnownTokenFragment(plain);
-      if (b.shouldAuditKey(key) && (SENSITIVE_RE.test(plain) || hasKnownToken)) {
-        b.log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
-        b.appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
-        if (b.cfg.security?.interceptNotify !== false) {
-          await b.sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
-        }
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 退场发言被拦截，回到观望`);
-          }
-        }
-        return;
-      }
-      // 仿真群友模式：时间线多段发送（主回复 + 可选二次补刀）
-      if (b.isSocialEnabled()) {
-        if (b.shouldBlockSilentReply(key)) {
-          b.log(`静默模式，拦截在途回复 (${key})`);
-          b.appendActivity(`${key} 静默模式，拦截在途回复`);
-          if (isFarewell) {
-            const st = b.socialState(key);
-            if (st.phase === 'exiting') {
-              st.phase = 'idle';
-              st.activeDeadlineAt = 0;
-              st.activeExitAt = 0;
-              b.log(`社交模式：${key} 静默模式下退场回合被拦截，回到观望`);
-            }
-          }
-          return;
-        }
-        const timeline = b.planSocialTimeline(plain, b.cfg.social);
-        const messages = timeline.main;
-        b.log(`agent 回复 (${key}) ${plain.length} 字 → ${messages.length} 条`);
-        b.appendActivity(`${key} agent 回复：${messages[0].slice(0, 80)}${messages.length > 1 ? '（分' + messages.length + '条）' : ''}${messages[0].length > 80 ? '…' : ''}`);
-        if (messages.length > 1) {
-          await b.sendBurstToQQ(key, messages, b.cfg.social);
-        } else {
-          await b.sendToQQ(key, messages[0], { ai: true });
-        }
-        // 发言后刷新活跃时间，并调度可能的二次补刀
-        const st = b.socialState(key);
-        if (isFarewell) {
-          // 确认为退场发言：不再刷新活跃时间、不调度补刀，直接进入观望
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场发言完成，进入观望`);
-        } else if (st.phase === 'exiting') {
-          // 退场期间有旧回复恰好完成：照常发出，但不把它当作退场，也不调度补刀
-          b.log(`社交模式：${key} 退场期间旧回复完成，保持退场状态`);
-        } else {
-          if (b.lastSendSucceeded(key)) {
-            st.lastActiveMessageAt = Date.now();
-            st.lastAiReplyAt = Date.now();
-            b.log(`社交模式：发言完成，刷新活跃时间 (${key})`);
-          } else {
-            // 发送其实失败了（网关报错/超时/被限流）。旧代码照样刷新时间戳，
-            // 于是「我说过话了」这个判断被写进状态：主动发言概率被压低、
-            // 活跃调度往前走，而群里根本没收到消息。这里不刷新，让下一轮照常补上。
-            b.log(`社交模式：${key} 本轮发言未送达（QQ 发送失败），不刷新活跃时间`);
-          }
-        }
-      } else if (b.modeForKey(key) === 'reserved2') {
-        b.log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${plain.slice(0, 80)}`);
-        b.appendActivity(`${key} [reserved2] AI 内部输出：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
-      } else {
-        if (b.shouldBlockSilentReply(key)) {
-          b.log(`静默模式，拦截在途回复 (${key})`);
-          b.appendActivity(`${key} 静默模式，拦截在途回复`);
-          return;
-        }
-        b.log(`agent 回复 (${key}) ${plain.length} 字`);
-        b.appendActivity(`${key} agent 回复：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
-        await b.sendToQQ(key, plain, { ai: true });
-      }
-    } else if (ended.reason.kind === 'error') {
-      await b.reportTurnFailure(key, 'error', ended.reason.error);
-      if (isFarewell) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') {
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场发言出错，回到观望`);
-        }
-      }
-    } else if (ended.reason.kind === 'aborted') {
-      await b.reportTurnFailure(key, 'aborted');
-      if (isFarewell) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') {
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场发言中止，回到观望`);
-        }
-      }
-    } else if (!ended.text.trim()) {
-      // completed 但没文本（纯工具调用回合）
-      b.log(`回合完成但无文本 (${key})`);
-      if (isFarewell) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') {
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场回合无文本，回到观望`);
-        }
-      }
-    }
-  }
 
   // 打开 DSH 事件流，每次连接前先刷新权限
   async function* sessionEvents() {
@@ -364,7 +175,7 @@ export function createDshEvents(b) {
             b.recordSessionUsage(frame.sessionId, frame.event);
             const key = b.reverse.get(frame.sessionId);
             if (!key) {
-              // 黑话学习会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
+              // 记忆整理会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
               if (b.learnerSessions.has(frame.sessionId)) {
                 // 学习会话也只在回合开始时建收集器
                 let learnerCollector = b.learnerCollectors.get(frame.sessionId) ?? null;
@@ -387,7 +198,7 @@ export function createDshEvents(b) {
                     }
                   }
                   // 旧学习会话 turn 结束后从集合移除，避免残留
-                  if (frame.sessionId !== b.slangLearnerSessionId) {
+                  if (frame.sessionId !== b.memoryLearnerSessionId) {
                     b.learnerSessions.delete(frame.sessionId);
                     b.api.events.forget?.(frame.sessionId);
                     b.modelAppliedSessions.delete(frame.sessionId);
@@ -398,6 +209,10 @@ export function createDshEvents(b) {
             }
             // 追踪当前 turn 是否成功调用过 MCP 发送类工具：
             if (!b.isCurrentSession(key, frame.sessionId)) continue;
+            const seq = frame.event.seq;
+            if (Number.isFinite(seq) && (seq <= (b.deliveryCursors?.get(frame.sessionId)?.deliveredSeq ?? -1)
+              || collectorReceipts.get(b.collectors.get(frame.sessionId))?.has(`seq:${seq}`))) continue;
+            b.scheduledTurnEvent?.(key, frame.sessionId, frame.event);
             lastEventAt.set(frame.sessionId, Date.now()); // 卡死看门狗的滑动基准
             // 只有“发送成功”才跳过自动转发；如果工具调用失败，仍允许 AI 的文本正常发出。
             if (frame.event.type === 'turn/start') {
@@ -458,131 +273,41 @@ export function createDshEvents(b) {
             }
             // 只为回合开始建收集器，空的回合结束就清掉
             const { ended } = trackTurnEvent(frame.sessionId, frame.event);
-            if (ended) {
-              // 醒来什么都没做就累计一次，次数多了重置唤醒配置
-              const silentQueueNow = b.social.silentTurns.get(frame.sessionId) ?? [];
-              const isSilentTurn = silentQueueNow.length > 0;
-              if (key && b.modeForKey(key) === 'reserved2' && !isSilentTurn) {
-                const st = b.getSocialV2State(key);
-                const turnStart = v2TurnStartAt.get(frame.sessionId) ?? 0;
-                const sendToolHit = sendToolSucceededSessions.has(frame.sessionId);
-                // turn/start 丢了（重连后由快照补发的回合）就无从判断「这一轮有没有行动」：
-                // 此时记 miss 会冤枉 AI，连续 3 次就把 AI 自己设的唤醒配置重置成默认值。
-                if (turnStart > 0 || sendToolHit) {
-                  const actionTaken = sendToolHit || (turnStart > 0 && st.lastActionAt >= turnStart);
-                  if (actionTaken) {
-                    st.wakeConfig.noActionCount = 0;
-                  } else {
-                    st.wakeConfig.noActionCount = (st.wakeConfig.noActionCount || 0) + 1;
-                    const limit = Number(b.cfg.socialV2?.wake?.noActionLimit) || 3;
-                    if (st.wakeConfig.noActionCount >= limit) {
-                      b.log(`[reserved2] ${key} 连续 ${st.wakeConfig.noActionCount} 次唤醒无行动，重置唤醒配置`);
-                      st.wakeConfig = b.defaultWakeConfigV2();
-                      st.bootstrapSent = true;
-                      st.wakeConfig.noActionCount = 0;
-                    }
-                  }
-                  b.markSocialV2Dirty(); // 泵内不做全量同步写（MB 级，会卡住所有会话的事件）：交给合批定时器
-                } else {
-                  b.log(`[reserved2] ${key} 回合结束但缺少 turn/start（重连补发），跳过无行动计数`);
-                }
-              }
-              v2TurnStartAt.delete(frame.sessionId);
-              lastEventAt.delete(frame.sessionId);
-              b.collectors.delete(frame.sessionId);
-              turnLeaseNoted.delete(frame.sessionId);
-              const sendToolSucceeded = sendToolSucceededSessions.has(frame.sessionId);
-              sendToolSucceededSessions.delete(frame.sessionId);
-              pendingSendToolCalls.delete(frame.sessionId);
-              toolCallNames.delete(frame.sessionId);
-              toolCallAt.delete(frame.sessionId);
-              // 标记本次 turn 是否为“活跃超时退场”发言（用于准确回到观望，避免把旧回复误判为退场）
-              const isFarewell = b.social.exitingSessions.has(frame.sessionId);
-              if (isFarewell) b.social.exitingSessions.delete(frame.sessionId);
-              // 摘要投喂触发的 turn：回复静默（不发送到 QQ）。
-              // 用 FIFO 时间戳队列 + 超时回收，避免计数残留吞掉后续正常回复。
-              const silentQueue = b.social.silentTurns.get(frame.sessionId) ?? [];
-              const silentNow = Date.now();
-              while (silentQueue.length && silentNow - silentQueue[0].ts > b.SILENT_TURN_TIMEOUT_MS) silentQueue.shift();
-              if (silentQueue.length > 0) {
-                silentQueue.shift();
-                if (silentQueue.length > 0) b.social.silentTurns.set(frame.sessionId, silentQueue);
-                else b.social.silentTurns.delete(frame.sessionId);
-                b.log(`摘要投喂 turn 结束，静默 (${key})`);
-                continue;
-              }
-              // 忘了设置下次唤醒就提醒，多次不改就恢复默认
-              if (pendingWakeKeys.has(key)) {
-                pendingWakeKeys.delete(key);
-                b.disarmPendingWakeLease(key);
-                if (wakeConfigUpdatedKeys.has(key) || markReadCalledKeys.has(key)) {
-                  b.ensureWakeableV2(b.getSocialV2State(key), { key });
-                  wakeConfigUpdatedKeys.delete(key);
-                  markReadCalledKeys.delete(key);
-                  wakeConfigMissCount.delete(key);
-                } else {
-                  const currentMiss = (wakeConfigMissCount.get(key) ?? 0) + 1;
-                  const maxReminders = Number(b.cfg.socialV2?.wake?.maxWakeConfigReminders) || 2;
-                  if (currentMiss < maxReminders) {
-                    wakeConfigMissCount.set(key, currentMiss);
-                    pendingWakeKeys.add(key);
-                    b.armPendingWakeLease(key);
-                    b.deliverPrompt(key, b.buildWakeReminderPromptV2(key)).then((result) => {
-                      if (result && result.ok === false) {
-                        pendingWakeKeys.delete(key);
-                        b.disarmPendingWakeLease(key);
-                      }
-                    }).catch((error) => {
-                      pendingWakeKeys.delete(key);
-                      b.disarmPendingWakeLease(key);
-                      b.log(`[reserved2] ${key} 唤醒提醒投递失败: ${error?.message ?? error}`);
-                    });
-                    b.log(`[reserved2] ${key} 未设置唤醒条件，发送提醒 (${currentMiss}/${maxReminders})`);
-                  } else {
-                    const st = b.getSocialV2State(key);
-                    st.wakeConfig = b.defaultWakeConfigV2();
-                    b.markSocialV2Dirty();
-                    b.log(`[reserved2] ${key} 连续未设置唤醒条件，已重置为默认唤醒配置`);
-                  }
-                }
-              }
-              // 忙的时候先记下叫醒原因，这一轮结束后再补一次
-              b.replayPendingWakeReasonsV2(key);
-              const sessionId = frame.sessionId;
-              await dispatch(sessionId, true, () => {
-                // 排队期间会话可能被 /reset、重建或退役：旧会话的回复不再发到这个群。
-                if (!b.isCurrentSession(key, sessionId)) { b.log(`会话 ${key} 已更换，丢弃旧会话 ${sessionId} 的回合发送`); return undefined; }
-                return deliverEndedTurn(key, ended, isFarewell, sendToolSucceeded);
-              });
-            }
+            if (ended) await handleEndedTurn(key, frame.sessionId, ended);
           } else if ((frame.type === 'question/requested' || frame.type === 'approval/requested') && b.learnerSessions.has(frame.sessionId)) {
-            // 黑话学习会话不应向用户提问/请求审批；自动跳过，避免阻塞学习任务。
+            // 记忆整理会话不应向用户提问/请求审批；自动跳过，避免阻塞学习任务。
             await dispatch(frame.sessionId, false, async () => {
-              try {
-                if (frame.type === 'question/requested') {
-                  await b.api.respond({
-                    clientId: frame.clientId,
-                    eventId: frame.eventId,
-                    outcome: { kind: 'result', value: { answers: frame.questions.map((q) => ({ id: q.id, selected: [], custom: '' })) } }
-                  });
-                } else {
-                  await b.api.respond({
-                    clientId: frame.clientId,
-                    eventId: frame.eventId,
-                    outcome: { kind: 'result', value: 'rejected' }
-                  });
+              const payload = frame.type === 'question/requested'
+                ? {
+                  clientId: frame.clientId,
+                  eventId: frame.eventId,
+                  outcome: { kind: 'result', value: { answers: frame.questions.map((q) => ({ id: q.id, selected: [], custom: '' })) } }
                 }
-                b.log('黑话学习会话自动跳过提问/审批');
-              } catch (error) {
-                b.log('自动响应学习会话提问/审批失败:', error?.message ?? error);
+                : {
+                  clientId: frame.clientId,
+                  eventId: frame.eventId,
+                  outcome: { kind: 'result', value: 'rejected' }
+                };
+              let lastError = null;
+              for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                  await b.withTimeout(b.api.respond(payload), 5000, '学习会话自动回执');
+                  b.log('记忆整理会话自动跳过提问/审批');
+                  return;
+                } catch (error) {
+                  lastError = error;
+                }
               }
+              b.log('自动响应学习会话提问/审批失败:', lastError?.message ?? lastError);
+              b.appendActivity?.(`⚠️ 记忆学习会话自动跳过回执失败 (${frame.sessionId}): ${lastError?.message ?? lastError}`);
+              b.invalidateMemoryLearnerSession?.(true);
             });
           } else if (frame.type === 'question/requested') {
             const key = b.reverse.get(frame.sessionId);
             if (!key) continue;
             const rpcId = envelope.rpcId;
             await dispatch(frame.sessionId, false, async () => {
-              if (!b.isCurrentSession(key, frame.sessionId)) { await b.cancelPendingEntry({ ...frame, kind: 'question' }); return; }
+              if (!b.isCurrentSession(key, frame.sessionId)) { await b.cancelPendingEntry({ ...frame, key, kind: 'question' }); return; }
               const lines = frame.questions.map((q, i) => {
                 const qText = String(q.question ?? '');
                 const sensitive = b.shouldAuditKey(key) && SENSITIVE_RE.test(qText);
@@ -608,7 +333,7 @@ export function createDshEvents(b) {
             if (!key) continue;
             const rpcId = envelope.rpcId;
             await dispatch(frame.sessionId, false, async () => {
-              if (!b.isCurrentSession(key, frame.sessionId)) { await b.cancelPendingEntry({ ...frame, kind: 'approval' }); return; }
+              if (!b.isCurrentSession(key, frame.sessionId)) { await b.cancelPendingEntry({ ...frame, key, kind: 'approval' }); return; }
               const rawReason = frame.reason ?? '';
               const sensitiveReason = b.shouldAuditKey(key) && SENSITIVE_RE.test(rawReason);
               if (sensitiveReason) b.log(`⚠️ 审批理由含敏感信息，已隐藏 (${key})`);
@@ -631,23 +356,10 @@ export function createDshEvents(b) {
       } catch (error) {
         b.log('事件流中断:', error?.message ?? error);
       } finally {
+        b.suspendScheduledTurns?.();
         await drainDispatch();
-        // WebSocket 正常关闭和异常中断都会走到这里；必须清掉旧 turn 相关状态，
-        // 否则重连后旧 collector/标记残留会导致回复重复累加或误判。
-        b.collectors.clear(); // 清除旧 turn collector，避免重连后残留导致重复累加
-        b.social.silentTurns.clear(); // 清除未消费的摘要静默名额，避免重连后吞掉正常回复
-        sendToolSucceededSessions.clear();
-        pendingSendToolCalls.clear();
-        v2TurnStartAt.clear();
-        lastEventAt.clear();
-        toolCallNames.clear();
-        toolCallAt.clear();
-        pendingWakeKeys.clear();
-        b.clearAllPendingWakeLeases();
-        b.social.exitingSessions.clear();
-        wakeConfigUpdatedKeys.clear();
-        markReadCalledKeys.clear();
-        wakeConfigMissCount.clear();
+        // 断线不是回合终结：运行闭包、collector、工具结果与静默名额保留到
+        // snapshot/live end 或 watchdog 清理，不能把传输重连当成会话退役。
         // 也要清掉长轮询的租约，免得卡住这个聊天
         b.activeWaits.clear();
       }
@@ -672,20 +384,66 @@ export function createDshEvents(b) {
     // 从一条记录里取出事件本身
     const eventOf = (entry) => (entry?.type === 'event' ? entry.event : entry);
     const open = new Set();
+    const cursor = b.deliveryCursors?.get(sessionId);
     for (const entry of records) {
       const event = eventOf(entry);
-      if (event?.type === 'turn/start') open.add(event.data?.turn);
+      const seq = entry?.seq ?? event?.seq;
+      if (event?.type === 'turn/start' && event.data?.turn !== cursor?.deliveredTurn
+        && !(Number.isFinite(seq) && seq <= (cursor?.deliveredSeq ?? -1))) open.add(event.data?.turn);
       else if (event?.type === 'turn/end') open.delete(event.data?.turn);
     }
-    if (!open.size) return;
-    const collector = createTurnCollector();
-    let restored = 0;
+    const existing = b.collectors.get(sessionId);
+    // 已完成快照由 delivery cursor 补发，这里只收掉旧 collector 的占位。
     for (const entry of records) {
       const event = eventOf(entry);
-      // 只重放还没结束的回合，已经结束的不重发
-      if (event?.type !== 'turn/start' && event?.type !== 'assistant/message') continue;
-      if (!open.has(event.data?.turn)) continue;
-      collector.push(event);
+      if (event?.type !== 'turn/end' || !existing?.has(event.data?.turn)) continue;
+      existing.push(event);
+      if (existing.size() === 0) {
+        b.collectors.delete(sessionId);
+        v2TurnStartAt.delete(sessionId);
+        lastEventAt.delete(sessionId);
+        turnLeaseNoted.delete(sessionId);
+        sendToolSucceededSessions.delete(sessionId);
+        pendingSendToolCalls.delete(sessionId);
+        toolCallNames.delete(sessionId);
+        toolCallAt.delete(sessionId);
+        const silent = b.social.silentTurns.get(sessionId);
+        silent?.shift();
+        if (silent?.length === 0) b.social.silentTurns.delete(sessionId);
+        b.social.exitingSessions.delete(sessionId);
+      }
+    }
+    if (!open.size) return;
+    const collector = b.collectors.get(sessionId) ?? createTurnCollector();
+    const replayCounts = new Map();
+    let restored = 0;
+    let currentTurn;
+    const restoreTool = (event) => {
+      if (event.type === 'tool/call' && event.data?.callId != null) {
+        const id = String(event.data.callId), name = String(event.data.name ?? '');
+        if (!toolCallNames.has(sessionId)) toolCallNames.set(sessionId, new Map());
+        toolCallNames.get(sessionId).set(id, name);
+        if (isSendToolName(name)) {
+          if (!pendingSendToolCalls.has(sessionId)) pendingSendToolCalls.set(sessionId, new Set());
+          pendingSendToolCalls.get(sessionId).add(event.data.callId);
+        }
+        if (!toolCallAt.has(sessionId)) toolCallAt.set(sessionId, Date.now());
+      } else if (event.type === 'tool/result') {
+        const id = String(event.data?.message?.source?.callId ?? '');
+        const name = toolCallNames.get(sessionId)?.get(id);
+        const message = event.data?.message;
+        if (isSendToolName(name) && message?.isError !== true && message?.content?.[0]?.isError !== true) sendToolSucceededSessions.add(sessionId);
+        toolCallNames.get(sessionId)?.delete(id);
+        pendingSendToolCalls.get(sessionId)?.delete(event.data?.message?.source?.callId);
+      }
+    };
+    for (const entry of records) {
+      const event = eventOf(entry);
+      if (event?.type === 'turn/start') currentTurn = event.data?.turn;
+      // 只恢复在途回合；快照中的工具不是重新调用，而是交付/看门狗证据。
+      if (!['turn/start', 'assistant/message', 'tool/call', 'tool/result'].includes(event?.type)) continue;
+      if (!open.has(event.data?.turn ?? currentTurn)) continue;
+      pushCollected(collector, { ...event, seq: entry.seq ?? event.seq }, replayCounts, restoreTool);
       restored += 1;
     }
     if (!restored) return;
@@ -700,7 +458,19 @@ export function createDshEvents(b) {
     b.log(`重连后恢复了进行中的回合（${sessionId}，turn ${[...open].join(',')}）`);
   }
 
+  function isSessionTurnBusy(sessionId, now = Date.now()) {
+    const startedAt = Number(v2TurnStartAt.get(sessionId) || 0);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+    const leaseMs = b.TURN_BUSY_LEASE_MS;
+    if (now - startedAt < leaseMs) return true;
+    const lastToolAt = Number(toolCallAt.get(sessionId) || 0);
+    return (toolCallNames.get(sessionId)?.size ?? 0) > 0
+      && lastToolAt > 0
+      && now - lastToolAt < leaseMs
+      && now - startedAt < leaseMs * 2;
+  }
+
   // sessionEvents 只有测试夹具从桥接里取（断言事件流内容），一并返回。
-  return {
-    sendToolSucceededSessions, v2TurnStartAt, toolCallNames, pendingSendToolCalls, pendingWakeKeys, turnLeaseNoted, wakeConfigUpdatedKeys, markReadCalledKeys, wakeConfigMissCount, trackTurnEvent, pumpMux, rebuildInFlightCollector, sessionEvents, dispatchStats, checkStalledTurns };
+  return { dispatchSessionTask: dispatch,
+    sendToolSucceededSessions, v2TurnStartAt, toolCallNames, toolCallAt, isSessionTurnBusy, pendingSendToolCalls, pendingWakeKeys, turnLeaseNoted, wakeConfigUpdatedKeys, markReadCalledKeys, wakeConfigMissCount, trackTurnEvent, pumpMux, rebuildInFlightCollector, sessionEvents, dispatchStats, checkStalledTurns };
 }

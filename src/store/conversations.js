@@ -42,7 +42,7 @@ export function createConversationStore(b) {
       overrides = routerWith(doc.conversations ?? {}).snapshot().conversations;
     } catch (error) { degrade(`内容无效：${error?.message ?? error}`); return; }
     const n = Object.keys(overrides).length;
-    if (n) b.log(`已加载 ${n} 条会话策略覆盖项（目前只记录，不参与模式判定）`);
+    if (n) b.log(`已加载 ${n} 条会话策略覆盖项（按模式灰度开关参与路由）`);
   }
 
   // 列出当前所有覆盖项
@@ -57,7 +57,13 @@ export function createConversationStore(b) {
     const result = change(router);
     const next = router.snapshot().conversations;
     atomicWriteJson(b.CONVERSATIONS_FILE, stampSchema('conversations', { conversations: next }));
+    const beforePolicy = b.sessionPolicy?.(result.key);
     overrides = next;
+    if (beforePolicy !== b.sessionPolicy?.(result.key)) {
+      b.retireSession(result.key);
+      if (b.modeForKey(result.key) === 'reserved2') { b.setupSleepTimerV2(result.key); b.scheduleProactiveCheckV2(result.key); }
+      if (b.isSocialEnabled(result.key)) b.armSocialTimer?.(result.key);
+    }
     const e = result.auditEvent;
     b.appendActivity(`会话策略 ${e.type} ${e.key}（${e.updatedBy}）：${e.before.mode}/${e.before.preset} → ${e.after.mode}/${e.after.preset}`);
     return result;

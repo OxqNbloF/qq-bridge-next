@@ -6,6 +6,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMessageArchive } from '../src/store/archive.js';
+import { createMemoryPool } from '../src/store/pool.js';
+import { redactMemoryPool, redactLightMemory, redactActivityLog, redactMemoryMigrationBackups } from '../src/memory/redact.js';
+import { removeMemoryView, safeConvName } from '../src/store/views.js';
+import { atomicWriteJson } from '../src/store/fs-atomic.js';
+import { redactIdentityAliases } from '../src/identity/registry.js';
+import { migrateDocument } from '../src/store/schema.js';
 import { canonicalV2Key } from '../src/policy/access.js';
 
 const args = process.argv.slice(2);
@@ -38,17 +44,65 @@ try {
   }
   throw error;
 }
-let total = 0;
+let foundAny = false;
+const cleanupErrors = [];
+let partial = false;
+const cleanup = (label, action) => {
+  try { return action(); }
+  catch (error) {
+    partial = true;
+    cleanupErrors.push(`${label}：${error?.message ?? error}`);
+    console.error(`归档脱敏已完成；${label}清理跳过：${error?.message ?? error}`);
+    return undefined;
+  }
+};
 try {
-  const archive = createMessageArchive({ dir: archiveDir, log: (m) => console.log(m) });
+  const pool = createMemoryPool({ file: path.join(stateDir, 'pool', 'items.jsonl') });
+  const archive = createMessageArchive({ dir: archiveDir, log: (m) => console.log(m), onRedact: (key, id) => {
+    const errorOffset = cleanupErrors.length;
+    cleanup('活动日志', () => redactActivityLog(path.join(stateDir, 'qq-activity.log'), key, id));
+    cleanup('迁移备份', () => redactMemoryMigrationBackups(stateDir, key, id));
+    cleanup('学习侧车', () => fs.rmSync(path.join(stateDir, 'memory-session.json'), { force: true }));
+    const removed = cleanup('记忆池', () => redactMemoryPool(pool, key, id)) ?? [];
+    const socialFile = path.join(stateDir, 'social-v2.json');
+    cleanup('会话状态', () => {
+      if (fs.existsSync(socialFile)) {
+        const social = JSON.parse(fs.readFileSync(socialFile, 'utf8'));
+        migrateDocument('social-v2', social);
+        const state = social.conversations?.[key];
+        if (state) {
+          redactLightMemory(state, id);
+          for (const field of ['recentMessages', 'unread']) {
+            if (Array.isArray(state[field])) state[field] = state[field].filter(item => String(item.messageId) !== String(id));
+          }
+          atomicWriteJson(socialFile, social);
+        }
+      }
+    });
+    const identityFile = path.join(stateDir, 'identity.json');
+    cleanup('身份状态', () => {
+      if (fs.existsSync(identityFile)) {
+        const identity = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+        migrateDocument('identity', identity);
+        redactIdentityAliases(identity, key, id, removed);
+        atomicWriteJson(identityFile, identity);
+      }
+    });
+    cleanup('记忆视图', () => removeMemoryView({ dir: path.join(stateDir, 'views'), convId: key }));
+    cleanup('检索索引', () => { for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(path.join(stateDir, 'index', `${safeConvName(key)}.sqlite${suffix}`), { force: true }); });
+    const errors = cleanupErrors.slice(errorOffset);
+    return { ok: errors.length === 0, errors };
+  } });
   for (const id of msgIds) {
-    const changed = archive.redact(convId, String(id));
-    total += changed;
-    console.log(`${changed ? '已删除' : '未找到'}：${convId} ${id}${changed > 1 ? `（${changed} 行）` : ''}`);
+    const { changed, found, cleanup: result } = archive.redact(convId, String(id));
+    foundAny ||= found;
+    partial ||= !result.ok;
+    console.log(`${changed ? '已删除' : found ? '已脱敏（重试清理）' : '未找到'}：${convId} ${id}${changed > 1 ? `（${changed} 行）` : ''}`);
   }
 } finally {
   try {
     if (Number(fs.readFileSync(lockFile, 'utf8').trim()) === process.pid) fs.unlinkSync(lockFile);
   } catch {}
 }
-process.exit(total > 0 ? 0 : 3);
+if (partial) console.error('部分完成：归档已脱敏，以上派生数据需修复后重试清理。');
+process.exit(partial ? 4 : foundAny ? 0 : 3);

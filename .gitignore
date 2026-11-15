@@ -1,41 +1,110 @@
-# Dependencies
+# ════════════════════════════════════════════════════════════
+# qq-bridge-next .gitignore
+# 原则：只提交源码与公开示例；编译/构建/缓存/日志/隐私/运行状态一律不提交
+# ════════════════════════════════════════════════════════════
+
+# ── 依赖 ──────────────────────────────────────────────────
 node_modules/
 .npm-cache/
+.npm/
+.pnpm-store/
+.yarn/
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+package-lock.json.bak
 
-# Runtime state and local config (never publish)
-state/
-config.json
+# ── 编译 / 构建产物 ───────────────────────────────────────
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+*.map
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.turbo/
+.vercel/
+.netlify/
+
+# ── 缓存 ──────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.vite/
+.eslintcache
+.stylelintcache
+.node-gyp/
+*.cache
+
+# ── 日志 ──────────────────────────────────────────────────
 *.log
-*.bak
-*.bak-*
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# SnowLuma MCP 的 catalog.js 投影（再分发其内容，见 NOTICE.md §2.2），不得提交
+# ── 隐私：本机配置 / 凭据 / 密钥（绝不提交） ──────────────
+config.json
+config.local.json
+config.*.local.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.keystore
+*.jks
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+secrets/
+credentials/
+.npmrc.local
+scripts/privacy-rules.json
+# SnowLuma catalog 投影受再分发限制（见 NOTICE.md §2.2）
 _snowluma-catalog.json
 
-# Local development / planning / research docs (not part of public project)
-/PROJECT_GUIDE.md
-/ARCH_REVIEW.md
-/DSH_QQ_TOOLS_PLAN.md
-/GEN2_SIMULATION_PLAN.md
-/SOCIAL_MODE_PLAN.md
-/RESEARCH_QQ_MESSAGE_DND.md
-/RESEARCH_SNOWLUMA_EMOJI_STICKER.md
-/SnowLuma功能调研.md
-/真人语感策略.md
-# 花费实测档案：含个人用量数据，且未被任何公开文档引用 —— 默认不发布。
-# （如需公开，删掉这一行并挪到 docs/ 后从 README 链接，避免成为孤儿文件。）
-/TOKEN_COST.md
+# ── 用户数据与运行状态（运行时生成，不提交） ──────────────
+state/
+audio/
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.bak-*
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
 
-# 本地模型选型 / 硬件配置调研（内部笔记，无任何公开文档引用）
-/LOCAL_MODEL_SIZING.md
+# ── 操作系统 / 编辑器杂项 ─────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.iml
+*.sublime-workspace
+*.sublime-project
 
-# 大体积演示视频（10.93 MB）：改由 Release 附件托管，README 有链接。
-# 注意：移除只影响此后提交、--depth 1 克隆与 Release 的 Source zip；
-# 历史中的旧 blob 仍在，完整 clone 的体积要等历史重写后才会下降。
-/assets/project-intro.mp4
-
-# Local one-off dev/debug/patch scripts
-# (machine-specific paths/IDs, or bound to artifacts of a single probe run under state/)
+# ── 本机一次性调试脚本（含本机路径/ID，不提交） ───────────
 /scripts/cleanup-probe-sessions.mjs
 /scripts/cleanup-probe-workspaces.mjs
 /scripts/cleanup-test-sessions.mjs
@@ -47,29 +116,21 @@ _snowluma-catalog.json
 /scripts/patch-qq-chat-v2-stickers.mjs
 /scripts/patch-web-mcp-timeout.mjs
 
+# ── 内部文档 / 计划 / 调研（内部资料，不进公开仓库） ──────
+/AGENTS.md
+/agent.md
+/docs/
+/PROJECT_GUIDE.md
+/ARCH_REVIEW.md
+/DSH_QQ_TOOLS_PLAN.md
+/GEN2_SIMULATION_PLAN.md
+/SOCIAL_MODE_PLAN.md
+/RESEARCH_QQ_MESSAGE_DND.md
+/RESEARCH_SNOWLUMA_EMOJI_STICKER.md
+/SnowLuma功能调研.md
+/真人语感策略.md
+/TOKEN_COST.md
+/LOCAL_MODEL_SIZING.md
 
-# 本机专用的隐私扫描规则（含真实 QQ 号/路径，不入库）
-/scripts/privacy-rules.json
-
-# ── 内部文档保护（修复：忽略规则仍指向旧的根目录路径）──────────────────────
-# 上面那批 `/XXX.md` 规则是按**仓库根目录**写的，但这些文档后来整体挪进了 docs/，
-# 旧规则再也匹配不上 —— 于是"原始开发文档不进公开仓库"这条约定静默失效，privacy-scan
-# 在 docs/ 里扫出多份含本机真实路径（含本机用户名与工作盘路径）的文件。这里按新路径补回。
-# 判断依据：① 原 .gitignore 已列出的同义文件；② privacy-scan 实测命中真实路径的文件；
-# ③ 安全审计/发布计划这类"写了怎么绕过"的内部文档。
-docs/audits/
-docs/design/
-docs/legacy/
-docs/research/
-docs/qq-bridge-PUBLISH_PLAN.md
-docs/qq-bridge-SECURITY_AUDIT.md
-docs/guides/PROJECT_GUIDE.md
-docs/guides/VOICE.md
-
-# 语音库（用户个人音频素材，config.json 的 socialV2.voice.dir 指向此处）
-audio/
-
-AGENTS.md
-docs/architecture-refactor-review-qwen.md
-docs/architecture-refactor.md
-docs/architecture-review-codex.md
+# ── 大体积演示素材（改由 Release 附件托管，README 有链接） ──
+/assets/project-intro.mp4

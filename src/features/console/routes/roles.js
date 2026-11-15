@@ -1,3 +1,4 @@
+import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
 // 控制台人格管理与仿真提示词路由；鉴权在分发前完成
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import fs from 'node:fs';
@@ -10,7 +11,7 @@ import { readConfigObject, atomicWriteJson, atomicWriteText } from '../../../sto
 export function createConsoleRoleRoutes(b) {
   return async function consoleRoleRoutes(rq) {
     // ── 人格管理 ──
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/roles') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/roles') {
       const rs = b.readRoleState();
       const summaries = b.roleSummaries();
       rq.sendJson({
@@ -22,7 +23,7 @@ export function createConsoleRoleRoutes(b) {
       });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/roles/content') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/roles/content') {
       let name;
       try { name = b.validateRoleName(rq.url.searchParams.get('name')); } catch (error) { rq.sendJson({ ok: false, error: error.message }, 400); return; }
       if (!fs.existsSync(b.roleFilePath(name))) { rq.sendJson({ ok: false, error: `人格「${name}」不存在` }, 404); return; }
@@ -41,20 +42,20 @@ export function createConsoleRoleRoutes(b) {
       });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/roles/limit') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/roles/limit') {
       const body = await rq.readBody();
       const next = b.applyRoleInjectLimit(body.maxInjectChars);
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = readConfigObject(configFile);
+      const file = adaptLegacyConfig(readConfigObject(configFile));
       file.role = { ...(file.role ?? {}), maxInjectChars: next };
-      atomicWriteJson(configFile, file);
+      atomicWriteJson(configFile, syncConfigAliases(file));
       b.cfg.role = { ...(b.cfg.role ?? {}), maxInjectChars: next };
       b.roleInjectMaxChars = next;
       b.log(`控制台：人格注入上限已设为 ${next} 字符（下一条消息生效）`);
       rq.sendJson({ ok: true, maxInjectChars: next, limits: { injectMaxChars: next } });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/roles/create') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/roles/create') {
       const body = await rq.readBody();
       let name; let content;
       try { name = b.validateRoleName(body.name); content = b.validateRoleContent(body.content); }
@@ -65,7 +66,7 @@ export function createConsoleRoleRoutes(b) {
       rq.sendJson({ ok: true, role: name, warnings: b.roleWarnings(content) });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/roles/update') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/roles/update') {
       const body = await rq.readBody();
       let name; let content;
       try { name = b.validateRoleName(body.name); content = b.validateRoleContent(body.content); }
@@ -76,7 +77,7 @@ export function createConsoleRoleRoutes(b) {
       rq.sendJson({ ok: true, role: name, chars: content.length, warnings: b.roleWarnings(content) });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/roles/rename') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/roles/rename') {
       const body = await rq.readBody();
       let from; let to;
       try { from = b.validateRoleName(body.from); to = b.validateRoleName(body.to); }
@@ -92,7 +93,7 @@ export function createConsoleRoleRoutes(b) {
       rq.sendJson({ ok: true, role: to, renamed: true, currentFollowed: switched });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/roles/delete') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/roles/delete') {
       const body = await rq.readBody();
       let name;
       try { name = b.validateRoleName(body.name); } catch (error) { rq.sendJson({ ok: false, error: error.message }, 400); return; }
@@ -107,7 +108,7 @@ export function createConsoleRoleRoutes(b) {
     }
 
     // ── 仿真提示词（一代 / 二代预设） ──
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/preset/sim-prompt') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/preset/sim-prompt') {
       const preset = b.knownPresetName(rq.url.searchParams.get('preset'));
       if (!preset) { rq.sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(b.PRESET_NAMES).join(' / ')}）` }, 400); return; }
       try {
@@ -126,7 +127,7 @@ export function createConsoleRoleRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/preset/sim-prompt') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/preset/sim-prompt') {
       const body = await rq.readBody();
       const preset = b.knownPresetName(body.preset);
       if (!preset) { rq.sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(b.PRESET_NAMES).join(' / ')}）` }, 400); return; }
@@ -171,7 +172,7 @@ export function createConsoleRoleRoutes(b) {
       });
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/preset/sim-prompt/backups') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/preset/sim-prompt/backups') {
       const preset = b.knownPresetName(rq.url.searchParams.get('preset'));
       if (!preset) { rq.sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(b.PRESET_NAMES).join(' / ')}）` }, 400); return; }
       try {
@@ -181,7 +182,7 @@ export function createConsoleRoleRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/preset/sim-prompt/restore') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/preset/sim-prompt/restore') {
       const body = await rq.readBody();
       const preset = b.knownPresetName(body.preset);
       if (!preset) { rq.sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(b.PRESET_NAMES).join(' / ')}）` }, 400); return; }

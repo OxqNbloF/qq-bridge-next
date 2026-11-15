@@ -2,6 +2,7 @@
 // 请求进来先用 rq 装着，要用外面的功能就通过 b
 // 没匹配到就返回 ROUTE_NEXT，交给后面的路由接着找
 // 登录和权限在 bridge.js 前面都查过了，这里不重复也不绕过
+import { modelMessageVisible } from '../../../gate/model-visibility.js';
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,7 +16,7 @@ import { looksLikeUnfinished } from '../../../v2-wait.js';
 export function createToolMediaRoutes(b) {
   return async function toolMediaRoutes(rq) {
     // ── 表情包相关接口 ──
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/sticker-image') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/sticker-image') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       const stickerId = String(rq.url.searchParams.get('stickerId') ?? '').trim();
@@ -56,7 +57,7 @@ export function createToolMediaRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/self-image') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/self-image') {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
@@ -73,7 +74,7 @@ export function createToolMediaRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/sticker-note') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/sticker-note') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
@@ -91,7 +92,7 @@ export function createToolMediaRoutes(b) {
       rq.sendJson({ ok: true, key, sticker: stickerForScope(entry, key) });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/sticker-remark') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/sticker-remark') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
@@ -111,19 +112,11 @@ export function createToolMediaRoutes(b) {
     }
     // ── 语音发送（人在命令行或控制台里发的） ──
     // 人可能不在任何聊天里，所以不要求 key，但白名单和频率限制照旧
-    if (rq.req.method === 'POST' && (rq.url.pathname === '/api/voice/send' || rq.url.pathname === '/api/send/voice')) {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/voice/send') {
       const body = await rq.readBody();
       const agentToken = String(rq.req.headers['x-agent-token'] ?? '').trim();
       const voice = b.voiceCfg();
       // 这条是给人用的：不看「AI 能否发语音」那个总开关
-      // /api/send/voice 是给 AI 的入口，带了 AI 令牌就不许走这里
-      if (rq.url.pathname === '/api/send/voice' && agentToken) {
-        rq.sendJson({
-          ok: false,
-          error: 'AI 请改用 /api/socialV2/send-voice（带 key + token）'
-        }, 403);
-        return;
-      }
       const key = String(body.target ?? body.key ?? '').trim();
       const parsedTarget = parseTargetKey(key);
       if (!parsedTarget) { rq.sendJson({ ok: false, error: 'target 格式应为 group:群号 或 private:QQ号' }, 400); return; }
@@ -218,20 +211,20 @@ export function createToolMediaRoutes(b) {
           rq.sendJson({ ok: false, error: error.message }, 429);
           return;
         }
-        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, error?.statusCode ?? 500);
       }
       return;
     }
 
     // ── 语音发送（AI 发的，只能发自己那个聊天） ──
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/send-voice') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/send-voice') {
       const body = await rq.readBody();
       const token = String(body.token ?? rq.req.headers['x-agent-token'] ?? '').trim();
       const key = String(body.key ?? body.target ?? '').trim();
       const voice = b.voiceCfg();
       if (!voice.enabled) { rq.sendJson({ ok: false, error: '语音功能已关闭' }, 403); return; }
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空（格式 group:群号 或 private:QQ号）' }, 400); return; }
-      if (b.currentMode !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+      if (!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
       if (!token) { rq.sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
       if (!b.agentTokenOk(key, token)) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (!b.v2ToolEnabled('sendVoice')) { rq.sendJson({ ok: false, error: '工具未启用：qq_send_voice' }, 403); return; }
@@ -288,12 +281,12 @@ export function createToolMediaRoutes(b) {
           rq.sendJson({ ok: false, error: error.message }, 429);
           return;
         }
-        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+        rq.sendJson({ ok: false, error: error?.message ?? String(error) }, error?.statusCode ?? 500);
       }
       return;
     }
 
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/send-sticker') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/send-sticker') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
@@ -310,7 +303,7 @@ export function createToolMediaRoutes(b) {
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('sendSticker')) { rq.sendJson({ ok: false, error: '工具未启用：qq_send_sticker' }, 403); return; }
-      if (b.currentMode !== 'reserved2' && !rq.closedAgentMedia) { rq.sendJson({ ok: false, error: '该接口仅 reserved2 或管理员私聊模式可用' }, 403); return; }
+      if (!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') { rq.sendJson({ ok: false, error: '该接口仅 reserved2 或管理员私聊模式可用' }, 403); return; }
       if (!rq.req.headers['x-agent-token']) { rq.sendJson({ ok: false, error: '发送表情必须携带 agent token' }, 403); return; }
       const keyMatch = /^(group|private):(\d+)$/.exec(key);
       if (!keyMatch) { rq.sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
@@ -395,11 +388,11 @@ export function createToolMediaRoutes(b) {
         if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
         b.saveSocialV2State();
         b.log(`[sticker] 工具发送表情失败 ${key}: ${error?.message ?? error}`);
-        rq.sendJson({ ok: false, error: `发送表情失败：${error?.message ?? error}` }, 500);
+        rq.sendJson({ ok: false, error: `发送表情失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/collect-sticker') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/collect-sticker') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
@@ -445,7 +438,7 @@ export function createToolMediaRoutes(b) {
     }
     // 语音库列表：AI 调用要带 key 并检查权限，人调用不用
     // 只返回文件名、大小和时长，不暴露电脑上的完整路径
-    if (rq.req.method === 'GET' && (rq.url.pathname === '/api/socialV2/voices' || rq.url.pathname === '/api/voice/list')) {
+    if (rq.req.method === 'GET' && (rq.url.pathname === '/api/agent/voices' || rq.url.pathname === '/api/console/voice/list')) {
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       const voice = b.voiceCfg();
       const agentCall = Boolean(rq.req.headers['x-agent-token']);
@@ -489,7 +482,7 @@ export function createToolMediaRoutes(b) {
       return;
     }
 
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/socialV2/sticker-list') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/sticker-list') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const key = String(rq.url.searchParams.get('key') ?? '').trim();
       const query = String(rq.url.searchParams.get('query') ?? '').trim();
@@ -510,7 +503,7 @@ export function createToolMediaRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/sticker-list') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/sticker-list') {
       if (!b.stickerEnabled()) { rq.sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
@@ -538,11 +531,11 @@ export function createToolMediaRoutes(b) {
       return;
     }
     // 管理端表情库接口（控制台）
-    if (rq.req.method === 'GET' && rq.url.pathname === '/api/stickers') {
+    if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/stickers') {
       const query = String(rq.url.searchParams.get('query') ?? '').trim();
       const maxCount = Math.max(1, Number(b.cfg.socialV2?.sticker?.maxListCount) || 100);
       const count = Math.min(500, Math.max(1, Math.min(Number(rq.url.searchParams.get('count')) || 48, maxCount)));
-      // 读取不会顺便刷新，要刷新请用 POST /api/stickers/sync
+      // 读取不会顺便刷新，要刷新请用 POST /api/console/stickers/sync
       try {
         const synced = await b.syncStickerLibrary(false);
         const list = formatStickerList(synced?.entries ?? b.stickerEntries, query, count);
@@ -552,7 +545,7 @@ export function createToolMediaRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/stickers/sync') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/stickers/sync') {
       try {
         const synced = await b.syncStickerLibrary(true);
         rq.sendJson({ ok: true, total: synced?.entries?.length ?? b.stickerEntries.length, syncedAt: synced?.syncedAt ?? b.stickerSyncedAt });
@@ -561,7 +554,7 @@ export function createToolMediaRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/stickers/note') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/stickers/note') {
       const body = await rq.readBody();
       const stickerId = String(body.stickerId ?? '').trim();
       const note = body.note !== undefined && body.note !== null ? String(body.note).trim().slice(0, 200) : undefined;
@@ -573,7 +566,7 @@ export function createToolMediaRoutes(b) {
       rq.sendJson({ ok: true, sticker: entry });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/stickers/remark') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/stickers/remark') {
       const body = await rq.readBody();
       const stickerId = String(body.stickerId ?? '').trim();
       if (!stickerId) { rq.sendJson({ ok: false, error: 'stickerId 不能为空' }, 400); return; }
@@ -585,7 +578,7 @@ export function createToolMediaRoutes(b) {
       }
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/wait') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/wait') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
@@ -597,9 +590,11 @@ export function createToolMediaRoutes(b) {
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('waitMessages')) { rq.sendJson({ ok: false, error: '工具未启用：qq_wait_for_messages' }, 403); return; }
-      if (b.socialV2.paused) {
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
+      const visibleUnreadCount = (state) => isAgent ? state.unread.filter((m) => modelMessageVisible(b, key, m)).length : state.unread.length;
+      if (b.socialV2.paused && (!rq.toolPolicy || b.modeForKey(key) === 'reserved2')) {
         const st = b.getSocialV2State(key);
-        rq.sendJson({ ok: true, key, paused: true, arrived: false, timeout: false, waitedMs: 0, newMessages: [], readThroughSeq: b.readThroughSeqV2(st), unreadCount: st.unread.length });
+        rq.sendJson({ ok: true, key, paused: true, arrived: false, timeout: false, waitedMs: 0, newMessages: [], readThroughSeq: b.readThroughSeqV2(st), unreadCount: visibleUnreadCount(st) });
         return;
       }
       const waitCfg = b.cfg.socialV2?.wait ?? {};
@@ -631,16 +626,13 @@ export function createToolMediaRoutes(b) {
       // 出错时也要清掉记录，不然会留下一条假的「正在等待」
       rq.res.on('close', finishWait);
       const minQuietAfterNewMs = Number.isFinite(Number(waitCfg.minQuietAfterNewMs)) ? Math.max(0, Number(waitCfg.minQuietAfterNewMs)) : 10000;
-      const suggestedQuietMs = Math.max(b.suggestQuietMsV2(st), minQuietAfterNewMs);
+      const suggestedQuietMs = Math.max(b.suggestQuietMsV2(st, key), minQuietAfterNewMs);
       const rawQuietMs = body.quietMs != null ? Number(body.quietMs) : suggestedQuietMs;
       // 收到新消息后至少再等 10 秒，别人才不会觉得被抢话
       // 等待时间也有上限，免得请求一直不返回
       const maxQuietMs = Math.max(minQuietAfterNewMs, Math.min(120000, Number(waitCfg.maxMs) || 600000));
       const quietMs = Math.min(maxQuietMs, Math.max(minQuietAfterNewMs, Math.round(rawQuietMs) || 0));
-      if (st.pendingWakeTimer) {
-        b.clearTimeout(st.pendingWakeTimer);
-        st.pendingWakeTimer = null;
-      }
+      b.cancelPendingWakeV2(key, st);
       b.cancelReplyCheckV2(key); // AI 正在主动等待，取消回复检查定时器避免重复唤醒
       // 回复前的等待也要算上模型刚才思考时收到的消息
       const requestSeq = st.lastUnreadSeq || 0;
@@ -691,7 +683,7 @@ export function createToolMediaRoutes(b) {
       }
       const waitedMs = Date.now() - start;
       if (b.socialV2.conversations.get(canonicalV2Key(key)) !== st ||
-          (rq.req.headers['x-agent-token'] && (b.currentMode !== 'reserved2' || b.socialV2.paused || b.cfg.socialV2?.enabled === false
+          (rq.req.headers['x-agent-token'] && ((!rq.toolPolicy && b.modeForKey(key) !== 'reserved2') || ((!rq.toolPolicy || b.modeForKey(key) === 'reserved2') && (b.socialV2.paused || b.cfg.socialV2?.enabled === false))
             || !b.agentTokenOk(key, rq.req.headers['x-agent-token']) || !b.v2SessionAllowed(key) || !b.v2ToolEnabled('waitMessages')))) {
         finishWait();
         rq.sendJson({ ok: false, error: '等待期间会话已重置或权限已变化，请重新读取会话' }, 403);
@@ -743,7 +735,7 @@ export function createToolMediaRoutes(b) {
       const watermarkAtRequest = b.readThroughSeqV2(st);
       const pendingFloor = Math.min(baseline, watermarkAtRequest);
       const fullPending = [...new Map(history
-        .filter((m) => m && !m.isSelf && (m.seq || 0) > pendingFloor)
+        .filter((m) => m && !m.isSelf && modelMessageVisible(b, key, m) && (m.seq || 0) > pendingFloor)
         .map((m) => [m.seq, m])).values()].sort((a, b) => a.seq - b.seq);
       // 一次给太多会把 AI 的对话空间撑爆，所以从最老的开始给
       // 被截断时告诉模型还有旧的，可以用 unread 接着读
@@ -754,7 +746,7 @@ export function createToolMediaRoutes(b) {
       const newMessages = replyWait ? pending : (arrived ? pending : []);
       const readThroughSeq = rq.req.headers['x-agent-token'] ? b.noteModelMessagesV2(st, newMessages) : b.readThroughSeqV2(st);
       const lastNew = newMessages.length ? newMessages[newMessages.length - 1]
-        : replyWait ? [...st.recentMessages].reverse().find((m) => m && !m.isSelf) : null;
+        : replyWait ? [...st.recentMessages].reverse().find((m) => m && !m.isSelf && modelMessageVisible(b, key, m)) : null;
       const lastMessageUnfinished = lastNew ? looksLikeUnfinished(String(lastNew.tail || lastNew.plain || lastNew.text || '')) : false;
       finishWait();
       rq.sendJson({
@@ -787,11 +779,11 @@ export function createToolMediaRoutes(b) {
         } : {}),
         newMessages,
         readThroughSeq,
-        unreadCount: st.unread.length
+        unreadCount: visibleUnreadCount(st)
       });
       return;
     }
-    if (rq.req.method === 'POST' && rq.url.pathname === '/api/socialV2/check-send') {
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/check-send') {
       const body = await rq.readBody();
       const key = String(body.key ?? '').trim();
       const tool = String(body.tool ?? '').trim();

@@ -1,11 +1,13 @@
+import { modelMessageVisible } from '../../gate/model-visibility.js';
+import { rememberModelSources } from '../../memory/model-sources.js';
 // 一代仿真社交状态机：idle/active/probe/exit 与指向性判定
 import { truncateText } from '../../md-to-plain.js';
 
 // 创建一代社交状态机，b 为桥接访问器
 export function createSocialStateMachineV1(b) {
   // 该会话是否启用一代社交
-  function isSocialEnabled() {
-    return b.currentMode === 'reserved' && b.cfg.social?.enabled !== false;
+  function isSocialEnabled(key) {
+    return (key ? b.modeForKey(key) : b.currentMode) === 'reserved' && b.cfg.social?.enabled !== false;
   }
 
   // 取或新建会话的社交状态
@@ -17,12 +19,14 @@ export function createSocialStateMachineV1(b) {
   }
 
   // 是否明确对 AI 说话：@、提名字、必回关键词、管理员私聊
-  function isDirectAddress(textContent, event, kind) {
+  function isDirectAddress(textContent, event, kind, mentions = []) {
     if (kind !== 'group') return true;
     const lower = String(textContent ?? '').toLowerCase();
     const selfId = String(event?.self_id ?? '');
+    if (selfId && mentions.some((mention) => String(mention.qq) === selfId)) return true;
     if (selfId && lower.includes('@' + selfId)) return true;
-    if (b.selfNickname && (lower.includes('@' + b.selfNickname) || lower.includes(b.selfNickname))) return true;
+    const selfNames = [...new Set([b.selfNickname, ...b.identityAliases(String(event?.self_id ?? ''), kind === 'group' ? String(event?.group_id ?? '') : null)].filter(Boolean))];
+    if (selfNames.some((name) => lower.includes(String(name).toLowerCase()))) return true;
     for (const kw of (b.cfg.social?.mustReplyKeywords ?? [])) {
       if (lower.includes(String(kw).toLowerCase())) return true;
     }
@@ -59,11 +63,11 @@ export function createSocialStateMachineV1(b) {
   }
 
   // 追加一条最近消息并裁剪长度
-  function appendRecentMessage(key, sender, textContent, plainText, quoteTargetIsSelf = false, isOwner = false, media = [], messageRef = '') {
+  function appendRecentMessage(key, sender, textContent, plainText, quoteTargetIsSelf = false, isOwner = false, media = [], messageRef = '', source = {}) {
     if (!b.social.recentMessages.has(key)) b.social.recentMessages.set(key, []);
     const arr = b.social.recentMessages.get(key);
     arr.push({
-      sender,
+      sender, ...source,
       text: truncateText(String(textContent), 200),
       plain: truncateText(String(plainText ?? textContent), 200),
       quoteTargetIsSelf: !!quoteTargetIsSelf,
@@ -75,21 +79,26 @@ export function createSocialStateMachineV1(b) {
     });
     const cap = Math.max(50, Number(b.cfg.social?.contextWindow ?? 15) * 2);
     while (arr.length > cap) arr.shift();
+    b.armSocialTimer?.(key);
   }
 
   // 追加一条待投喂摘要
-  function appendSummary(key, sender, textContent, plainText, isOwner = false, media = [], messageRef = '') {
+  function appendSummary(key, sender, textContent, plainText, isOwner = false, media = [], messageRef = '', source = {}) {
     if (!b.social.pendingSummaries.has(key)) {
       b.social.pendingSummaries.set(key, { items: [], since: Date.now() });
     }
     const entry = b.social.pendingSummaries.get(key);
-    entry.items.push({ sender, text: truncateText(String(textContent), 200), plain: truncateText(String(plainText ?? textContent), 200), isOwner: !!isOwner, media: Array.isArray(media) ? media : [], messageId: messageRef ? String(messageRef) : '', hasMedia: Array.isArray(media) && media.length > 0, time: Date.now() });
+    // Older callers omit the actor; capture it now, before recent history can evict it.
+    const recent = messageRef ? (b.social.recentMessages.get(key) ?? []).findLast(message => String(message.messageId) === String(messageRef)) : null;
+    const provenance = { ...(recent ? { userId: recent.userId, sourceQqs: recent.sourceQqs, noContext: recent.noContext, isSelf: recent.isSelf } : {}), ...source };
+    entry.items.push({ sender, ...provenance, text: truncateText(String(textContent), 200), plain: truncateText(String(plainText ?? textContent), 200), isOwner: !!isOwner, media: Array.isArray(media) ? media : [], messageId: messageRef ? String(messageRef) : '', hasMedia: Array.isArray(media) && media.length > 0, time: Date.now() });
     if (entry.items.length > 60) entry.items.shift();
   }
 
   // 拼出投给模型的前后文段落
   function buildContextBlock(key) {
-    const ctx = (b.social.recentMessages.get(key) ?? []).slice(-Number(b.cfg.social?.contextWindow ?? 15));
+    const ctx = (b.social.recentMessages.get(key) ?? []).filter(message => modelMessageVisible(b, key, message)).slice(-Number(b.cfg.social?.contextWindow ?? 15));
+    rememberModelSources(b, key, ctx);
     return ctx.map((m) => `${m.isOwner ? '【管理员】' : ''}${b.sanitizeUntrustedText(m.sender)}：${b.sanitizeUntrustedText(m.text)}${b.mediaHintFor(key, m.messageId, m.media)}`).join('\n') || '（无）';
   }
 
@@ -113,10 +122,13 @@ export function createSocialStateMachineV1(b) {
       st.activeDeadlineAt = 0;
     }
     st.activeExitAt = 0;
+    b.armSocialTimer?.(key);
   }
 
   // 取消会话的社交定时器
-  function cancelSocialTimers(key) {
+  function cancelSocialTimers(key, { skipEngineCancel = false } = {}) {
+    b.cancelSocialPhaseTimer?.(key);
+    if (!skipEngineCancel) b.cancelDelayedSocialReplies?.(key);
     const timers = b.social.pendingTimers.get(key);
     if (!timers) return;
     for (const t of timers) b.clearTimeout(t);
@@ -125,6 +137,8 @@ export function createSocialStateMachineV1(b) {
 
   // 取消所有会话的社交定时器
   function cancelAllSocialTimers() {
+    for (const key of b.social.states.keys()) b.cancelSocialPhaseTimer?.(key);
+    b.cancelAllDelayedSocialReplies?.();
     for (const timers of b.social.pendingTimers.values()) {
       for (const t of timers) b.clearTimeout(t);
     }
@@ -153,6 +167,7 @@ export function createSocialStateMachineV1(b) {
     cancelSocialTimers(key);
     b.social.states.delete(key);
     b.social.silentContext.delete(key);
+    b.armSocialTimer?.(key);
   }
 
   // 活跃期只贴新消息；allowSilent=false 时不给 [SILENT]

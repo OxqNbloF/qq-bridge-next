@@ -1,0 +1,6 @@
+[
+  {"mode":"chat","kind":"group","key":"group:456","preset":"qq-chat","input":"固定收发样本","reply":"固定回复","automatic":true},
+  {"mode":"closed-agent","kind":"private","key":"private:123","preset":"standard","input":"固定收发样本","reply":"固定回复","automatic":true},
+  {"mode":"reserved","kind":"group","key":"group:456","preset":"qq-chat","input":"固定收发样本","reply":"固定回复","automatic":true},
+  {"mode":"reserved2","kind":"group","key":"group:456","preset":"qq-chat-v2","input":"固定收发样本","reply":"固定回复","automatic":false}
+]
