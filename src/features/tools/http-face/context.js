@@ -59,7 +59,25 @@ export function createToolContextRoutes(b) {
           if (rq.req.method === 'GET') {
             const items = b.memoryAPI.retrieve(key, body.category).filter(item => !isAgent || modelMemberVisible(b, key, item?.subject_uid));
             rq.sendJson({ ok: true, items });
-          } else if (body.category === 'alias' && rq.url.pathname.endsWith('append')) rq.sendJson({ ok: true, item: b.memoryAPI.append(key, 'alias', body.content, body.extra) });
+          } else if (body.category === 'alias' && rq.url.pathname.endsWith('append')) {
+            const extra = body.extra && typeof body.extra === 'object' && !Array.isArray(body.extra) ? { ...body.extra } : {};
+            const rawTarget = extra.target;
+            if (rawTarget !== undefined && typeof rawTarget !== 'string' && typeof rawTarget !== 'number') {
+              throw Object.assign(new Error('称呼候选需要合法会话、extra.target（member-* 标识、无歧义称呼或 QQ）和安全称呼'), { statusCode: 400 });
+            }
+            const target = String(rawTarget ?? '').trim();
+            if (['__proto__', 'constructor', 'prototype'].includes(target)) {
+              throw Object.assign(new Error('非法的成员目标'), { statusCode: 400 });
+            }
+            if (target) {
+              extra.target = await resolveMemberTarget(b, key, target, {
+                fieldName: 'extra.target',
+                state: b.getSocialV2State(key),
+                checkVisibility: isAgent,
+              });
+            }
+            rq.sendJson({ ok: true, item: b.memoryAPI.append(key, 'alias', body.content, extra) });
+          }
           else if (rq.url.pathname.endsWith('remove') || rq.url.pathname.endsWith('clear')) {
             const remove = rq.url.pathname.endsWith('remove');
             const targetContent = body.category === 'alias' && remove ? String(body.content ?? '').trim() : body.content;

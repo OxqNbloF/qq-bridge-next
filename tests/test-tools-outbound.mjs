@@ -1180,3 +1180,134 @@ test('隐藏 QQ 时读接口返回可用 memberRef，拍一拍/@/表情/@与唤�
     }
   } finally { await f.close(); }
 });
+
+test('隐藏 QQ 时 alias 写入支持解析 memberRef 与唯一称呼，内部保留数值 QQ 且严格失败关闭', async () => {
+  const f = await fixture('reserved2', {
+    architecture: { gateV2: true },
+    identity: { exposeQqInPrompt: false },
+    allow: { private: ['123', '22222'], groups: ['456', '789'] },
+  });
+  try {
+    const policy = JSON.stringify({
+      schemaVersion: 1,
+      groups: {
+        [f.key]: {
+          mode: 'all',
+          rules: {
+            789: { flags: { respond: true, converse: true, context: false, memory: true } },
+            888: { flags: { respond: true, converse: true, context: true, memory: false } },
+          },
+        },
+      },
+    });
+    fs.writeFileSync(f.h.MEMBER_POLICY_FILE, policy);
+    f.h.loadMemberPolicy();
+    f.h.observeIdentity({ qq: '22222', group: '456', nickname: '小王' });
+    f.h.observeIdentity({ qq: '55555', group: '789', nickname: '外群成员' });
+    const membersData = [
+      { user_id: 22222, nickname: '小王', card: '唯一王哥', role: 'member' },
+      { user_id: 23456, nickname: '未发言成员', card: '', role: 'member' },
+      { user_id: 33333, nickname: '重名', card: '重名', role: 'member' },
+      { user_id: 44444, nickname: '重名', card: '重名', role: 'member' },
+      { user_id: 789, nickname: '隐藏成员', card: '隐藏成员', role: 'member' },
+      { user_id: 888, nickname: '禁记成员', card: '禁记成员', role: 'member' },
+    ];
+    const origRequest = f.h.bot.request.bind(f.h.bot);
+    f.h.bot.request = async (action, params) => (action === 'get_group_member_list' ? membersData : origRequest(action, params));
+    f.h.bot.getGroupMemberList = async () => membersData;
+    const st = f.h.getSocialV2State(f.key);
+    st.recentMessages = [{ seq: 1, messageId: '9001', sender: '小王', userId: '22222', text: '在吗', time: Date.now() }];
+    st.unread = [...st.recentMessages];
+
+    const groupMembers = await f.call(`/api/agent/group-members?key=${f.key}`);
+    assert.equal(groupMembers.status, 200);
+    assert.doesNotMatch(JSON.stringify(groupMembers.body), /22222|23456|userId|user_id/);
+    const ref22222 = memberRef('22222');
+    const ref23456 = groupMembers.body.members.find((m) => m.nickname === '未发言成员')?.memberRef;
+    assert.equal(ref23456, memberRef('23456'));
+
+    // 1. 通过 memberRef 写入（发言人 & 仅在群成员列表中出现的成员），响应不泄露 QQ，池内落数值 QQ
+    const res1 = await f.call('/api/agent/memory-append', {
+      key: f.key,
+      category: 'alias',
+      content: '王老板',
+      extra: { target: ref22222 },
+    });
+    assert.equal(res1.status, 200, JSON.stringify(res1));
+    assert.doesNotMatch(JSON.stringify(res1.body), /22222|subject_uid/);
+
+    const res2 = await f.call('/api/agent/memory-append', {
+      key: f.key,
+      category: 'alias',
+      content: '潜水侠',
+      extra: { target: ref23456 },
+    });
+    assert.equal(res2.status, 200, JSON.stringify(res2));
+    assert.doesNotMatch(JSON.stringify(res2.body), /23456|subject_uid/);
+
+    // 2. 通过唯一群内称呼写入
+    const res3 = await f.call('/api/agent/memory-append', {
+      key: f.key,
+      category: 'alias',
+      content: '王总',
+      extra: { target: '唯一王哥' },
+    });
+    assert.equal(res3.status, 200, JSON.stringify(res3));
+
+    const storedAliases = f.h.memoryPool.query({ kind: 'alias' }).filter((item) => item.conv_id === f.key);
+    assert.equal(storedAliases.find((item) => item.content === '王老板')?.subject_uid, '22222');
+    assert.equal(storedAliases.find((item) => item.content === '潜水侠')?.subject_uid, '23456');
+    assert.equal(storedAliases.find((item) => item.content === '王总')?.subject_uid, '22222');
+
+    // 3. 候选称呼在后续两轮佐证后能正常晋升至身份注册表
+    for (const id of ['alias-ev-1', 'alias-ev-2']) {
+      await f.h.handleIncoming('group', 456, {
+        message_type: 'group',
+        group_id: 456,
+        user_id: 123,
+        message_id: id,
+        message: [
+          { type: 'at', data: { qq: '22222' } },
+          { type: 'text', data: { text: ' 王老板在吗' } },
+        ],
+        raw_message: '[CQ:at,qq=22222] 王老板在吗',
+        sender: { user_id: 123, nickname: 'owner' },
+      }, f.h.cfg);
+    }
+    assert.equal(f.h.resolveIdentityAlias({ group: '456', text: '王老板' })?.qq, '22222');
+
+    // 4. 私聊同样支持通过 memberRef 写入 alias
+    const privKey = 'private:22222';
+    const privToken = f.h.getSocialV2State(privKey).agentToken;
+    const privRes = await f.call('/api/agent/memory-append', {
+      key: privKey,
+      category: 'alias',
+      content: '私聊外号',
+      extra: { target: ref22222 },
+    }, { 'x-agent-token': privToken });
+    assert.equal(privRes.status, 200, JSON.stringify(privRes));
+    assert.equal(privRes.body.item.subject_uid, undefined);
+    assert.doesNotMatch(JSON.stringify(privRes.body), /subject_uid/);
+    assert.equal(f.h.memoryPool.query({ kind: 'alias' }).find((item) => item.conv_id === privKey && item.content === '私聊外号')?.subject_uid, '22222');
+
+    // 5. 失败关闭：未知 member-*、外群 member-*、隐藏成员（context=false）、重名、占位词、原型键、非字符串 target、memory=false
+    const countBefore = f.h.memoryPool.query({ kind: 'alias' }).length;
+    for (const badTarget of [memberRef('999999'), memberRef('55555'), memberRef('789'), '重名', '群友', '未知', '我', 'all', '__proto__', 'constructor', 'prototype', { bad: true }, '']) {
+      const badRes = await f.call('/api/agent/memory-append', {
+        key: f.key,
+        category: 'alias',
+        content: '不应写入',
+        extra: { target: badTarget },
+      });
+      assert.equal(badRes.status, 400, `target=${JSON.stringify(badTarget)} -> ${JSON.stringify(badRes)}`);
+    }
+    const deniedMemoryRes = await f.call('/api/agent/memory-append', {
+      key: f.key,
+      category: 'alias',
+      content: '禁记成员称呼',
+      extra: { target: memberRef('888') },
+    });
+    assert.equal(deniedMemoryRes.status, 403, JSON.stringify(deniedMemoryRes));
+    assert.equal(f.h.memoryPool.query({ kind: 'alias' }).length, countBefore);
+  } finally { await f.close(); }
+});

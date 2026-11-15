@@ -941,7 +941,7 @@ server.tool(
 
 server.tool(
   'qq_memory_append',
-  '记录记忆（含群里的说法；term 需要 extra.meaning；alias 需要 extra.target QQ，经两条不同消息佐证后生效；长期类别只读）：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。记忆会持久化，并在后续唤醒/qq_get_prompt 中自动出现。',
+  '记录记忆（含群里的说法；term 需要 extra.meaning；alias 需要 extra.target（member-* 标识、无歧义称呼或 QQ），经两条不同消息佐证后生效；长期类别只读）：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。记忆会持久化，并在后续唤醒/qq_get_prompt 中自动出现。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -952,7 +952,7 @@ server.tool(
       meaning: z.string().optional().describe('term 的含义，词汇记忆必填'),
       usage: z.string().optional().describe('词汇用法'),
       example: z.string().optional().describe('词汇示例'),
-      target: z.string().optional().describe('memberImpression 的 member-* 标识、无歧义称呼或 QQ；alias 必须使用明确 QQ'),
+      target: z.string().optional().describe('memberImpression 或 alias 的 member-* 标识、无歧义称呼或 QQ'),
       participants: z.array(z.string()).optional().describe('activeTopic 的参与者列表'),
       pendingQuestion: z.string().optional().describe('activeTopic 里还没问出口的问题'),
       motivation: z.string().optional().describe('pendingThought 的动机，如 curiosity/sociability'),
