@@ -133,6 +133,103 @@ try {
     await new Promise((resolve) => brokenServer.close(resolve));
     await broken.close();
   }
+
+  // gateV2 关闭时从磁盘已有策略按需加载，不丢失其它群/私聊/全局规则，且对损坏文件保持只读
+  const preservedSeed = {
+    schemaVersion: 1,
+    ignoreMigratedAt: '2026-01-01T00:00:00.000Z',
+    groups: {
+      'group:456': {
+        mode: 'blacklist',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+        rules: { 101: { qq: '101', flags: { respond: false, converse: true, context: true, memory: true }, note: '已有' } },
+      },
+      'group:789': {
+        mode: 'whitelist',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+        rules: { 202: { qq: '202', flags: { respond: true, converse: true, context: true, memory: true } } },
+      },
+    },
+    private: { 303: { respond: false, converse: true, context: true, memory: true } },
+    global: { 404: { qq: '404', flags: { respond: false, converse: false, context: false, memory: false }, note: '全局屏蔽' } },
+  };
+  const offExisting = await bridgeHarness({
+    config: { architecture: { gateV2: false }, ignore: { sendQQ: ['505'] } },
+    files: { 'state/member-policy.json': preservedSeed },
+  });
+  const offServer = offExisting.startConsoleServer();
+  try {
+    if (!offServer.listening) await new Promise((resolve) => offServer.once('listening', resolve));
+    const existingFile = path.join(offExisting.temp, 'state', 'member-policy.json');
+    // 未先 GET 时直接以 null CAS 覆盖已有群，必须按磁盘版本返回 409
+    const stalePut = await json('PUT', `${base}/456`, { expectedUpdatedAt: null, mode: 'all', entries: [] }, {}, offServer);
+    assert.equal(stalePut.status, 409, 'gateV2=false 时 PUT 也必须命中已有策略的 CAS');
+    const loaded = await json('GET', `${base}?group=456`, undefined, {}, offServer);
+    assert.equal(loaded.status, 200);
+    assert.equal(loaded.data.gateV2, false);
+    assert.equal(loaded.data.updatedAt, '2026-01-02T00:00:00.000Z');
+    assert.equal(loaded.data.entries.length, 1);
+    assert.equal((await json('GET', `${base}/effective?group=456&qq=101`, undefined, {}, offServer)).data.flags.respond, false);
+
+    const updated456 = await json('PUT', `${base}/456`, {
+      expectedUpdatedAt: loaded.data.updatedAt,
+      mode: 'blacklist',
+      entries: [{ qq: '101', flags: { respond: false, converse: true, context: true, memory: true }, note: '已改' }],
+    }, {}, offServer);
+    assert.equal(updated456.status, 200, updated456.text);
+    const patched456 = await json('PATCH', `${base}/456/members/102`, {
+      expectedUpdatedAt: updated456.data.updatedAt,
+      flags: { respond: false },
+    }, {}, offServer);
+    assert.equal(patched456.status, 200, patched456.text);
+    const patched103 = await json('PATCH', `${base}/456/members/103`, {
+      expectedUpdatedAt: patched456.data.updatedAt,
+      flags: { respond: false },
+    }, {}, offServer);
+    assert.equal(patched103.status, 200, patched103.text);
+    const deleted103 = await json('DELETE', `${base}/456/members/103?confirm=true&expectedUpdatedAt=${encodeURIComponent(patched103.data.updatedAt)}`, undefined, {}, offServer);
+    assert.equal(deleted103.status, 200, deleted103.text);
+    const created999 = await json('POST', `${base}/import`, {
+      group: '999',
+      expectedUpdatedAt: null,
+      mode: 'whitelist',
+      entries: [{ qq: '901', flags: {} }],
+      dryRun: false,
+    }, {}, offServer);
+    assert.equal(created999.status, 200, created999.text);
+
+    const disk = JSON.parse(fs.readFileSync(existingFile, 'utf8'));
+    assert.equal(disk.ignoreMigratedAt, '2026-01-01T00:00:00.000Z');
+    assert.deepEqual(disk.groups['group:789'], preservedSeed.groups['group:789'], '其他群规则不得丢失');
+    assert.deepEqual(disk.private, preservedSeed.private, '私聊规则不得丢失');
+    assert.equal(disk.global['404']?.note, '全局屏蔽', '全局规则不得丢失');
+    assert.equal(disk.global['505'], undefined, 'gateV2=false 时不得误跑 ignore.sendQQ 迁移');
+    assert.equal(disk.groups['group:456']?.rules['101']?.note, '已改');
+    assert.equal(disk.groups['group:456']?.rules['102']?.flags.respond, false);
+    assert.equal(disk.groups['group:456']?.rules['103'], undefined);
+    assert.equal(disk.groups['group:999']?.mode, 'whitelist');
+  } finally {
+    await new Promise((resolve) => offServer.close(resolve));
+    await offExisting.close();
+  }
+
+  const offBroken = await bridgeHarness({ config: { architecture: { gateV2: false } }, files: { 'state/member-policy.json': '{not json' } });
+  const offBrokenServer = offBroken.startConsoleServer();
+  try {
+    if (!offBrokenServer.listening) await new Promise((resolve) => offBrokenServer.once('listening', resolve));
+    const brokenFile = path.join(offBroken.temp, 'state', 'member-policy.json');
+    const bytes = fs.readFileSync(brokenFile);
+    const loadedBroken = await json('GET', `${base}?group=456`, undefined, {}, offBrokenServer);
+    assert.equal(loadedBroken.data.policyBroken, true);
+    assert.equal((await call('PUT', `${base}/456`, { expectedUpdatedAt: null, mode: 'all', entries: [] }, {}, offBrokenServer)).status, 503);
+    assert.equal((await call('PATCH', `${base}/456/members/789`, { expectedUpdatedAt: null, flags: { respond: false } }, {}, offBrokenServer)).status, 503);
+    assert.equal((await call('DELETE', `${base}/456/members/789?confirm=true&expectedUpdatedAt=null`, undefined, {}, offBrokenServer)).status, 503);
+    assert.equal((await call('POST', `${base}/import`, { group: '456', expectedUpdatedAt: null, mode: 'all', entries: [], dryRun: false }, {}, offBrokenServer)).status, 503);
+    assert.deepEqual(fs.readFileSync(brokenFile), bytes, 'gateV2=false 时损坏策略文件同样保持只读');
+  } finally {
+    await new Promise((resolve) => offBrokenServer.close(resolve));
+    await offBroken.close();
+  }
   console.log('PASS 门禁控制台 API：CAS、成员规则、导入预检、导出和鉴权');
 } finally {
   await new Promise((resolve) => server.close(resolve));

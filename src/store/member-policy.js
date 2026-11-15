@@ -73,20 +73,41 @@ export function createMemberPolicyStore(b) {
   let doc = deepFreeze(validateMemberPolicyDoc({}));
   let broken = false;
   let epoch = 0;
+  let loaded = false;
 
   function loadMemberPolicy() {
+    loaded = true;
     let raw;
     try { raw = fs.readFileSync(b.MEMBER_POLICY_FILE, 'utf8'); }
-    catch (error) { if (error?.code === 'ENOENT') return; raw = error; }
+    catch (error) {
+      if (error?.code === 'ENOENT') {
+        doc = deepFreeze(validateMemberPolicyDoc({}));
+        broken = false;
+        return;
+      }
+      raw = error;
+    }
     try {
       if (raw instanceof Error) throw raw;
       const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
       migrateDocument('member-policy', parsed);
       doc = deepFreeze(validateMemberPolicyDoc(parsed));
+      broken = false;
     } catch (error) {
       broken = true;
       b.log(`⚠️ member-policy.json 无法使用：${error?.message ?? error}；已只读降级，群聊一律不回应（不会覆盖原文件）`);
     }
+  }
+
+  /** 按需加载一次策略文件，避免 gateV2 关闭时以空文档覆盖已有规则 */
+  function ensureMemberPolicyLoaded() {
+    if (!loaded) loadMemberPolicy();
+    return loaded;
+  }
+
+  function assertWritable() {
+    if (!loaded) throw new Error('member-policy.json 尚未加载，不能修改');
+    if (broken) throw new Error('member-policy.json 处于只读降级状态，不能修改');
   }
 
   /** 门禁 decide 的输入切片；policy 是冻结对象，直接读不要改 */
@@ -96,7 +117,7 @@ export function createMemberPolicyStore(b) {
 
   // 改内存副本 → 校验 → 写盘成功后才生效
   function apply(change, summary, updatedBy) {
-    if (broken) throw new Error('member-policy.json 处于只读降级状态，不能修改');
+    assertWritable();
     const now = new Date(Math.max(Date.now(), (Date.parse(doc.updatedAt ?? '') || 0) + 1)).toISOString();
     const draft = structuredClone(doc);
     const result = change(draft, { updatedAt: now, updatedBy: String(updatedBy ?? 'unknown') });
@@ -119,6 +140,7 @@ export function createMemberPolicyStore(b) {
   /** 整组替换（mode + rules） */
   function setGroupPolicy(group, { mode, rules = {} } = {}, updatedBy) {
     checkKeys(group);
+    assertWritable();
     return apply((d, stamp) => {
       d.groups[group] = { mode, rules: Object.fromEntries(Object.entries(rules).map(([qq, r]) => [qq, { ...r, ...stamp }])), ...stamp };
     }, `${group} 整组替换：${doc.groups[group]?.mode ?? '无'} → ${mode}，${Object.keys(rules).length} 条规则`, updatedBy);
@@ -127,6 +149,7 @@ export function createMemberPolicyStore(b) {
   /** 单成员增改；flags 只改传入的项，群不存在则按 all 新建 */
   function setMemberRule(group, qq, { flags, aliases, note } = {}, updatedBy) {
     checkKeys(group, qq);
+    assertWritable();
     const before = doc.groups[group]?.rules[qq];
     return apply((d, stamp) => {
       const g = d.groups[group] ??= { mode: 'all', rules: {}, ...stamp };
@@ -141,6 +164,7 @@ export function createMemberPolicyStore(b) {
   /** 删除单成员规则；幂等，不存在时不写盘 */
   function deleteMemberRule(group, qq, updatedBy) {
     checkKeys(group, qq);
+    assertWritable();
     if (!doc.groups[group]?.rules[qq]) return false;
     apply((d, stamp) => {
       delete d.groups[group].rules[qq];
@@ -151,6 +175,7 @@ export function createMemberPolicyStore(b) {
 
   /** 一次性把旧 ignore.sendQQ 迁成四项全关的全局规则；返回迁移报告 */
   function migrateIgnoreList(cfg = b.cfg) {
+    if (!loaded) throw new Error('member-policy.json 尚未加载，不能修改');
     const list = [...new Set(normalizeIdList(cfg.ignore?.sendQQ).map((s) => String(Number(s))))];
     if (doc.ignoreMigratedAt || !list.length) return { already: !!doc.ignoreMigratedAt, migrated: [], skipped: [] };
     const report = { already: false, migrated: [], skipped: [] };
@@ -166,5 +191,5 @@ export function createMemberPolicyStore(b) {
     return report;
   }
 
-  return { loadMemberPolicy, memberPolicySnapshot, gateDecide, setGroupPolicy, setMemberRule, deleteMemberRule, migrateIgnoreList };
+  return { loadMemberPolicy, ensureMemberPolicyLoaded, memberPolicySnapshot, gateDecide, setGroupPolicy, setMemberRule, deleteMemberRule, migrateIgnoreList };
 }

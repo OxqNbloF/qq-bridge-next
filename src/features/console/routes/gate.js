@@ -52,6 +52,15 @@ export function createConsoleGateRoutes(b) {
         if (rule?.flags !== undefined) checkFlags(rule.flags, previous[qq]?.flags);
       }
     };
+    const ensureLoaded = (rq) => {
+      if (typeof b.ensureMemberPolicyLoaded === 'function') {
+        if (b.ensureMemberPolicyLoaded()) return true;
+      } else if (b.cfg?.architecture?.gateV2 === true) {
+        return true;
+      }
+      rq.sendJson({ ok: false, error: '成员策略尚未加载，无法读写' }, 503);
+      return false;
+    };
     const response = (group, policy) => ({
       group,
       mode: policy?.mode ?? 'all',
@@ -69,6 +78,7 @@ export function createConsoleGateRoutes(b) {
     if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/gate/member-policy') {
       const group = groupFrom(rq.url.searchParams.get('group'));
       if (!group) { rq.sendJson({ ok: false, error: 'group 必须是有效群号' }, 400); return; }
+      if (!ensureLoaded(rq)) return;
       const policy = b.memberPolicySnapshot().policy.groups[group];
       rq.sendJson({ ok: true, ...response(group, policy) });
       return;
@@ -78,6 +88,7 @@ export function createConsoleGateRoutes(b) {
       const group = groupFrom(rq.url.searchParams.get('group'));
       const qq = String(rq.url.searchParams.get('qq') ?? '');
       if (!group || !QQ_RE.test(qq)) { rq.sendJson({ ok: false, error: 'group 或 qq 无效' }, 400); return; }
+      if (!ensureLoaded(rq)) return;
       const decision = b.gateDecide({ kind: 'group', id: Number(group.slice(6)), qq });
       rq.sendJson({ ok: true, group, qq, ...decision });
       return;
@@ -86,6 +97,7 @@ export function createConsoleGateRoutes(b) {
     if (rq.req.method === 'GET' && rq.url.pathname === '/api/console/gate/member-policy/export') {
       const group = groupFrom(rq.url.searchParams.get('group'));
       if (!group) { rq.sendJson({ ok: false, error: 'group 必须是有效群号' }, 400); return; }
+      if (!ensureLoaded(rq)) return;
       const data = response(group, b.memberPolicySnapshot().policy.groups[group]);
       if (rq.url.searchParams.get('format') !== 'csv') { rq.sendJson({ ok: true, ...data }); return; }
       const cell = (value) => {
@@ -107,6 +119,7 @@ export function createConsoleGateRoutes(b) {
       const group = groupFrom(groupMatch.groupId);
       if (!group) { rq.sendJson({ ok: false, error: 'group 无效' }, 400); return; }
       const body = await rq.readBody();
+      if (!ensureLoaded(rq)) return;
       const current = b.memberPolicySnapshot().policy.groups[group];
       if (!Object.hasOwn(body, 'expectedUpdatedAt') || (body.expectedUpdatedAt !== null && typeof body.expectedUpdatedAt !== 'string')) {
         rq.sendJson({ ok: false, error: 'expectedUpdatedAt 必须明确提供（字符串或 null）' }, 400);
@@ -139,6 +152,7 @@ export function createConsoleGateRoutes(b) {
       const qq = memberMatch.qq;
       if (!group || !QQ_RE.test(qq)) { rq.sendJson({ ok: false, error: 'group 或 qq 无效' }, 400); return; }
       if (rq.req.method === 'DELETE') {
+        if (!ensureLoaded(rq)) return;
         const snap = b.memberPolicySnapshot();
         if (snap.policyBroken) { rq.sendJson({ ok: false, error: '策略文件损坏，当前为只读状态' }, 503); return; }
         const current = snap.policy.groups[group];
@@ -155,6 +169,7 @@ export function createConsoleGateRoutes(b) {
         return;
       }
       const body = await rq.readBody();
+      if (!ensureLoaded(rq)) return;
       const snap = b.memberPolicySnapshot();
       if (snap.policyBroken) { rq.sendJson({ ok: false, error: '策略文件损坏，当前为只读状态' }, 503); return; }
       const current = snap.policy.groups[group];
@@ -187,6 +202,7 @@ export function createConsoleGateRoutes(b) {
       const body = await rq.readBody();
       const group = groupFrom(body.group);
       if (!group) { rq.sendJson({ ok: false, error: 'group 必须是有效群号' }, 400); return; }
+      if (!ensureLoaded(rq)) return;
       const current = b.memberPolicySnapshot().policy.groups[group];
       if (!Object.hasOwn(body, 'expectedUpdatedAt') || (body.expectedUpdatedAt !== null && typeof body.expectedUpdatedAt !== 'string')) {
         rq.sendJson({ ok: false, error: 'expectedUpdatedAt 必须明确提供（字符串或 null）' }, 400);

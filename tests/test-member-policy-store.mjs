@@ -105,3 +105,29 @@ test('ignore.sendQQ 迁移：一次性、跳过管理员、迁移后去掉旧键
   assert.deepEqual(empty.store.migrateIgnoreList({ ownerQQ: 1 }), { already: false, migrated: [], skipped: [] });
   assert.equal(fs.existsSync(empty.file), false, '旧名单为空不写盘');
 });
+
+test('未加载前拒绝写入，按需加载后不丢失既有策略', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'member-policy-unloaded-'));
+  const file = path.join(dir, 'member-policy.json');
+  const existing = JSON.stringify({
+    schemaVersion: 1,
+    groups: { 'group:789': { mode: 'whitelist', rules: { 5: { flags: {} } } } },
+    private: { 201: { respond: false, converse: true, context: true, memory: true } },
+    global: { 301: { flags: NONE, note: '保留' } },
+  });
+  fs.writeFileSync(file, existing);
+  const store = createMemberPolicyStore({ MEMBER_POLICY_FILE: file, cfg: { ownerQQ: 1, ignore: { sendQQ: ['7'] } }, log() {}, appendActivity() {} });
+  assert.throws(() => store.setGroupPolicy('group:456', { mode: 'all', rules: {} }, 'console'), /尚未加载/);
+  assert.throws(() => store.setMemberRule('group:456', '9', { flags: { respond: false } }, 'console'), /尚未加载/);
+  assert.throws(() => store.deleteMemberRule('group:789', '5', 'console'), /尚未加载/);
+  assert.throws(() => store.migrateIgnoreList(), /尚未加载/);
+  assert.equal(fs.readFileSync(file, 'utf8'), existing, '未加载拒绝写入，原文件字节不变');
+
+  assert.equal(store.ensureMemberPolicyLoaded(), true);
+  store.setMemberRule('group:456', '9', { flags: { respond: false } }, 'console');
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(saved.groups['group:789']?.mode, 'whitelist');
+  assert.equal(saved.private['201']?.respond, false);
+  assert.equal(saved.global['301']?.note, '保留');
+  assert.equal(saved.groups['group:456']?.rules['9']?.flags.respond, false);
+});
