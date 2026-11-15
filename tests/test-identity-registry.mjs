@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emptyIdentityDocument, recordObservedAlias, redactIdentityAliases, recordUnresolvedAlias, resolveAlias, upsertObservedAlias, validateIdentityDocument } from '../src/identity/registry.js';
+import { emptyIdentityDocument, recordObservedAlias, redactIdentityAliases, revokeIdentityAliases, recordUnresolvedAlias, resolveAlias, upsertObservedAlias, validateIdentityDocument } from '../src/identity/registry.js';
 import { memberRef } from '../src/identity/project-core.js';
 import { createIdentityStore } from '../src/identity/store.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
@@ -422,4 +422,43 @@ test('HTTP 与 MCP 投影共用共享核心且掩码语义一致', async () => {
     }).projectForModel(httpOut);
     assert.equal(doubleProjected.messages[0].memberRef, memberRef('22222'));
   }
+});
+
+test('revokeIdentityAliases 撤销群/私聊学得副本及衍生全局晋升，同时保留人工、名片和独立来源称呼', () => {
+  const doc = emptyIdentityDocument();
+  for (const group of ['456', '789', '890']) {
+    recordObservedAlias(doc, { qq: '22222', group, name: '共同外号', source: 'learned', sources: [{ conv: `group:${group}`, id: '1' }, { conv: `group:${group}`, id: '2' }] });
+  }
+  recordObservedAlias(doc, { qq: '22222', group: '456', name: '原名片', source: 'card' });
+  recordObservedAlias(doc, { qq: '22222', group: '456', name: '保留外号', source: 'learned', sources: [{ conv: 'group:456', id: '3' }, { conv: 'group:456', id: '4' }] });
+  recordObservedAlias(doc, { qq: '33333', group: '456', name: '共同外号', source: 'learned', sources: [{ conv: 'group:456', id: '5' }, { conv: 'group:456', id: '6' }] });
+  doc.people['22222'].displayName = '共同外号';
+
+  // 单条删除只清理目标成员 22222 的“共同外号”，群 456 中 33333 的同名外号及 22222 其余群独立外号不受影响
+  const res1 = revokeIdentityAliases(doc, 'group:456', { removed: [{ kind: 'alias', conv_id: 'group:456', subject_uid: '22222', content: '共同外号' }] });
+  assert.equal(res1.changed, true);
+  assert.equal(resolveAlias(doc, { group: '456', text: '共同外号' })?.qq, '33333');
+  assert.equal(doc.people['22222'].globalAliases.length, 0, '支持群不足 3 个时撤掉衍生全局晋升');
+  assert.equal(resolveAlias(doc, { group: '789', text: '共同外号' })?.qq, '22222');
+  assert.equal(resolveAlias(doc, { group: '456', text: '原名片' })?.qq, '22222');
+  assert.equal(resolveAlias(doc, { group: '456', text: '保留外号' })?.qq, '22222');
+
+  // 无其余群保留同名时，displayName 一并回退
+  doc.people['22222'].displayName = '保留外号';
+  revokeIdentityAliases(doc, 'group:456', { content: '保留外号' });
+  assert.equal(resolveAlias(doc, { group: '456', text: '保留外号' }), null);
+  assert.notEqual(doc.people['22222'].displayName, '保留外号');
+
+  // 独立私聊学得称呼可承受群内撤销；按 content 删除或清空私聊则撤掉对应全局项
+  recordObservedAlias(doc, { qq: '22222', name: '私聊小名', source: 'learned', sources: [{ conv: 'private:22222', id: 'p1' }, { conv: 'private:22222', id: 'p2' }] });
+  revokeIdentityAliases(doc, 'group:456', { content: '私聊小名' });
+  assert.equal(resolveAlias(doc, { text: '私聊小名' })?.qq, '22222');
+  revokeIdentityAliases(doc, 'private:22222', { clearAll: true });
+  assert.equal(resolveAlias(doc, { text: '私聊小名' }), null);
+
+  // 清空 group:456 的 alias 即使不带 pool 条目也能清干净该群剩余学得副本，同时保留 card 与其他群
+  revokeIdentityAliases(doc, 'group:456', { clearAll: true });
+  assert.equal(resolveAlias(doc, { group: '456', text: '共同外号' }), null);
+  assert.equal(resolveAlias(doc, { group: '456', text: '原名片' })?.qq, '22222');
+  assert.equal(resolveAlias(doc, { group: '789', text: '共同外号' })?.qq, '22222');
 });

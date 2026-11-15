@@ -61,9 +61,10 @@ export function createToolContextRoutes(b) {
             rq.sendJson({ ok: true, items });
           } else if (body.category === 'alias' && rq.url.pathname.endsWith('append')) rq.sendJson({ ok: true, item: b.memoryAPI.append(key, 'alias', body.content, body.extra) });
           else if (rq.url.pathname.endsWith('remove') || rq.url.pathname.endsWith('clear')) {
-            if (rq.url.pathname.endsWith('remove') && !body.content) throw new Error('删除需要 content');
-            b.memoryPool.update(items => items.filter(item => item.conv_id !== key || item.kind !== body.category || (rq.url.pathname.endsWith('remove') && item.content !== body.content)));
-            b.memoryIndex.drop(key); b.removeMemoryView({ convId: key });
+            const remove = rq.url.pathname.endsWith('remove');
+            const targetContent = body.category === 'alias' && remove ? String(body.content ?? '').trim() : body.content;
+            if (remove && !targetContent) throw new Error('删除需要 content');
+            b.memoryAPI.remove(key, body.category, remove ? targetContent : undefined);
             rq.sendJson({ ok: true });
           } else rq.sendJson({ ok: false, error: '长期记忆由压缩器写入' }, 400);
         } catch (error) { rq.sendJson({ ok: false, error: error.message }, error.statusCode ?? 400); }

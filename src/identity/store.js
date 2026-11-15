@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { atomicWriteJson } from '../store/fs-atomic.js';
 import { migrateDocument, stampSchema } from '../store/schema.js';
-import { emptyIdentityDocument, resetIdentityConversation, redactIdentityAliases, normalizeAliasText, recordObservedAlias, recordUnresolvedAlias, resolveAlias, validateIdentityDocument } from './registry.js';
+import { emptyIdentityDocument, resetIdentityConversation, redactIdentityAliases, revokeIdentityAliases as revokeAliasesInDoc, normalizeAliasText, recordObservedAlias, recordUnresolvedAlias, resolveAlias, validateIdentityDocument } from './registry.js';
 
 export function createIdentityStore(b) {
   let doc = emptyIdentityDocument();
@@ -122,6 +122,33 @@ export function createIdentityStore(b) {
       redactIdentityAliases(doc, key, id, removed);
       queueSave(); saveIdentity();
       if (dirty || broken) throw new Error('身份清理未保存');
+    },
+    revokeIdentityAliases: (key, options = {}) => {
+      let currentStamp;
+      try { currentStamp = statStamp(); } catch (error) { throw Object.assign(new Error(`身份库状态不可读，称呼撤销未完成：${error?.message ?? error}`), { statusCode: 503 }); }
+      if (broken || currentStamp !== fileStamp) {
+        if (!broken && currentStamp !== fileStamp) {
+          broken = true;
+          b.log('⚠️ identity.json 在启动后被外部修改；为避免覆盖新数据，停止写入并降级为 QQ 直读');
+        }
+        throw Object.assign(new Error('身份库只读，称呼撤销未完成'), { statusCode: 503 });
+      }
+      const draft = structuredClone(doc);
+      const { changed } = revokeAliasesInDoc(draft, key, options);
+      if (!changed && !dirty) return false;
+      try {
+        if (timer) { b.clearTimeout(timer); timer = null; }
+        if (changed) draft.updatedAt = new Date().toISOString();
+        const validated = validateIdentityDocument(draft);
+        atomicWriteJson(b.IDENTITY_FILE, stampSchema('identity', validated));
+        doc = validated;
+        mentionIndexes.clear();
+        dirty = false;
+        fileStamp = statStamp();
+      } catch (error) {
+        throw Object.assign(new Error(`身份称呼撤销未保存：${error?.message ?? error}`), { statusCode: 503 });
+      }
+      return changed;
     },
     editIdentity,
     loadIdentity,

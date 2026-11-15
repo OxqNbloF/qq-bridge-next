@@ -1102,3 +1102,87 @@ test('source redaction claims unhydrated light memory without erasing unrelated 
     assert.deepEqual(h.memoryPool.query({ kind: 'ongoing' }).map(item => item.content), ['keep-1']);
   } finally { await h.close(); }
 });
+
+test('memory-remove, memory-clear and console long/delete revoke promoted identity aliases and derived globals before reporting success', async () => {
+  const h = await bridgeHarness({ config: { allow: { private: ['123', '790'], groups: ['456', '789', '890', '999'] } } });
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
+  let restarted;
+  const callAgent = async (endpoint, body, key = 'group:456') => {
+    const st = h.getSocialV2State(key);
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/agent/${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': h.cfg.consoleToken, 'x-agent-call': '1', 'x-agent-token': st.agentToken },
+      body: JSON.stringify({ key, ...body }),
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  const confirmAlias = async (groupNum, aliasName, targetQq = '790') => {
+    const key = `group:${groupNum}`;
+    h.getSocialV2State(key);
+    h.appendAlias(key, aliasName, { target: targetQq });
+    for (const id of [`${groupNum}-${aliasName}-1`, `${groupNum}-${aliasName}-2`]) {
+      await h.handleIncoming('group', groupNum, {
+        message_type: 'group', group_id: groupNum, user_id: 123, message_id: id,
+        message: `${aliasName} ${targetQq}`, raw_message: `${aliasName} ${targetQq}`, sender: { user_id: 123, nickname: 'owner' },
+      }, h.cfg);
+    }
+  };
+  try {
+    h.setMode('reserved2');
+    // 三个群确认同一个称呼 -> 触发全局晋升；同时在群 456 写入手工与独立其他群称呼
+    for (const groupNum of [456, 789, 890]) await confirmAlias(groupNum, '跨群代号');
+    await confirmAlias(456, '群内小名');
+    h.editIdentity({ qq: '790', group: '456', name: '人工名', expectedUpdatedAt: h.identitySnapshot().updatedAt ?? '' });
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '跨群代号' })?.qq, '790');
+    assert.equal(h.resolveIdentityAlias({ group: '999', text: '跨群代号' })?.qq, '790');
+
+    // 通过 agent memory-remove 删除 456 中的“跨群代号”：群内副本、mention 索引、衍生全局晋升与持久化文件一并撤销
+    const rm = await callAgent('memory-remove', { category: 'alias', content: '跨群代号' });
+    assert.equal(rm.status, 200, JSON.stringify(rm.body));
+    assert.equal(h.memoryPool.query({ kind: 'alias' }).some(item => item.conv_id === 'group:456' && item.content === '跨群代号'), false);
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '跨群代号' }), null);
+    assert.equal(h.resolveIdentityAlias({ group: '999', text: '跨群代号' }), null, '仅剩两个群支持，不再全局解析');
+    assert.deepEqual(h.resolveIdentityMentions({ conv: 'group:456', group: '456', text: '你好跨群代号' }), []);
+    assert.equal(h.resolveIdentityAlias({ group: '789', text: '跨群代号' })?.qq, '790', '其他群独立称呼保留');
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '人工名' })?.qq, '790');
+
+    // 通过控制台 long/delete 删除“群内小名”
+    const item = h.memoryPool.query({ kind: 'alias' }).find(entry => entry.conv_id === 'group:456' && entry.content === '群内小名');
+    assert.ok(item);
+    const consoleDel = await fetch(`http://127.0.0.1:${server.address().port}/api/console/memory/long/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': h.cfg.consoleToken },
+      body: JSON.stringify({ key: 'group:456', id: item.id, confirm: true }),
+    });
+    assert.equal(consoleDel.status, 200);
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '群内小名' }), null);
+    assert.doesNotMatch(fs.readFileSync(h.IDENTITY_FILE, 'utf8'), /群内小名/);
+
+    // 重启后从 identity.json 恢复，已被撤销的称呼不会复活
+    const saved = fs.readFileSync(h.IDENTITY_FILE, 'utf8');
+    restarted = await bridgeHarness({ files: { 'state/identity.json': saved } });
+    assert.equal(restarted.resolveIdentityAlias({ group: '456', text: '跨群代号' }), null);
+    assert.equal(restarted.resolveIdentityAlias({ group: '456', text: '群内小名' }), null);
+    assert.equal(restarted.resolveIdentityAlias({ group: '999', text: '跨群代号' }), null);
+    assert.equal(restarted.resolveIdentityAlias({ group: '789', text: '跨群代号' })?.qq, '790');
+
+    // memory-clear 清空某群剩余学得称呼；即便 identity.json 在外被篡改也要拒绝并回报错 503
+    await confirmAlias(456, '待清空外号');
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '待清空外号' })?.qq, '790');
+    const clearRes = await callAgent('memory-clear', { category: 'alias' });
+    assert.equal(clearRes.status, 200, JSON.stringify(clearRes.body));
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '待清空外号' }), null);
+    assert.equal(h.resolveIdentityAlias({ group: '456', text: '人工名' })?.qq, '790');
+
+    await confirmAlias(456, '外部篡改阻塞');
+    fs.writeFileSync(h.IDENTITY_FILE, fs.readFileSync(h.IDENTITY_FILE, 'utf8') + ' ');
+    const blocked = await callAgent('memory-remove', { category: 'alias', content: '外部篡改阻塞' });
+    assert.equal(blocked.status, 503);
+    assert.ok(h.memoryPool.query({ kind: 'alias' }).some(entry => entry.conv_id === 'group:456' && entry.content === '外部篡改阻塞'), '持久化失败时不删池也不报成功');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await restarted?.close();
+    await h.close();
+  }
+});

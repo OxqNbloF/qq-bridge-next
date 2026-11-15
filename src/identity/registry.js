@@ -239,3 +239,82 @@ export function redactIdentityAliases(doc, key, messageId, removed = []) {
   }
   return doc;
 }
+
+/** 撤销被删除或清空的别名记忆对应的学得身份副本（含衍生的全局晋升，保留人工与独立来源称呼）。 */
+export function revokeIdentityAliases(doc, key, { removed = [], content, clearAll = false } = {}) {
+  const groupId = key.startsWith('group:') ? key.slice(6) : null;
+  const contentNorm = content !== undefined ? normalizeAliasText(content) : '';
+  const unresolvedMatch = (text) => clearAll || (contentNorm && normalizeAliasText(text) === contentNorm)
+    || removed.some((item) => item?.kind === 'alias' && (!item.conv_id || item.conv_id === key) && normalizeAliasText(item.content) === normalizeAliasText(text));
+  const unresolvedBefore = (doc.unresolved ?? []).length;
+  doc.unresolved = (doc.unresolved ?? []).filter((item) => !(item.conv === key && unresolvedMatch(item.text)));
+  let changed = doc.unresolved.length !== unresolvedBefore;
+
+  for (const [qq, person] of Object.entries(doc.people ?? {})) {
+    const matchedItems = removed.filter((item) => item?.kind === 'alias' && (!item.conv_id || item.conv_id === key) && (!item.subject_uid || String(item.subject_uid) === qq));
+    const itemTexts = new Set(matchedItems.map((item) => normalizeAliasText(item.content)).filter(Boolean));
+    const directTexts = new Set([...itemTexts, ...(contentNorm ? [contentNorm] : [])]);
+    // 按单条记忆 id 删除时仅作用于该条目 subject_uid；显式传 content 或清空整类时兜底撤销无池条目的残留副本。
+    const scopeMatched = (alias) => {
+      if (alias.source !== 'learned') return false;
+      if (clearAll) return true;
+      const norm = normalizeAliasText(alias.text);
+      if (removed.length > 0 && content === undefined) return itemTexts.has(norm);
+      return directTexts.has(norm);
+    };
+
+    const revokedTexts = new Set(itemTexts);
+    const local = groupId != null ? person.groups?.[groupId] : null;
+    if (local) {
+      local.aliases = local.aliases.filter((alias) => {
+        if (!scopeMatched(alias)) return true;
+        revokedTexts.add(normalizeAliasText(alias.text));
+        changed = true;
+        return false;
+      });
+    }
+
+    const nextGlobal = [];
+    for (const alias of person.globalAliases ?? []) {
+      const norm = normalizeAliasText(alias.text);
+      const fromKey = Array.isArray(alias.sources) && alias.sources.some((item) => item.conv === key);
+      const affected = alias.source === 'learned' && (
+        revokedTexts.has(norm)
+        || (fromKey && (clearAll || (removed.length > 0 && content === undefined ? itemTexts.has(norm) : directTexts.has(norm))))
+        || (!alias.sources?.length && (key === `private:${qq}` && (clearAll || norm === contentNorm)))
+      );
+      if (!affected) { nextGlobal.push(alias); continue; }
+      changed = true;
+      if (!alias.sources?.length) continue;
+
+      const remainingNonGroup = alias.sources.filter((item) => item.conv !== key && !item.conv.startsWith('group:'));
+      const supportingGroups = Object.values(person.groups ?? {}).filter((scope) =>
+        scope.aliases.some((item) => item.status === 'active' && normalizeAliasText(item.text) === norm));
+      if (!remainingNonGroup.length && supportingGroups.length < 3) continue;
+
+      const groupSources = supportingGroups.length >= 3
+        ? supportingGroups.flatMap((scope) => scope.aliases.filter((item) => item.status === 'active' && normalizeAliasText(item.text) === norm).flatMap((item) => item.sources ?? []))
+        : [];
+      const merged = [];
+      for (const evidence of [...remainingNonGroup, ...groupSources]) {
+        if (!merged.some((item) => item.conv === evidence.conv && item.id === evidence.id)) merged.push(evidence);
+      }
+      alias.sources = merged.slice(-64);
+      revokedTexts.add(norm);
+      nextGlobal.push(alias);
+    }
+    person.globalAliases = nextGlobal;
+
+    const remaining = [...person.globalAliases, ...Object.values(person.groups ?? {}).flatMap((scope) => scope.aliases)];
+    const fallbackName = remaining.find((alias) => alias.status === 'active')?.text ?? remaining[0]?.text ?? '群友';
+    const touchedNames = new Set([...revokedTexts, ...(contentNorm ? [contentNorm] : [])]);
+    if (touchedNames.has(normalizeAliasText(person.displayName))
+        && !remaining.some((alias) => normalizeAliasText(alias.text) === normalizeAliasText(person.displayName))) {
+      if (person.displayName !== fallbackName) {
+        person.displayName = fallbackName;
+        changed = true;
+      }
+    }
+  }
+  return { doc, changed };
+}

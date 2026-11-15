@@ -1,6 +1,7 @@
 import { COMPRESS_KINDS } from './compress.js';
 import { assertMemoryWriteAllowed } from './write-guard.js';
 import { canonicalV2Key } from '../policy/access.js';
+import { normalizeAliasText } from '../identity/registry.js';
 import { resetMemoryContext } from './context-reset.js';
 
 export function createMemoryAPI(b) {
@@ -38,7 +39,18 @@ export function createMemoryAPI(b) {
       if (category === 'memberImpression') { if (content === undefined) state.memberImpressions = {}; else delete state.memberImpressions[content]; }
       b.saveSocialV2State(); return;
     }
-    b.memoryPool.update(items => items.filter(item => item.conv_id !== key || item.kind !== category || (content !== undefined && item.content !== content)));
+    key = canonicalV2Key(key);
+    if (!key) throw Object.assign(new Error('会话 key 非法'), { statusCode: 400 });
+    const text = category === 'alias' && content !== undefined ? String(content).trim() : content;
+    if (category === 'alias' && text !== undefined && !text) throw Object.assign(new Error('删除需要 content'), { statusCode: 400 });
+    const contentMatch = (item) => text === undefined
+      || (category === 'alias' ? normalizeAliasText(item.content) === normalizeAliasText(text) : item.content === text);
+    const matches = (item) => item.conv_id === key && item.kind === category && contentMatch(item);
+    if (category === 'alias') {
+      const targets = b.memoryPool.query({ kind: 'alias' }).filter(matches);
+      b.revokeIdentityAliases?.(key, { removed: targets, content: text, clearAll: text === undefined });
+    }
+    b.memoryPool.update(items => items.filter(item => !matches(item)));
     b.memoryIndex.drop(key); b.removeMemoryView({ convId: key });
   }
   return {

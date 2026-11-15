@@ -43,6 +43,7 @@ export function createConsoleSystemRoutes(b) {
       if (!key || typeof body.id !== 'string' || body.confirm !== true) { rq.sendJson({ ok: false, error: '需要会话 key、条目 id 和删除确认' }, 400); return; }
       const target = b.memoryPool.query().find((item) => item.id === body.id && item.conv_id === key);
       if (!target) { rq.sendJson({ ok: false, error: '记忆条目不存在' }, 404); return; }
+      if (target.kind === 'alias') b.revokeIdentityAliases?.(key, { removed: [target] });
       b.memoryPool.update((items) => items.filter((item) => item.id !== body.id || item.conv_id !== key));
       b.removeLightMemoryItem?.(key, target);
       b.memoryIndex.drop(key);
