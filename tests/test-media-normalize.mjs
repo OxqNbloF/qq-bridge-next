@@ -245,6 +245,54 @@ await test('fetchOneBotImage 仍返回**原始字节**（收藏表情不能被�
   } finally { await h.close(); }
 });
 
+await test('HTTP /api/agent/images/message 经过脱敏与身份投影后仍返回合法 Base64（不触发 Invalid Base64 string）', async () => {
+  // 在合法 PNG 后附带触发 QQ_PREFIX_RE / 已知 QQ / SENSITIVE_RE 的字节，确保 Base64 含 QQ4、at7、已知 QQ 与 +/etc/
+  const probe = Buffer.from(
+    FAKE_GATEWAY_PNG.toString('base64').replace(/=+$/, '') + 'QQ4qq9at7uin322222+/etc/ab',
+    'base64'
+  );
+  const expectedB64 = probe.toString('base64');
+  assert.match(expectedB64, /QQ4.*at7.*22222.*\+\/etc\//, '测试夹具应包含易误伤 Base64 片段');
+  const h = await bridgeHarness({ config: { ownerQQ: '22222' } });
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+  try {
+    const port = server.address().port;
+    h.setMode('reserved2');
+    h.setReady(true);
+    const st = h.getSocialV2State('group:456');
+    st.recentMessages.push({
+      seq: 1,
+      messageId: 'img-b64-1',
+      sender: '群友A',
+      userId: '22222',
+      text: '[图片]',
+      plain: '[图片]',
+      media: [{ kind: 'image', file: 'crafted.png' }],
+      hasMedia: true,
+      time: Date.now(),
+    });
+    h.bot.getImage = async () => ({ base64: expectedB64 });
+    const res = await fetch(`http://127.0.0.1:${port}/api/agent/images/message?key=group%3A456&messageId=img-b64-1`, {
+      headers: {
+        'x-console-token': 'fixture-console-token',
+        'x-agent-call': '1',
+        'x-agent-token': st.agentToken,
+      },
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.equal(body.ok, true);
+    assert.equal(body.images.length, 1);
+    assert.equal(body.images[0].mimeType, 'image/png');
+    assert.equal(body.images[0].data, expectedB64, 'HTTP 响应中的图片 Base64 不得被脱敏或身份投影改写');
+    assert.doesNotThrow(() => atob(body.images[0].data), 'MCP ImageContentSchema 的 atob 校验必须通过');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await h.close();
+  }
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 
 console.log(`\n${failures ? 'FAILED' : 'ALL PASS'}  failures=${failures} skipped=${skipped}`);

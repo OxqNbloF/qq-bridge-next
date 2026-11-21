@@ -16,8 +16,20 @@ export const MESSAGE_ID_FIELDS = [
 const CONV_KEY_RE = /^(group|private):[1-9]\d{0,15}$/;
 const BARE_QQ_RE = /(?<!\d)[1-9]\d{0,15}(?!\d)/g;
 const QQ_PREFIX_RE = /(?:ownerQQ|QQ|qq|user_id|userId|uin|at|@)\s*[:：=]?\s*$/;
+const IMAGE_MIME_RE = /^image\/[a-z0-9.+-]+$/i;
 export const MEMBER_REF_RE = /^member-[0-9a-f]{16}$/;
 export const memberRef = (id) => `member-${crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 16)}`;
+
+/** 判断是否为图片载荷的纯 Base64 字节字段，避免文本脱敏破坏图片编码 */
+export function isImageBase64Field(parent, field, value) {
+  if (field !== 'data' || typeof value !== 'string' || value.length === 0 || value.length % 4 !== 0) return false;
+  if (!parent || typeof parent !== 'object' || Array.isArray(parent)) return false;
+  const mime = parent.mimeType ?? parent.mediaType;
+  if (typeof mime !== 'string' || !IMAGE_MIME_RE.test(mime)) return false;
+  if (/[^A-Za-z0-9+/=]/.test(value)) return false;
+  const eq = value.indexOf('=');
+  return eq === -1 || eq === value.length - 1 || (eq === value.length - 2 && value[value.length - 1] === '=');
+}
 
 /** 从一个或多个原始数据根中收集已知 QQ 号，保证被过滤成员的文本提及同样脱敏 */
 export function collectIdentityIds(roots, { seedIds = [], keyFields = [] } = {}) {
@@ -53,7 +65,12 @@ export function projectModelTree(value, { collectRoots = [value], seedIds = [], 
     if (!node || typeof node !== 'object') return node;
     const entries = Object.entries(node)
       .filter(([name]) => !HIDDEN_IDENTITY_FIELDS.includes(name))
-      .map(([name, child]) => [name, transformFieldValue ? transformFieldValue(name, child, project) : project(child, name)]);
+      .map(([name, child]) => [
+        name,
+        isImageBase64Field(node, name, child)
+          ? child
+          : (transformFieldValue ? transformFieldValue(name, child, project) : project(child, name)),
+      ]);
     const rawMemberId = Object.prototype.hasOwnProperty.call(node, 'userId') ? node.userId
       : Object.prototype.hasOwnProperty.call(node, 'user_id') ? node.user_id : undefined;
     if (/^[1-9]\d*$/.test(String(rawMemberId ?? '').trim()) && !Object.prototype.hasOwnProperty.call(node, 'memberRef')) {

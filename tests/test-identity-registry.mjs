@@ -462,3 +462,26 @@ test('revokeIdentityAliases 撤销群/私聊学得副本及衍生全局晋升，
   assert.equal(resolveAlias(doc, { group: '456', text: '原名片' })?.qq, '22222');
   assert.equal(resolveAlias(doc, { group: '789', text: '共同外号' })?.qq, '22222');
 });
+
+test('模型投影不破坏图片载荷的 Base64 data，但仍脱敏同级文本与非 Base64 字段', async () => {
+  const { createIdentityProjection } = await import('../src/identity/projection.js');
+  const { projectForModel } = createIdentityProjection({
+    cfg: { ownerQQ: '10001' },
+    identitySnapshot: () => ({ people: { '22222': { displayName: '王哥' } } }),
+    identityDisplayName: (id) => (id === '22222' ? '王哥' : null),
+  });
+  // 构造同时包含 QQ4 / qq9 / at7 / uin3 与已知 QQ 22222 的合法 Base64 图片载荷
+  const b64 = 'iVBORw0KQQ4qq9at7uin322222AAAA==';
+  assert.doesNotThrow(() => atob(b64));
+  const projected = projectForModel({
+    images: [{ mimeType: 'image/png', data: b64, text: '来自 QQ:22222 的图片' }],
+    image: { mediaType: 'image/jpeg', data: b64 },
+    nonImage: { mimeType: 'text/plain', data: b64 },
+    invalidData: { mimeType: 'image/png', data: 'QQ:22222 not base64!' },
+  });
+  assert.equal(projected.images[0].data, b64, 'image/png 的合法 Base64 data 必须原样保留');
+  assert.equal(projected.images[0].text, '来自 QQ:王哥 的图片', '图片同级文本字段仍须脱敏');
+  assert.equal(projected.image.data, b64, 'mediaType=image/jpeg 的合法 Base64 data 必须原样保留');
+  assert.notEqual(projected.nonImage.data, b64, '非图片 mimeType 不跳过脱敏');
+  assert.equal(projected.invalidData.data, 'QQ:王哥 not base64!', '非合法 Base64 的 data 仍须脱敏');
+});

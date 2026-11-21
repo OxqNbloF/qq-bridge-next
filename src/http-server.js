@@ -4,6 +4,7 @@ import { createToolGateway, TOOL_ROUTES } from './features/tools/gateway.js';
 import { rememberModelSources } from './memory/model-sources.js';
 import { modelMessageVisible } from './gate/model-visibility.js';
 import { captureToolMemberGuard, projectToolMemberResult } from './gate/tool.js';
+import { isImageBase64Field } from './identity/project-core.js';
 // 本地 HTTP server 装配：控制台令牌、路由分组、按序过关卡后分发
 import { createConsoleCoreRoutes } from './features/console/routes/core.js';
 import { createConsoleGateRoutes } from './features/console/routes/gate.js';
@@ -72,11 +73,12 @@ export function createConsoleServer(b) {
     const consoleCoreRoutes = createConsoleCoreRoutes(routeScope);
     const consoleGateRoutes = createConsoleGateRoutes(routeScope);
     const consoleMaintenanceRoutes = createConsoleMaintenanceRoutes(routeScope);
-    const sanitizeToolResult = (value) => {
+    const sanitizeToolResult = (value, parent = null, field = '') => {
+      if (isImageBase64Field(parent, field, value)) return value;
       if (typeof value === 'string') return b.redactSensitiveText(b.redactKnownTokensOnly(value));
-      if (Array.isArray(value)) return value.map(sanitizeToolResult);
+      if (Array.isArray(value)) return value.map((child) => sanitizeToolResult(child));
       if (!value || typeof value !== 'object') return value;
-      return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitizeToolResult(child)]));
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitizeToolResult(child, value, key)]));
     };
     const toolGateway = createToolGateway(b);
     const server = b.http.createServer(async (req, res) => {
