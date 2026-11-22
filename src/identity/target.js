@@ -45,15 +45,19 @@ export async function resolveMemberTarget(b, key, rawTarget, { fieldName = 'targ
   const target = String(rawTarget ?? '').trim();
   if (!target) return '';
   if (/^all$/i.test(target)) throw targetError(`${fieldName} 必须是正整数 QQ 号或有效的 member-* 成员标识，且不能为 all`);
-  if (QQ_RE.test(target)) return target;
-  if (/^-?\d+$/.test(target)) throw targetError(`${fieldName} 必须是正整数 QQ 号或有效的 member-* 成员标识`);
-
   const canonical = canonicalV2Key(key) ?? String(key ?? '').trim();
   const [kind, convId] = canonical.split(':');
   const isGroup = kind === 'group' && QQ_RE.test(convId ?? '');
   const isPrivate = kind === 'private' && QQ_RE.test(convId ?? '');
   const st = state ?? b?.socialV2?.conversations?.get?.(canonical) ?? null;
   const visible = (qq) => !checkVisibility || !b?.cfg?.architecture?.gateV2 || !b?.gateDecide || modelMemberVisible(b, canonical, qq);
+
+  if (QQ_RE.test(target)) {
+    if (isPrivate && target !== convId) throw targetError(`${fieldName} 与当前私聊对象不一致`, 403);
+    if (!visible(target)) throw targetError(`${fieldName} 目标成员受策略限制，当前不可访问`, 403);
+    return target;
+  }
+  if (/^-?\d+$/.test(target)) throw targetError(`${fieldName} 必须是正整数 QQ 号或有效的 member-* 成员标识`);
 
   const localCandidates = new Set();
   const localMessages = [...(st?.recentMessages ?? []), ...(st?.unread ?? [])];
@@ -73,8 +77,13 @@ export async function resolveMemberTarget(b, key, rawTarget, { fieldName = 'targ
       const s = String(uid ?? '').trim();
       if (QQ_RE.test(s) && visible(s)) localCandidates.add(s);
     }
-    for (const [uid, person] of Object.entries(b?.identitySnapshot?.()?.people ?? {})) {
-      if (QQ_RE.test(uid) && person?.groups?.[convId] && visible(uid)) localCandidates.add(uid);
+    const groupMembers = typeof b?.identityGroupMembers === 'function'
+      ? b.identityGroupMembers(convId)
+      : Object.entries(b?.identitySnapshot?.()?.people ?? {})
+          .filter(([, person]) => person?.groups?.[convId])
+          .map(([uid]) => uid);
+    for (const uid of groupMembers) {
+      if (QQ_RE.test(uid) && visible(uid)) localCandidates.add(uid);
     }
   }
 

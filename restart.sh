@@ -13,6 +13,14 @@ if ! node scripts/stop-bridge-instance.mjs; then
 fi
 
 LOG="$ROOT/state/bridge-guard.log"
+# 收紧新建日志文件权限（0600），超 10MB 轮转一次避免无限膨胀
+umask 077
+if [ -f "$LOG" ]; then
+  size=$(wc -c < "$LOG" 2>/dev/null | tr -d ' ' || echo 0)
+  if [ "${size:-0}" -gt 10485760 ]; then
+    mv -f "$LOG" "${LOG}.1" 2>/dev/null || true
+  fi
+fi
 nohup bash "$ROOT/start.sh" >>"$LOG" 2>&1 &
 guard=$!
 echo "Guard started (PID $guard). Console log: state/bridge-guard.log"

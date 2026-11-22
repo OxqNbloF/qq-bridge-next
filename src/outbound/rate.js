@@ -1,9 +1,11 @@
+import { canonicalV2Key } from '../policy/access.js';
 import { outboundError } from './validation.js';
 
 // The rollout-wide lane and legacy tool ledger are distinct existing budgets.
 // Reserve both atomically, never charge the legacy ledger twice for media whose
 // capability already manages it. Pending reservations survive long burst gaps.
-export function createOutboundRate(b, sendTimes, key, intent) {
+export function createOutboundRate(b, sendTimes, rawKey, intent) {
+  const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
   const lanes = [];
   if (intent.ai) {
     const ensureAiTimes = () => {

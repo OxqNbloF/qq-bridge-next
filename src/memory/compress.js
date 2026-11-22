@@ -46,8 +46,9 @@ export function parseCompressJson(output, rows) {
     if (kind === 'summary' && !sources.length) sources.push(...rows.map(row => String(row.msg_id)));
     if (kind !== 'summary' && !sources.length) continue; // 无来源的不收，防编造
     const importance = Math.min(5, Math.max(1, Math.round(Number(raw.importance)) || 3));
-    const subject = String(raw.subject ?? '').trim().slice(0, 40);
-    const people = [...new Set(rows.filter(row => row.nick === subject || String(row.user_id) === subject).map(row => String(row.user_id)).filter(id => /^[1-9]\d{0,15}$/.test(id)))];
+    const normNick = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+    const subject = normNick(raw.subject).slice(0, 40);
+    const people = [...new Set(rows.filter(row => normNick(row.nick) === subject || String(row.user_id) === subject).map(row => String(row.user_id)).filter(id => /^[1-9]\d{0,15}$/.test(id)))];
     const resolved = people.length === 1;
     const name = resolved ? rows.find(row => String(row.user_id) === people[0])?.nick ?? subject : subject;
     items.push({ kind, content, subject_uid: resolved ? people[0] : subject, subject_name: name, subject_resolved: resolved, importance, source_msg_ids: sources });
@@ -87,15 +88,17 @@ export function createMemoryCompressor(b) {
   const lastRunAt = new Map(); // key -> 上次压缩时间
   const failures = new Map(); // key -> 同一位置连续失败了几次
   const inFlight = new Set();
+  const activeCompressions = new Set();
   // 读配置里的数字，没配或配错就用默认值
   const opt = (name) => { const v = Number(b.cfg.memory?.[name]); return Number.isFinite(v) && v > 0 ? v : DEFAULTS[name]; };
   // 记忆压缩开了、并且有消息存档才干活
   const enabled = () => b.cfg.memory?.enabled === true && !!b.messageArchive;
-  // 取出这个聊天的长期记忆条目
-  const longItems = (key) => COMPRESS_KINDS.flatMap((kind) => b.memoryPool.query({ kind })).filter((it) => it.conv_id === key);
-  // 重建会话的检索索引
+  // 取出这个聊天的长期记忆条目（单次零拷贝过滤）
+  const longItems = (key) => b.memoryPool.query({ kinds: COMPRESS_KINDS, convId: key, clone: false });
+  const indexableItems = (items) => items.filter((it) => it.kind === 'event' || it.kind === 'preference');
+  // 重建会话的检索索引（仅对 event/preference 建索引，避免 summary/commitment 挤占 FTS 配额）
   function reindex(key, items) {
-    b.memoryIndex.rebuild(key, items);
+    b.memoryIndex.rebuild(key, indexableItems(items));
   }
 
   // 把一批压缩结果写进记忆池
@@ -120,9 +123,10 @@ export function createMemoryCompressor(b) {
   }
 
   // 重建会话的记忆视图
-  function rebuildView(key) {
+  function rebuildView(key, preloaded = null) {
     try {
-      b.writeMemoryView({ convId: key, text: `# ${key} 的长期记忆（由记忆池重建，可删）\n\n${formatLongMemory(longItems(key), { maxChars: 20_000 }) || '（暂无）'}\n` });
+      const items = preloaded ?? longItems(key);
+      b.writeMemoryView({ convId: key, text: `# ${key} 的长期记忆（由记忆池重建，可删）\n\n${formatLongMemory(items, { maxChars: 20_000 }) || '（暂无）'}\n` });
     } catch (error) { b.log(`[memory] ${key} 视图重建失败: ${error?.message ?? error}`); }
   }
 
@@ -181,6 +185,16 @@ export function createMemoryCompressor(b) {
     if (!enabled()) return { ok: false, reason: 'disabled' };
     key = canonicalV2Key(key);
     if (!key) return { ok: false, reason: 'bad-conversation' };
+    if (activeCompressions.has(key)) return { ok: false, reason: 'in-flight' };
+    activeCompressions.add(key);
+    try {
+      return await compressConversationInner(key);
+    } finally {
+      activeCompressions.delete(key);
+    }
+  }
+
+  async function compressConversationInner(key) {
     const [kind, id] = key.split(':');
     const actorAllowed = qq => {
       if (!/^[1-9]\d{0,15}$/.test(String(qq ?? ''))) return false;
@@ -247,8 +261,9 @@ export function createMemoryCompressor(b) {
       writeBatch(key, cursor, toSeq, clean);
       b.compressCursor.set(key, toSeq); // 池写成功后才推进
       failures.delete(key);
-      reindex(key, longItems(key));
-      rebuildView(key);
+      const latestLong = longItems(key);
+      reindex(key, latestLong);
+      rebuildView(key, latestLong);
       b.log(`[memory] ${key} 压缩 seq ${cursor + 1}–${toSeq}（${rows.length} 条消息 → ${clean.length} 条记忆）`);
       return { ok: true, written: clean.length, toSeq };
     } catch (error) {
@@ -300,13 +315,17 @@ export function createMemoryCompressor(b) {
     if (!enabled() || !policy.read.includes('long')) return join([light, terms]);
     let long = '';
     try {
-      const items = longItems(key).filter((item) => modelMemberVisible(b, key, item?.subject_uid));
+      const allLong = longItems(key);
+      const items = allLong.filter((item) => modelMemberVisible(b, key, item?.subject_uid));
       let ranked = null;
       if (items.length) {
-        if (!b.memoryIndex.isBuilt(key)) reindex(key, items);
+        // 索引始终基于全量未过滤条目构建（防解封成员后索引陈旧），再在召回结果里只匹配当前可见条目
+        const fullIndexable = indexableItems(allLong);
+        if (typeof b.memoryIndex.ensureBuilt === 'function') b.memoryIndex.ensureBuilt(key, fullIndexable);
+        else if (!b.memoryIndex.isBuilt(key)) b.memoryIndex.rebuild(key, fullIndexable);
         // 用最近消息作检索词，最新的排前面
         const query = (Array.isArray(st?.recentMessages) ? st.recentMessages : []).filter(message => modelMessageVisible(b, key, message)).slice(-5).reverse().map((m) => `${m?.sender ?? ''} ${m?.plain ?? m?.text ?? ''}`).join(' ');
-        ranked = b.memoryIndex.search(key, items.filter((it) => it.kind === 'event' || it.kind === 'preference'), query).items;
+        ranked = b.memoryIndex.search(key, indexableItems(items), query).items;
       }
       long = formatLongMemory(items, { sanitize: (s) => b.sanitizeUntrustedText(s), ranked });
     }

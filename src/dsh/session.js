@@ -87,14 +87,14 @@ export function createDshSession(b) {
       if (!sessionId) {
         throw new Error(`无法为 ${key} 创建 DSH 会话（模式 ${mode}，preset ${preset ?? '无'}）：${lastError?.message ?? '未知原因'}。已拒绝退化为 DSH 默认 preset 会话——那会把本地工具暴露给 QQ 群。`);
       }
-      // 新版 DSH 需显式 follow 会话才收得到事件
-      b.api.events.follow(sessionId);
-      // reset 期间创建完成：丢弃，防止旧会话复活
+      // reset 期间创建完成：丢弃，先不订阅事件流，防止残留到 _desiredFollows
       if (epoch !== b.sessionEpoch || creationEpoch !== b.conversationEpoch?.(key) || policy !== b.sessionPolicy(key) || !b.isSessionAllowedInCurrentMode(key)) {
         b.log(`会话创建期间发生 reset，丢弃 ${key} 的新会话（${sessionId}）`);
         try { await b.withTimeout(b.api.workspace.archiveSession({ sessionId }), b.DSH_CONTROL_TIMEOUT_MS, 'archiveSession'); } catch {}
         throw new Error('会话创建期间已重置，丢弃新会话');
       }
+      // 确认未被 reset 后再显式 follow 会话
+      b.api.events.follow(sessionId);
       // 新上下文在绑定前初始化来源账本，区别于启动恢复的未知旧历史。
       b.getSocialV2State?.(key);
       b.state.sessions[key] = sessionId;

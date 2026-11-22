@@ -251,7 +251,7 @@ export function createToolMediaRoutes(b) {
         if (body.dryRun === true) {
           const probe = await b.inspectAudio(resolved.path, { maxBytes: voice.maxBytes, maxSeconds: voice.maxSeconds });
           if (!probe.ok) { rq.sendJson({ ok: false, error: probe.error }, 400); return; }
-          rq.sendJson({ ok: true, dryRun: true, key, file: resolved.path, detail: describeAudio(probe) });
+          rq.sendJson({ ok: true, dryRun: true, key, file: path.basename(resolved.path), detail: describeAudio(probe) });
           return;
         }
         const sent = await b.sendVoiceForV2(key, body.voice ?? body.file, {
@@ -801,7 +801,7 @@ export function createToolMediaRoutes(b) {
         return;
       }
       const flagMap = { sendGroup: 'sendGroup', sendPrivate: 'sendPrivate', reply: 'reply' };
-      const flag = flagMap[tool];
+      const flag = Object.hasOwn(flagMap, tool) ? flagMap[tool] : null;
       if (!flag) {
         rq.sendJson({ ok: false, error: 'tool 必须是 sendGroup/sendPrivate/reply' }, 400);
         return;

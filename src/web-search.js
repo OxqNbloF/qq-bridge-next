@@ -3,6 +3,7 @@
 // key 只发给检查过的加密地址，日志和报错里都不出现
 // 没有 key 时改成搜 Bing，先读它的订阅结果再读网页
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
@@ -172,25 +173,30 @@ async function validateSearchEndpoint(baseURL) {
  * 往一个已检查过的地址发一次 POST 请求。
  * 网络断了会换个地址再试；服务器回了错误码就当结果返回。
  */
-function postJsonOnce(url, address, { headers, body, timeoutMs, maxBytes = MAX_RESPONSE_BYTES }) {
+function postJsonOnce(url, address, { headers, body, timeoutMs, connectTimeoutMs = 5000, maxBytes = MAX_RESPONSE_BYTES }) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let connected = false;
     let req;
     let response;
+    let connectTimer = null;
     // 结束这次请求，成功和失败都只算一次
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (connectTimer) clearTimeout(connectTimer);
       if (error) reject(error);
       else resolve(value);
     };
     const timer = setTimeout(() => {
       const error = new Error(`联网搜索请求超时（${Math.round(timeoutMs / 1000)}s）`);
+      if (!connected) error.retryableIp = true;
       finish(error);
       req?.destroy(error);
       response?.destroy();
     }, timeoutMs);
+    const bareHost = String(url.hostname || '').replace(/^\[|\]$/g, '');
     try {
       req = https.request({
         hostname: address,
@@ -202,11 +208,13 @@ function postJsonOnce(url, address, { headers, body, timeoutMs, maxBytes = MAX_R
           host: url.host,
           'content-length': Buffer.byteLength(body)
         },
-        // 证书按真实域名检查，实际连的是固定 IP
-        servername: url.hostname,
+        // 证书按真实域名检查（IP 字面量不得设 SNI），实际连的是固定 IP
+        ...(net.isIP(bareHost) ? {} : { servername: bareHost }),
         rejectUnauthorized: true,
         timeout: timeoutMs
       }, (res) => {
+        connected = true;
+        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
         response = res;
         const status = res.statusCode || 0;
         if (status >= 300 && status < 400) {
@@ -235,22 +243,44 @@ function postJsonOnce(url, address, { headers, body, timeoutMs, maxBytes = MAX_R
           finish(null, { status, text });
         });
       });
+      req.on('socket', (socket) => {
+        if (!socket || connected) return;
+        const markConnected = () => {
+          connected = true;
+          if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+        };
+        socket.once('secureConnect', markConnected);
+        socket.once('connect', () => { if (socket.encrypted === false) markConnected(); });
+        if (connectTimeoutMs > 0 && connectTimeoutMs < timeoutMs) {
+          connectTimer = setTimeout(() => {
+            if (connected || settled) return;
+            const error = Object.assign(new Error(`联网搜索建连超时（${Math.round(connectTimeoutMs / 1000)}s）`), { retryableIp: true });
+            finish(error);
+            req.destroy(error);
+          }, connectTimeoutMs);
+        }
+      });
       req.on('timeout', () => {
         const error = new Error(`联网搜索请求超时（${Math.round(timeoutMs / 1000)}s）`);
+        if (!connected) error.retryableIp = true;
         finish(error);
         req.destroy(error);
         response?.destroy();
       });
-      req.on('error', (error) => finish(error));
+      req.on('error', (error) => {
+        if (!connected && error && typeof error === 'object') error.retryableIp = true;
+        finish(error);
+      });
       req.end(body);
     } catch (error) {
+      if (!connected && error && typeof error === 'object') error.retryableIp = true;
       finish(error);
       req?.destroy();
     }
   });
 }
 
-/** 最多换两个地址各试一次，常见是 IPv6 连不通 */
+/** 仅在建连阶段失败时切换备用 IP（避免已发出的付费 POST 被中途掐断并重复计费） */
 async function postJson(url, addresses, options) {
   const list = (Array.isArray(addresses) ? addresses : [addresses]).filter(Boolean);
   if (!list.length) throw new Error('没有任何可用地址');
@@ -260,11 +290,12 @@ async function postJson(url, addresses, options) {
   for (let i = 0; i < attempts; i += 1) {
     const remaining = deadline - Date.now();
     if (remaining <= 500) break;
-    const budget = attempts === 1 ? options.timeoutMs : Math.min(remaining, Math.ceil(options.timeoutMs / 2));
+    const connectTimeoutMs = attempts > 1 && i < attempts - 1 ? Math.min(5000, Math.floor(remaining / 2)) : remaining;
     try {
-      return await postJsonOnce(url, list[i], { ...options, timeoutMs: budget });
+      return await postJsonOnce(url, list[i], { ...options, timeoutMs: remaining, connectTimeoutMs });
     } catch (error) {
       lastError = error;
+      if (!error?.retryableIp) break;
     }
   }
   throw lastError ?? new Error('联网搜索请求失败');
@@ -320,10 +351,11 @@ export async function deepseekSearch(query, config = defaultConfig) {
   return mapDeepSeekResponse(parsed, config.maxResults || defaultConfig.maxResults, key);
 }
 
-// 把网页里的特殊符号还原成正常文字
+// 把网页里的特殊符号还原成正常文字（先去 HTML 标签再解实体，防止 std::vector&lt;int&gt; 被误删）
 function decodeEntities(text) {
   return String(text ?? '')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
       const code = Number.parseInt(hex, 16);
       return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
@@ -338,7 +370,6 @@ function decodeEntities(text) {
     .replace(/&gt;/g, '>')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
-    .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

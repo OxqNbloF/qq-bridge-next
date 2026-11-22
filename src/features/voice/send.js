@@ -12,7 +12,13 @@ export function createVoiceSender(b) {
     if (audit) b.assertOutboundAuditOk(key, `[语音:${path.basename(filePath)}]`);
     let info;
     try {
-      info = await b.inspectAudio(filePath, { maxBytes: vc.maxBytes, maxSeconds: vc.maxSeconds });
+      const derivedFfprobe = vc.ffmpegPath
+        ? String(vc.ffmpegPath).replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
+        : '';
+      const ffprobePath = (derivedFfprobe && derivedFfprobe !== vc.ffmpegPath)
+        ? derivedFfprobe
+        : (process.env.FFPROBE_PATH || 'ffprobe');
+      info = await b.inspectAudio(filePath, { maxBytes: vc.maxBytes, maxSeconds: vc.maxSeconds, ffprobePath });
     } catch (error) {
       throw new Error(`音频检查失败：${error?.message ?? error}`);
     }
@@ -96,9 +102,16 @@ export function createVoiceSender(b) {
     const resolved = b.resolveVoicePathForV2(voiceRef);
     // 先检查音量设置，出错时说人话
     if (audio) resolveAudioProcessing({ volume: audio.volume ?? vc.defaultVolume, normalize: audio.normalize === true, loudness: audio.loudness ?? vc.loudness });
-    b.voiceBudgetCheck(key, vc);
-    const sent = await sendVoiceV2(key, resolved.path, { guard: true, audit: true, audio });
-    b.voiceBudgetCommit(key);
+    const release = typeof b.voiceBudgetReserve === 'function'
+      ? b.voiceBudgetReserve(key, vc)
+      : (b.voiceBudgetCheck(key, vc), () => {});
+    let sent;
+    try {
+      sent = await sendVoiceV2(key, resolved.path, { guard: true, audit: true, audio });
+      b.voiceBudgetCommit(key);
+    } finally {
+      release();
+    }
     b.recordVoiceSentV2(key, sent, label);
     b.log(`[voice] ${key} 已发送语音 ${path.basename(resolved.path)} (${sent.detail}, messageId=${sent.messageId ?? '?'})`);
     b.appendActivity(`${key} [voice] 发送语音 ${path.basename(resolved.path)} (${sent.detail})`);

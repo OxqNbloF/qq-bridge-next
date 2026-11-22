@@ -26,6 +26,7 @@ export function parseRequestUrl(req, res, port) {
  */
 export function createSendJson({ req, res, url, log }) {
   return (obj, status = 200, { safeError = false } = {}) => {
+    if (res.writableEnded || res.destroyed) return;
     // 内部异常只写本机日志，不外泄给客户端
     if (status >= 500 && obj?.ok === false && !safeError) {
       log(`控制台请求失败 ${req.method} ${url.pathname}:`, obj.error);
@@ -34,7 +35,12 @@ export function createSendJson({ req, res, url, log }) {
         ...(obj.status ? { status: obj.status } : {})
       };
     }
-    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
+    if (res.headersSent) {
+      try { res.end(); } catch {}
+      return;
+    }
+    const extraHeaders = status === 413 || status === 408 ? { Connection: 'close' } : {};
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS, ...extraHeaders });
     res.end(JSON.stringify(obj, null, 2));
   };
 }
@@ -47,11 +53,18 @@ export function createReadBody(req, timers) {
     let total = 0;
     let settled = false;
     let bodyTimer = null;
+    const cleanup = () => {
+      if (bodyTimer) { timers.clearTimeout(bodyTimer); bodyTimer = null; }
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      req.removeListener('aborted', onAborted);
+    };
     // 以带 statusCode 的错误结束
     const fail = (status, message) => {
       if (settled) return;
       settled = true;
-      if (bodyTimer) timers.clearTimeout(bodyTimer);
+      cleanup();
       const err = new Error(message);
       err.statusCode = status;
       reject(err);
@@ -60,17 +73,10 @@ export function createReadBody(req, timers) {
     const done = (val) => {
       if (settled) return;
       settled = true;
-      if (bodyTimer) timers.clearTimeout(bodyTimer);
+      cleanup();
       resolve(val);
     };
-    // 按 Content-Length 提前拒绝超限请求体
-    const declared = Number(req.headers['content-length']);
-    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-      fail(413, '请求体过大（超过 1MB）');
-      return;
-    }
-    bodyTimer = timers.setTimeout(() => fail(400, '请求体读取超时'), 30000);
-    req.on('data', (c) => {
+    const onData = (c) => {
       if (settled) return;
       const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
       total += buf.length;
@@ -80,8 +86,8 @@ export function createReadBody(req, timers) {
         return;
       }
       chunks.push(buf);
-    });
-    req.on('end', () => {
+    };
+    const onEnd = () => {
       if (settled) return;
       const data = Buffer.concat(chunks).toString('utf8');
       if (!data.trim()) { done({}); return; }
@@ -92,10 +98,22 @@ export function createReadBody(req, timers) {
         return;
       }
       done(parsed);
-    });
+    };
+    const onError = () => fail(400, '请求体读取失败');
+    const onAborted = () => fail(400, '请求体读取中断');
+    // 按 Content-Length 提前拒绝超限请求体
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      req.pause();
+      fail(413, '请求体过大（超过 1MB）');
+      return;
+    }
+    bodyTimer = timers.setTimeout(() => { req.pause(); fail(408, '请求体读取超时'); }, 30000);
+    req.on('data', onData);
+    req.on('end', onEnd);
     // 超限或连接异常时也结束等待，防 handler 悬挂
-    req.on('error', () => fail(400, '请求体读取失败'));
-    req.on('aborted', () => fail(400, '请求体读取中断'));
+    req.on('error', onError);
+    req.on('aborted', onAborted);
   });
 }
 

@@ -1,4 +1,5 @@
 // 出站审计：静默标记、发送工具识别、令牌登记与脱敏
+import { sensitiveTextForms } from '../sensitive.js';
 
 // 静默标记：模型输出它时不发 QQ；宁可误拦，不可泄露
 export const SILENT_MARKER = '[SILENT]';
@@ -17,30 +18,61 @@ export function isSendToolName(name) {
 // 按 12 字符窗口匹配令牌，防拆成多条消息绕过整串检查
 export const TOKEN_FRAGMENT_WIDTH = 12;
 
-/** 文本是否含任一 token 的任意 12 字符窗口 */
+const GLOBAL_RE_CACHE = new WeakMap();
+function getGlobalRegex(sensitiveRe) {
+  let cached = GLOBAL_RE_CACHE.get(sensitiveRe);
+  if (!cached) {
+    const flags = sensitiveRe.flags.includes('g') ? sensitiveRe.flags : sensitiveRe.flags + 'g';
+    cached = new RegExp(sensitiveRe.source, flags);
+    GLOBAL_RE_CACHE.set(sensitiveRe, cached);
+  }
+  cached.lastIndex = 0;
+  return cached;
+}
+
+/** 文本（含归一化/紧凑/Base64 变体）是否含任一 token 的任意 12 字符窗口 */
 export function hasTokenFragment(text, tokens) {
   const value = String(text ?? '');
   if (!value) return false;
+  let hasAny = false;
+  let allHex = true;
   for (const token of tokens) {
     if (!token || token.length < TOKEN_FRAGMENT_WIDTH) continue;
-    for (let i = 0; i + TOKEN_FRAGMENT_WIDTH <= token.length; i += 1) {
-      if (value.includes(token.slice(i, i + TOKEN_FRAGMENT_WIDTH))) return true;
+    hasAny = true;
+    if (allHex && !/^[0-9a-f]+$/i.test(token)) allHex = false;
+  }
+  if (!hasAny) return false;
+  const forms = sensitiveTextForms(value);
+  for (const form of forms) {
+    if (form.length < TOKEN_FRAGMENT_WIDTH) continue;
+    if (allHex && !/[0-9a-f]{12}/i.test(form)) continue;
+    for (const token of tokens) {
+      if (!token || token.length < TOKEN_FRAGMENT_WIDTH) continue;
+      for (let i = 0; i + TOKEN_FRAGMENT_WIDTH <= token.length; i += 1) {
+        if (form.includes(token.slice(i, i + TOKEN_FRAGMENT_WIDTH))) return true;
+      }
     }
   }
   return false;
 }
 
-/** 把敏感词与已知 token 替换为 *** */
+/** 把敏感词与已知 token 替换为 ***（包含归一化/混淆形式兜底） */
 export function redactText(text, tokens, sensitiveRe) {
   let raw = String(text ?? '');
   try {
-    // 正则可能无 g 标志，补上以替换全部命中
-    const flags = sensitiveRe.flags.includes('g') ? sensitiveRe.flags : sensitiveRe.flags + 'g';
-    raw = raw.replace(new RegExp(sensitiveRe.source, flags), '***');
+    const globalRe = getGlobalRegex(sensitiveRe);
+    const replaced = raw.replace(globalRe, '***');
+    raw = replaced;
+    // 若原始正则替换后，结构化敏感检测（零宽/全角/紧凑/Base64）仍命中，整段脱敏防漏出
+    if (typeof sensitiveRe?.test === 'function') {
+      sensitiveRe.lastIndex = 0;
+      if (sensitiveRe.test(raw)) raw = '***';
+    }
   } catch {}
   for (const token of tokens) {
     if (token && raw.includes(token)) raw = raw.split(token).join('***');
   }
+  if (raw !== '***' && hasTokenFragment(raw, tokens)) raw = '***';
   return raw;
 }
 

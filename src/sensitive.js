@@ -14,21 +14,19 @@ export function sensitiveTextForms(value) {
   // 去掉空白和 ._- 得到紧凑形式
   const compact = (text) => text.replace(/[\s._-]+/g, '');
   const forms = new Set([canonical, compact(canonical)]);
-  // 只解码严格往返的 base64 片段，防误判
-  for (const form of [...forms]) {
-    for (const match of form.matchAll(/[A-Za-z0-9+/_-]{16,}={0,2}/g)) {
-      const raw = match[0].replace(/-/g, '+').replace(/_/g, '/');
-      const padded = raw.replace(/=+$/, '');
-      if (padded.length % 4 === 1) continue;
-      const buffer = Buffer.from(padded, 'base64');
-      if (buffer.length === 0) continue;
-      if (buffer.toString('base64').replace(/=+$/, '') !== padded) continue; // 非严格 base64
-      const decoded = buffer.toString('utf8');
-      if (!Buffer.from(decoded, 'utf8').equals(buffer)) continue;           // 非合法 UTF-8
-      const text = normalizeSensitiveText(decoded);
-      forms.add(text);
-      forms.add(compact(text));
-    }
+  // 只在规范形式上解码严格往返的 base64 片段，防误判及减少在紧凑英文串上的无效 Buffer 分配
+  for (const match of canonical.matchAll(/[A-Za-z0-9+/_-]{12,}={0,2}/g)) {
+    const raw = match[0].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = raw.replace(/=+$/, '');
+    if (padded.length % 4 === 1) continue;
+    const buffer = Buffer.from(padded, 'base64');
+    if (buffer.length < 8) continue;
+    if (buffer.toString('base64').replace(/=+$/, '') !== padded) continue; // 非严格 base64
+    const decoded = buffer.toString('utf8');
+    if (!Buffer.from(decoded, 'utf8').equals(buffer)) continue;           // 非合法 UTF-8
+    const text = normalizeSensitiveText(decoded);
+    forms.add(text);
+    forms.add(compact(text));
   }
   return [...forms];
 }

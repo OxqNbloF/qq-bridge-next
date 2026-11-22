@@ -74,11 +74,15 @@ test('运行时开关：静默只放行 owner；暂停只拦 AI 回复', () => {
   assert.equal(decide({ kind: 'group', id: 789, qq: 5, cfg, mode: 'reserved2', runtime: { paused: true, aiReply: true } }).reason, 'paused');
 });
 
-test('fail-closed：策略损坏/未知名单模式不回应；坏 qq 与原型键拒绝', () => {
+test('fail-closed：策略损坏/未知名单模式关闭回应与模型上下文、保留归档；坏 qq 与原型键拒绝', () => {
   const broken = decide({ kind: 'group', id: 789, qq: 5, cfg, mode: 'chat', policyBroken: true });
-  assert.deepEqual([broken.reason, broken.flags.respond], ['policy-broken', false]);
+  assert.deepEqual([broken.reason, broken.flags.respond, broken.flags.converse, broken.flags.context, broken.flags.memory], ['policy-broken', false, false, false, true]);
+  const brokenPriv = decide({ kind: 'private', id: 2, qq: 2, cfg, mode: 'chat', policyBroken: true });
+  assert.deepEqual([brokenPriv.reason, brokenPriv.flags.respond, brokenPriv.flags.converse, brokenPriv.flags.context, brokenPriv.flags.memory], ['policy-broken', false, false, false, true]);
+  const brokenOwner = decide({ kind: 'group', id: 789, qq: 1, cfg, mode: 'chat', policyBroken: true });
+  assert.deepEqual([brokenOwner.allowed, brokenOwner.reason, brokenOwner.flags.respond, brokenOwner.flags.context], [true, 'policy-broken', true, false]);
   const odd = decide({ kind: 'group', id: 789, qq: 5, cfg, mode: 'chat', policy: { groups: { 'group:789': { mode: 'allow-all', rules: {} } } } });
-  assert.equal(odd.flags.respond, false);
+  assert.deepEqual([odd.reason, odd.flags.respond, odd.flags.converse, odd.flags.context], ['policy-broken', false, false, false]);
   for (const qq of ['__proto__', 'constructor', '', null, '0', '-1', '5 ']) {
     assert.equal(decide({ kind: 'group', id: 789, qq, cfg, mode: 'chat', policy: { groups: { 'group:789': { mode: 'blacklist', rules: {} } } } }).reason, 'bad-sender', String(qq));
   }

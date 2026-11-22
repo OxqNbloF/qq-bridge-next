@@ -44,6 +44,17 @@ try {
   }
   throw error;
 }
+const releaseOwnLock = () => {
+  try {
+    if (Number(fs.readFileSync(lockFile, 'utf8').trim()) === process.pid) fs.unlinkSync(lockFile);
+  } catch {}
+};
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    releaseOwnLock();
+    process.exit(130);
+  });
+}
 let foundAny = false;
 const cleanupErrors = [];
 let partial = false;
@@ -100,9 +111,7 @@ try {
     console.log(`${changed ? '已删除' : found ? '已脱敏（重试清理）' : '未找到'}：${convId} ${id}${changed > 1 ? `（${changed} 行）` : ''}`);
   }
 } finally {
-  try {
-    if (Number(fs.readFileSync(lockFile, 'utf8').trim()) === process.pid) fs.unlinkSync(lockFile);
-  } catch {}
+  releaseOwnLock();
 }
 if (partial) console.error('部分完成：归档已脱敏，以上派生数据需修复后重试清理。');
 process.exit(partial ? 4 : foundAny ? 0 : 3);

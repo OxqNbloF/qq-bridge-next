@@ -1,9 +1,21 @@
 import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
+import { withConfigWriteLock } from '../../../infra/config.js';
 // 控制台测试发送、一代社交引擎配置、引导 AI 的路由；鉴权在分发前完成
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import path from 'node:path';
 import { SENSITIVE_RE } from '../../../sensitive.js';
 import { readConfigObject, atomicWriteJson } from '../../../store/fs-atomic.js';
+
+const SOCIAL_ALLOWED_KEYS = new Set([
+  'enabled', 'triggerProbability', 'contextWindow',
+  'activeCheckMinMs', 'activeCheckMaxMs', 'activeReplyDelayMinMs', 'activeReplyDelayMaxMs',
+  'activeDurationEnabled', 'activeDurationMinMs', 'activeDurationMaxMs',
+  'idleWindowMs', 'idleRetryProbability', 'idleRetryWaitMs',
+  'proactiveEnabled', 'proactiveIdleThresholdMs', 'proactiveCheckMinMs', 'proactiveCheckMaxMs', 'proactiveProbability',
+  'skipProbability', 'surrenderProbability', 'maxReplyChars', 'mustReplyKeywords',
+  'burstEnabled', 'burstIntervalMinMs', 'burstIntervalMaxMs',
+  'longGapProbability', 'longGapMinMs', 'longGapMaxMs',
+]);
 
 // 创建控制台社交相关路由
 export function createConsoleSocialRoutes(b) {
@@ -62,47 +74,68 @@ export function createConsoleSocialRoutes(b) {
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/social') {
       const body = await rq.readBody();
       const configFile = path.join(b.ROOT, 'config.json');
-      // 配置文件损坏直接 500，绝不回写
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      const merged = { ...(file.social ?? {}), ...body };
-      // 保存时清掉已废弃的旧字段
-      for (const k of ['burstProbability', 'burstMaxMessages', 'followUpEnabled', 'followUpProbability', 'followUpDelayMinMs', 'followUpDelayMaxMs', 'followUpCooldownMs']) {
-        delete merged[k];
-      }
-      for (const k of ['triggerProbability', 'activeCheckMinMs', 'activeCheckMaxMs', 'activeReplyDelayMinMs', 'activeReplyDelayMaxMs', 'activeDurationMinMs', 'activeDurationMaxMs', 'idleWindowMs', 'idleRetryProbability', 'idleRetryWaitMs', 'proactiveIdleThresholdMs', 'proactiveCheckMinMs', 'proactiveCheckMaxMs', 'proactiveProbability', 'maxReplyChars', 'contextWindow', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapMinMs', 'longGapMaxMs']) {
-        if (merged[k] !== undefined) {
-          const n = Number(merged[k]);
-          if (Number.isFinite(n) && n >= 0) merged[k] = n;
+      await withConfigWriteLock(async () => {
+        // 配置文件损坏直接 500，绝不回写
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        const patch = {};
+        if (body && typeof body === 'object' && !Array.isArray(body)) {
+          for (const [k, v] of Object.entries(body)) {
+            if (SOCIAL_ALLOWED_KEYS.has(k)) patch[k] = v;
+          }
         }
-      }
-      // 分条间隔 clamp 到非负
-      for (const k of ['burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapMinMs', 'longGapMaxMs']) {
-        if (merged[k] !== undefined) merged[k] = Math.max(0, Number(merged[k]) || 0);
-      }
-      // 概率字段 clamp 到 0~1
-      for (const k of ['triggerProbability', 'idleRetryProbability', 'proactiveProbability', 'skipProbability', 'surrenderProbability', 'longGapProbability']) {
-        if (merged[k] !== undefined) merged[k] = Math.min(1, Math.max(0, Number(merged[k])));
-      }
-      // contextWindow 限制 1~100
-      if (merged.contextWindow !== undefined) {
-        merged.contextWindow = Math.min(100, Math.max(1, Math.round(Number(merged.contextWindow))));
-      }
-      // 布尔字段
-      for (const k of ['activeDurationEnabled', 'proactiveEnabled', 'burstEnabled']) {
-        if (merged[k] !== undefined) merged[k] = Boolean(merged[k]);
-      }
-      // 范围字段保证 min <= max
-      for (const [minK, maxK] of [['activeCheckMinMs', 'activeCheckMaxMs'], ['activeReplyDelayMinMs', 'activeReplyDelayMaxMs'], ['activeDurationMinMs', 'activeDurationMaxMs'], ['proactiveCheckMinMs', 'proactiveCheckMaxMs'], ['burstIntervalMinMs', 'burstIntervalMaxMs'], ['longGapMinMs', 'longGapMaxMs']]) {
-        if (merged[minK] !== undefined && merged[maxK] !== undefined && Number(merged[minK]) > Number(merged[maxK])) {
-          [merged[minK], merged[maxK]] = [merged[maxK], merged[minK]];
+        const merged = { ...(file.social ?? {}), ...patch };
+        // 保存时清掉已废弃的旧字段
+        for (const k of ['burstProbability', 'burstMaxMessages', 'followUpEnabled', 'followUpProbability', 'followUpDelayMinMs', 'followUpDelayMaxMs', 'followUpCooldownMs']) {
+          delete merged[k];
         }
-      }
-      if (Array.isArray(body.mustReplyKeywords)) merged.mustReplyKeywords = body.mustReplyKeywords.map(String);
-      file.social = merged;
-      atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.social = { ...b.cfg.social, ...merged };
-      b.log('控制台：社交配置已更新');
-      rq.sendJson({ ok: true, config: b.cfg.social });
+        for (const k of ['triggerProbability', 'activeCheckMinMs', 'activeCheckMaxMs', 'activeReplyDelayMinMs', 'activeReplyDelayMaxMs', 'activeDurationMinMs', 'activeDurationMaxMs', 'idleWindowMs', 'idleRetryProbability', 'idleRetryWaitMs', 'proactiveIdleThresholdMs', 'proactiveCheckMinMs', 'proactiveCheckMaxMs', 'proactiveProbability', 'maxReplyChars', 'contextWindow', 'burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapMinMs', 'longGapMaxMs']) {
+          if (merged[k] !== undefined) {
+            const n = Number(merged[k]);
+            if (Number.isFinite(n) && n >= 0) merged[k] = n;
+            else if (file.social?.[k] !== undefined) merged[k] = file.social[k];
+            else delete merged[k];
+          }
+        }
+        // 分条间隔 clamp 到非负
+        for (const k of ['burstIntervalMinMs', 'burstIntervalMaxMs', 'longGapMinMs', 'longGapMaxMs']) {
+          if (merged[k] !== undefined) {
+            const n = Number(merged[k]);
+            merged[k] = Number.isFinite(n) ? Math.max(0, n) : 0;
+          }
+        }
+        // 概率字段 clamp 到 0~1（非数字拒绝覆盖为 NaN/null）
+        for (const k of ['triggerProbability', 'idleRetryProbability', 'proactiveProbability', 'skipProbability', 'surrenderProbability', 'longGapProbability']) {
+          if (merged[k] !== undefined) {
+            const n = Number(merged[k]);
+            if (Number.isFinite(n)) merged[k] = Math.min(1, Math.max(0, n));
+            else if (file.social?.[k] !== undefined) merged[k] = file.social[k];
+            else delete merged[k];
+          }
+        }
+        // contextWindow 限制 1~100
+        if (merged.contextWindow !== undefined) {
+          const n = Number(merged.contextWindow);
+          if (Number.isFinite(n)) merged.contextWindow = Math.min(100, Math.max(1, Math.round(n)));
+          else if (file.social?.contextWindow !== undefined) merged.contextWindow = file.social.contextWindow;
+          else delete merged.contextWindow;
+        }
+        // 布尔字段
+        for (const k of ['enabled', 'activeDurationEnabled', 'proactiveEnabled', 'burstEnabled']) {
+          if (merged[k] !== undefined) merged[k] = Boolean(merged[k]);
+        }
+        // 范围字段保证 min <= max
+        for (const [minK, maxK] of [['activeCheckMinMs', 'activeCheckMaxMs'], ['activeReplyDelayMinMs', 'activeReplyDelayMaxMs'], ['activeDurationMinMs', 'activeDurationMaxMs'], ['proactiveCheckMinMs', 'proactiveCheckMaxMs'], ['burstIntervalMinMs', 'burstIntervalMaxMs'], ['longGapMinMs', 'longGapMaxMs']]) {
+          if (merged[minK] !== undefined && merged[maxK] !== undefined && Number(merged[minK]) > Number(merged[maxK])) {
+            [merged[minK], merged[maxK]] = [merged[maxK], merged[minK]];
+          }
+        }
+        if (Array.isArray(body.mustReplyKeywords)) merged.mustReplyKeywords = body.mustReplyKeywords.map(String);
+        file.social = merged;
+        atomicWriteJson(configFile, syncConfigAliases(file));
+        b.cfg.social = { ...b.cfg.social, ...merged };
+        b.log('控制台：社交配置已更新');
+        rq.sendJson({ ok: true, config: b.cfg.social });
+      });
       return;
     }
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/social/flush') {

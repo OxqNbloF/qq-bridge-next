@@ -9,9 +9,10 @@ export const LOG_LINE_MAX = 1000;
 export function createCappedLogger(file, maxLines) {
   const dir = path.dirname(file);
   let lines = -1; // -1 表示还没数过
+  let dirReady = false;
   return function append(text) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      if (!dirReady) { fs.mkdirSync(dir, { recursive: true }); dirReady = true; }
       if (lines < 0) {
         try {
           lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
@@ -31,7 +32,7 @@ export function createCappedLogger(file, maxLines) {
         }
         lines = 0;
       }
-    } catch {}
+    } catch { dirReady = false; }
   };
 }
 

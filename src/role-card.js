@@ -50,18 +50,23 @@ export function parseRoleSections(text) {
   return sections;
 }
 
-/**
- * 取出当前模式要放进提示词的人格文字（已去掉模式标记）
- * @param {'v1'|'v2'} mode
- */
-export function selectRoleText(text, mode) {
+// 由已解析小节拼出指定模式正文（供 selectRoleText 与 roleCharStats 共用，避免重复解析）
+function joinSectionsForMode(sections, mode) {
   const want = mode === 'v1' ? 'v1' : 'v2';
-  return parseRoleSections(text)
+  return sections
     .filter((section) => section.mode === 'all' || section.mode === want)
     .map((section) => section.lines.join('\n'))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * 取出当前模式要放进提示词的人格文字（已去掉模式标记）
+ * @param {'v1'|'v2'} mode
+ */
+export function selectRoleText(text, mode) {
+  return joinSectionsForMode(parseRoleSections(text), mode);
 }
 
 /**
@@ -78,19 +83,26 @@ export function roleSectionReport(text, mode) {
   }));
 }
 
-/** 统计各模式下会用上多少个字 */
-export function roleCharStats(text) {
+/** 单次解析统计各模式下会用上多少个字 */
+export function roleCharStats(text, parsedSections = null) {
   const source = String(text ?? '');
-  const sections = parseRoleSections(source);
-  // 把这些小节的字数加起来
-  const sum = (list) => list.reduce((total, section) => total + section.lines.join('\n').trim().length, 0);
+  const sections = parsedSections ?? parseRoleSections(source);
+  let common = 0;
+  let v1Only = 0;
+  let v2Only = 0;
+  for (const section of sections) {
+    const len = section.lines.join('\n').trim().length;
+    if (section.mode === 'all') common += len;
+    else if (section.mode === 'v1') v1Only += len;
+    else if (section.mode === 'v2') v2Only += len;
+  }
   return {
     total: source.length,
-    common: sum(sections.filter((section) => section.mode === 'all')),
-    v1Only: sum(sections.filter((section) => section.mode === 'v1')),
-    v2Only: sum(sections.filter((section) => section.mode === 'v2')),
-    v1: selectRoleText(source, 'v1').length,
-    v2: selectRoleText(source, 'v2').length,
+    common,
+    v1Only,
+    v2Only,
+    v1: joinSectionsForMode(sections, 'v1').length,
+    v2: joinSectionsForMode(sections, 'v2').length,
   };
 }
 

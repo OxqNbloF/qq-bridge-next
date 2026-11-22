@@ -6,6 +6,21 @@ export function createOutbox(b) {
   const QUEUE_MAX = 50;
   const QUEUE_HINT_COOLDOWN_MS = 30_000;
   const queueRetries = new Map(); // key -> 连续补投失败次数（退避用）
+  let retryTimer = null;
+  let retryTimerDueAt = 0;
+
+  const scheduleFlush = (delayMs) => {
+    const dueAt = Date.now() + delayMs;
+    if (retryTimer && retryTimerDueAt <= dueAt) return;
+    if (retryTimer) b.clearTimeout?.(retryTimer);
+    retryTimerDueAt = dueAt;
+    retryTimer = b.setTimeout(() => {
+      retryTimer = null;
+      retryTimerDueAt = 0;
+      flushQueue();
+    }, delayMs);
+    retryTimer?.unref?.();
+  };
 
   // 「消息已排队」提示按会话冷却，只提示一次
   const sendQueueHintOnce = async (key) => {
@@ -28,13 +43,15 @@ export function createOutbox(b) {
       queued.set(key, items);
     }
     queueRetries.delete(key); // 新消息入队重置退避计数
-    b.setTimeout(() => { flushQueue(); }, 3000);
+    scheduleFlush(3000);
   };
 
   let flushingQueue = false;
   let flushQueueAgain = false;
   // 逐会话补投排队的消息，失败退避
   const flushQueue = async () => {
+    // DSH 未就绪时保留队列，不空转
+    if (b.dshReady === false) return;
     // 正在 flush 时记下重跑，不能丢掉后来的请求
     if (flushingQueue) { flushQueueAgain = true; return; }
     flushingQueue = true;
@@ -54,12 +71,23 @@ export function createOutbox(b) {
               continue;
             }
             const result = await b.deliverPrompt(key, item.promptText, { farewell: item.farewell, silent: item.silent, media: item.media ?? [], wakeReason: item.wakeReason, wakeReminder: item.wakeReminder, sourceQqs: item.sourceQqs });
+            if (result?.queued === true) {
+              // 仍被底层排入等待队列，不再计数为已发；保留剩余项
+              const rest = items.slice(i + 1);
+              if (rest.length > 0) {
+                const existing = queued.get(key) ?? [];
+                const merged = existing.concat(rest);
+                queued.set(key, merged.length > QUEUE_MAX ? merged.slice(-QUEUE_MAX) : merged);
+              }
+              break;
+            }
             if (!result.ok) {
               b.log(`补投失败 ${key}: ${result.error || '未知错误'}`);
               failed += 1;
               const rest = items.slice(i);
               const existing = queued.get(key) ?? [];
-              queued.set(key, rest.concat(existing));
+              const merged = rest.concat(existing);
+              queued.set(key, merged.length > QUEUE_MAX ? merged.slice(-QUEUE_MAX) : merged);
               break;
             }
             queueRetries.delete(key);
@@ -67,10 +95,11 @@ export function createOutbox(b) {
           } catch (error) {
             b.log(`补投异常 ${key}: ${error?.message ?? error}`);
             failed += 1;
-            // 当前项和剩余项整体放回队首，不丢消息
+            // 当前项和剩余项整体放回队首，不丢消息且受 QUEUE_MAX 约束
             const rest = items.slice(i);
             const existing = queued.get(key) ?? [];
-            queued.set(key, rest.concat(existing));
+            const merged = rest.concat(existing);
+            queued.set(key, merged.length > QUEUE_MAX ? merged.slice(-QUEUE_MAX) : merged);
             break;
           }
         }
@@ -80,13 +109,11 @@ export function createOutbox(b) {
           queueRetries.set(key, retries);
           if (retries > 5) {
             b.log(`补投持续失败，暂停快速重试，队列保留 (${key})，60 秒后恢复一次`);
-            b.setTimeout(() => {
-              queueRetries.delete(key);
-              flushQueue();
-            }, 60000);
+            scheduleFlush(60000);
+            queueRetries.delete(key);
           } else {
             const delay = Math.min(3000 * Math.pow(2, retries - 1), 60000);
-            b.setTimeout(() => { flushQueue(); }, delay);
+            scheduleFlush(delay);
           }
         }
       }
@@ -95,7 +122,7 @@ export function createOutbox(b) {
       if (flushQueueAgain) {
         flushQueueAgain = false;
         // 队列非空就异步再跑一轮，避免同步递归
-        if (queued.size > 0) b.setTimeout(() => { flushQueue(); }, 200);
+        if (queued.size > 0) scheduleFlush(200);
       }
     }
   };

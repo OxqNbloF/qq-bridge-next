@@ -38,7 +38,10 @@ export function migrateLegacyConfig(input) {
 export function syncConfigAliases(input) {
   const next = migrateLegacyConfig(input).config;
   for (const [legacy, parent, key] of CONFIG_ALIASES) {
-    if (input[legacy] !== undefined) next[parent][key] = input[legacy];
+    if (input[legacy] !== undefined) {
+      if (!next[parent] || typeof next[parent] !== 'object' || Array.isArray(next[parent])) next[parent] = {};
+      next[parent][key] = structuredClone(input[legacy]);
+    }
   }
-  return migrateLegacyConfig(next).config;
+  return next;
 }

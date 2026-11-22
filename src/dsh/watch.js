@@ -25,82 +25,90 @@ export function createDshWatch(b) {
     b.log(`DSH 端点已自愈：${previous} → ${found}（桌面版每次启动端口随机）`);
     return true;
   };
-  // 查一次 DSH 是否正常，顺手同步状态
+  let checking = false;
+  // 查一次 DSH 是否正常，顺手同步状态（防重入锁）
   const checkDsh = async () => {
-    let ok = false;
+    if (checking) return;
+    checking = true;
     try {
-      await b.api.settings.describe({});
-      ok = true;
-    } catch {}
-    // 配置里的地址探不通时，先试着找出「真正在跑的那个 DSH」，再下不可用的结论。
-    if (!ok && await rediscoverDshBase()) {
+      let ok = false;
       try {
         await b.api.settings.describe({});
         ok = true;
       } catch {}
-    }
-    if (ok) {
-      await b.refreshMode();
-      // 刚连上和 DSH 刚重启时，都重新拉一次预设清单
-      if (!b.dshReady || b.dshPresetIds.length === 0) {
-        try { await b.refreshPresetList(); } catch {}
+      // 配置里的地址探不通时，先试着找出「真正在跑的那个 DSH」，再下不可用的结论。
+      if (!ok && await rediscoverDshBase()) {
+        try {
+          await b.api.settings.describe({});
+          ok = true;
+        } catch {}
       }
-      b.reconcileSessionPolicies();
-      if (!b.dshReady) {
-        b.dshReady = true;
-        b.lastMode = b.currentMode;
-        b.log(`DSH 已就绪（模式: ${b.currentMode}）`);
-        if (b.currentMode === 'reserved2' || b.cfg.modes?.engine?.reserved2 === true) {
-          // 等确定是二代仿真模式再恢复睡眠定时器
-          // 不然在别的模式下设的定时器会被忽略
-          for (const key of b.socialV2.conversations.keys()) {
-            if (b.modeForKey(key) !== 'reserved2') continue;
-            b.setupSleepTimerV2(key);
-            b.scheduleProactiveCheckV2(key);
-          }
-          b.log('桥接模式已确定为 reserved2，恢复有限睡眠定时器');
+      if (ok) {
+        try { await b.refreshMode(); } catch (error) { b.log('刷新模式失败:', error?.message ?? error); }
+        // 刚连上和 DSH 刚重启时，都重新拉一次预设清单
+        if (!b.dshReady || b.dshPresetIds.length === 0) {
+          try { await b.refreshPresetList(); } catch {}
         }
-        try { await b.flushQueue(); } catch (error) { b.log('补投队列异常:', error?.message ?? error); }
-        // 重启前未完成的撤权补偿在 DSH 就绪后续补；幂等，重复就绪不重复登记。
-        try { b.restorePendingCompensations?.(); } catch (error) { b.log('撤权补偿恢复异常:', error?.message ?? error); }
+        try { b.reconcileSessionPolicies(); } catch (error) { b.log('对齐会话策略失败:', error?.message ?? error); }
+        if (!b.dshReady) {
+          b.dshReady = true;
+          b.lastMode = b.currentMode;
+          b.log(`DSH 已就绪（模式: ${b.currentMode}）`);
+          if (b.currentMode === 'reserved2' || b.cfg.modes?.engine?.reserved2 === true) {
+            // 等确定是二代仿真模式再恢复睡眠定时器
+            // 不然在别的模式下设的定时器会被忽略
+            for (const key of b.socialV2.conversations.keys()) {
+              if (b.modeForKey(key) !== 'reserved2') continue;
+              b.setupSleepTimerV2(key);
+              b.scheduleProactiveCheckV2(key);
+            }
+            b.log('桥接模式已确定为 reserved2，恢复有限睡眠定时器');
+          }
+          try { await b.flushQueue(); } catch (error) { b.log('补投队列异常:', error?.message ?? error); }
+          // 重启前未完成的撤权补偿在 DSH 就绪后续补；幂等，重复就绪不重复登记。
+          try { b.restorePendingCompensations?.(); } catch (error) { b.log('撤权补偿恢复异常:', error?.message ?? error); }
 
-      } else if (b.currentMode !== b.lastMode) {
-        const mixedModes = Object.values(b.cfg.modes?.engine ?? {}).some(Boolean);
-        if (!mixedModes) b.cancelAllScheduledTurns?.('mode-changed');
-        if (!mixedModes && b.lastMode === 'reserved' && b.currentMode !== 'reserved') {
-          b.cleanupSocialForModeChange();
-          b.log('桥接模式已离开一代仿真模式，清理社交状态');
-        }
-        if (!mixedModes && b.lastMode === 'reserved2' && b.currentMode !== 'reserved2') {
-          b.clearAllSocialV2Timers();
-          b.drainAllPromptQueues('模式切换，已取消排队中的投递');
-          b.log('桥接模式已离开二代仿真模式，清理 reserved2 定时器与排队投递');
-        }
-        if (b.currentMode === 'reserved2' && b.lastMode !== 'reserved2') {
-          for (const key of b.socialV2.conversations.keys()) {
-            if (b.modeForKey(key) !== 'reserved2') continue;
-            b.setupSleepTimerV2(key);
-            b.scheduleProactiveCheckV2(key);
+        } else if (b.currentMode !== b.lastMode) {
+          const mixedModes = Object.values(b.cfg.modes?.engine ?? {}).some(Boolean);
+          if (!mixedModes) b.cancelAllScheduledTurns?.('mode-changed');
+          if (!mixedModes && b.lastMode === 'reserved' && b.currentMode !== 'reserved') {
+            b.cleanupSocialForModeChange();
+            b.log('桥接模式已离开一代仿真模式，清理社交状态');
           }
-          b.log('桥接模式已进入二代仿真模式，重建有限睡眠定时器');
+          if (!mixedModes && b.lastMode === 'reserved2' && b.currentMode !== 'reserved2') {
+            b.clearAllSocialV2Timers();
+            b.drainAllPromptQueues('模式切换，已取消排队中的投递');
+            b.log('桥接模式已离开二代仿真模式，清理 reserved2 定时器与排队投递');
+          }
+          if (b.currentMode === 'reserved2' && b.lastMode !== 'reserved2') {
+            for (const key of b.socialV2.conversations.keys()) {
+              if (b.modeForKey(key) !== 'reserved2') continue;
+              b.setupSleepTimerV2(key);
+              b.scheduleProactiveCheckV2(key);
+            }
+            b.log('桥接模式已进入二代仿真模式，重建有限睡眠定时器');
+          }
+          b.log(`桥接模式已切换为: ${b.currentMode}`);
+          b.lastMode = b.currentMode;
         }
-        b.log(`桥接模式已切换为: ${b.currentMode}`);
-        b.lastMode = b.currentMode;
+        try { b.replayScheduledTurns?.(); } catch (error) { b.log('恢复调度队列失败:', error?.message ?? error); }
+        // 启动早期到达的快照在模式未知时只暂存；模式/会话策略确定后再决定是否补发。
+        void Promise.resolve(b.replayDeferredDeliveries()).catch((error) => b.log('补发暂存快照异常:', error?.message ?? error));
+      } else if (b.dshReady) {
+        b.dshReady = false;
+        b.log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
       }
-      b.replayScheduledTurns?.();
-      // 启动早期到达的快照在模式未知时只暂存；模式/会话策略确定后再决定是否补发。
-      void b.replayDeferredDeliveries();
-    } else if (b.dshReady) {
-      b.dshReady = false;
-      b.log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
+    } finally {
+      checking = false;
     }
   };
   // 开始每 5 秒查一次 DSH
   function startDshWatch() {
     if (b.dshCheckStarted) return;
     b.dshCheckStarted = true;
-    checkDsh();
-    b.setInterval(checkDsh, 5000);
+    void checkDsh();
+    const timer = b.setInterval(() => { void checkDsh(); }, 5000);
+    timer?.unref?.();
   }
 
   return { rediscoverDshBase, checkDsh, startDshWatch };

@@ -73,12 +73,19 @@ export function createMemoryLearnerSession(b) {
       }
       const reuse = parkedSessions.get(learnerScope);
       parkedSessions.delete(learnerScope);
-      b.memoryLearnerSessionId = reuse ?? null;
-      writeSessionFile(preset, learnerScope);
       if (reuse) {
         const status = await b.ensureChatModel(reuse);
         if (reuseGeneration !== generation) throw new Error('学习会话已作废，丢弃在途复用');
-        if (status === 'not-found') throw new Error('session_not_found');
+        if (status === 'not-found') {
+          b.memoryLearnerSessionId = null;
+          writeSessionFile(preset, learnerScope);
+          throw new Error('session_not_found');
+        }
+        b.memoryLearnerSessionId = reuse;
+        writeSessionFile(preset, learnerScope);
+      } else {
+        b.memoryLearnerSessionId = null;
+        writeSessionFile(preset, learnerScope);
       }
     }
     if (b.memoryLearnerSessionId) {
@@ -87,13 +94,14 @@ export function createMemoryLearnerSession(b) {
       return b.memoryLearnerSessionId;
     }
     if (saved?.sessionId && saved.preset === preset && saved.scope === learnerScope) {
-      filePreset = preset;
-      b.memoryLearnerSessionId = String(saved.sessionId);
-      b.learnerSessions.add(b.memoryLearnerSessionId);
-      b.api.events.follow(b.memoryLearnerSessionId);
-      const status = await b.ensureChatModel(b.memoryLearnerSessionId);
+      const candidateId = String(saved.sessionId);
+      const status = await b.ensureChatModel(candidateId);
       if (reuseGeneration !== generation) throw new Error('学习会话已作废，丢弃在途复用');
       if (status === 'not-found') throw new Error('session_not_found');
+      filePreset = preset;
+      b.memoryLearnerSessionId = candidateId;
+      b.learnerSessions.add(candidateId);
+      b.api.events.follow(candidateId);
       return b.memoryLearnerSessionId;
     }
     const creationGeneration = generation;
@@ -111,11 +119,18 @@ export function createMemoryLearnerSession(b) {
       retire(value.sessionId);
       throw new Error('学习会话已作废，丢弃在途创建');
     }
-    b.memoryLearnerSessionId = value.sessionId;
-    b.learnerSessions.add(b.memoryLearnerSessionId);
-    b.api.events.follow(b.memoryLearnerSessionId);
-    if (await b.ensureChatModel(b.memoryLearnerSessionId) === 'not-found') throw new Error('session_not_found');
-    if (creationGeneration !== generation) throw new Error('学习会话已作废，丢弃在途创建');
+    const createdId = value.sessionId;
+    if (await b.ensureChatModel(createdId) === 'not-found') {
+      retire(createdId);
+      throw new Error('session_not_found');
+    }
+    if (creationGeneration !== generation) {
+      retire(createdId);
+      throw new Error('学习会话已作废，丢弃在途创建');
+    }
+    b.memoryLearnerSessionId = createdId;
+    b.learnerSessions.add(createdId);
+    b.api.events.follow(createdId);
     writeSessionFile(preset, learnerScope);
     b.log(`记忆整理会话已创建：${b.memoryLearnerSessionId}`);
     return b.memoryLearnerSessionId;

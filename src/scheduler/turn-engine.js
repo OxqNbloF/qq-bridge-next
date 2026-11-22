@@ -11,6 +11,7 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
   const timers = createTimerRegistry({ setTimeout, clearTimeout, now });
   let order = 0;
   let draining = false;
+  let drainAgain = false;
   const stateFor = (conv) => {
     if (!conversations.has(conv)) conversations.set(conv, { queue: [], active: null, times: [], lastTurn: null, stalled: 0 });
     return conversations.get(conv);
@@ -92,7 +93,7 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
     } finally { void drain(); }
   }
   async function drain() {
-    if (draining) return;
+    if (draining) { drainAgain = true; return; }
     draining = true;
     try {
       for (const state of conversations.values()) for (const entry of state.queue) {
@@ -111,7 +112,7 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
           remember(entry.request.turnId);
           signal('turn:skipped', entry, { reason: 'gate' });
           entry.resolve({ ok: true, skipped: true });
-          void Promise.resolve().then(drain);
+          drainAgain = true;
           continue;
         }
         if (!available(entry.request)) continue;
@@ -128,12 +129,20 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
         slots -= 1;
         void run(state, entry);
       }
-    } finally { draining = false; }
+    } finally {
+      draining = false;
+      if (drainAgain) {
+        drainAgain = false;
+        void Promise.resolve().then(drain);
+      }
+    }
   }
   function schedule(input) {
     if (!/^(group|private):\d+$/.test(input.conv) || !['chat', 'closed-agent', 'reserved', 'reserved2'].includes(input.mode)
       || !input.trigger || !Number.isFinite(input.trigger.seq) || !['immediate', 'batched', 'probability', 'timer', 'manual'].includes(input.trigger.strategy)) throw new Error('非法 TurnRequest');
-    const turnId = input.turnId ?? createHash('sha256').update(JSON.stringify([input.conv, input.mode, input.trigger.kind, input.trigger.seq, input.trigger.strategy])).digest('hex').slice(0, 24);
+    const idParts = [input.conv, input.mode, input.trigger.kind, input.trigger.seq, input.trigger.strategy];
+    if (Number.isFinite(input.epoch) && input.epoch > 0) idParts.push(input.epoch);
+    const turnId = input.turnId ?? createHash('sha256').update(JSON.stringify(idParts)).digest('hex').slice(0, 24);
     const request = { ...input, priority: input.priority ?? 0, turnId };
     const state = stateFor(request.conv);
     const existing = [state.active, ...state.queue].find((entry) => entry?.request.turnId === turnId);

@@ -33,14 +33,20 @@ export async function buildEnvelope(kind, event, { convId: convIdOverride, resol
   if ((kind !== 'group' && kind !== 'private') || !convId || !qq) return null;
 
   const message = event.message ?? [];
-  // 引用只查一次：文本渲染和 quote 字段共用
+  // 引用和 @ 昵称在同一次信封构造内只查一次，text / plain / quote 共用
   const replies = new Map();
   const reply = resolveReply && ((id) => {
     if (!replies.has(id)) replies.set(id, Promise.resolve().then(() => resolveReply(id)));
     return replies.get(id);
   });
-  const text = await segmentsToText(message, { resolveAtName, resolveReply: reply });
-  const plain = await segmentsToText(message, { resolveAtName, includeReply: false });
+  const atNames = new Map();
+  const atName = resolveAtName && ((targetQq) => {
+    const k = String(targetQq ?? '');
+    if (!atNames.has(k)) atNames.set(k, Promise.resolve().then(() => resolveAtName(targetQq)));
+    return atNames.get(k);
+  });
+  const text = await segmentsToText(message, { resolveAtName: atName, resolveReply: reply });
+  const plain = await segmentsToText(message, { resolveAtName: atName, includeReply: false });
   const { at, quoteId } = parseSegments(message);
   let quote;
   if (quoteId) {

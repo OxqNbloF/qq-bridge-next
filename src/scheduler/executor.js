@@ -68,7 +68,7 @@ export function createSchedulerExecutor(b) {
     const kind = ({ timeout: 'timer', replyCheck: 'replyCheck', proactiveCheck: 'proactive', bootstrap: 'bootstrap', admin: 'manual' })[String(wakeReason ?? '').split(':')[0]] ?? 'message';
     const decision = opts?.scheduleDecision;
     if (decision && ['immediate', 'manual'].includes(decision.strategy)) windowMs = 0;
-    return { conv: key, mode: b.modeForKey(key), trigger: { kind, seq,
+    return { conv: key, mode: b.modeForKey(key), epoch: b.conversationEpoch?.(key) ?? 0, trigger: { kind, seq,
       strategy: decision?.strategy ?? (kind === 'manual' ? 'manual' : windowMs ? 'batched' : timer ? 'timer' : 'immediate'), reason: decision?.reason ?? wakeReason ?? 'prompt' },
       payload: { promptText, opts, wakeReason, sourceQqs: opts?.sourceQqs ?? (st?.unread ?? []).map(message => message.userId).filter(Boolean) }, priority: Math.max(decision?.priority ?? 0, wakePriority(wakeReason)), windowMs,
       batchKey: windowMs ? 'messages' : null,

@@ -125,10 +125,21 @@ export function createConsoleMaintenanceRoutes(b) {
       b.state.sessionPolicies = {};
       b.reverse.clear();
       b.collectors.clear();
+      b.modelAppliedSessions?.clear();
+      b.sessionModels?.clear();
+      b.sessionCreationPolicies?.clear();
       b.sendToolSucceededSessions.clear();
       b.pendingSendToolCalls.clear();
       b.v2TurnStartAt.clear();
+      b.turnLeaseNoted?.clear();
       b.toolCallNames.clear();
+      b.pendingWakeKeys?.clear();
+      b.wakeConfigUpdatedKeys?.clear();
+      b.markReadCalledKeys?.clear();
+      b.wakeConfigMissCount?.clear();
+      b.deliveryCursors?.clear();
+      b.pendingDeliveryReplays?.clear();
+      b.saveDeliveryCursors?.();
       b.saveState();
       try { fs.writeFileSync(b.ACTIVITY_LOG, ''); } catch {}
       b.log(`控制台：已清空 QQ 聊天工作区（停止 ${stoppedCount} 个、归档 ${archivedCount} 个会话，映射与活动日志已清空）`);

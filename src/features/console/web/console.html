@@ -2522,6 +2522,21 @@ button:active:not(:disabled) {
   }
 })();
 
+let _authPromptPending = null;
+function promptConsoleTokenOnce() {
+  if (_authPromptPending) return _authPromptPending;
+  _authPromptPending = Promise.resolve().then(() => {
+    const t = prompt('请输入控制台访问令牌：');
+    if (t && t.trim()) {
+      localStorage.setItem('consoleToken', t.trim());
+      return true;
+    }
+    localStorage.removeItem('consoleToken');
+    return false;
+  }).finally(() => { _authPromptPending = null; });
+  return _authPromptPending;
+}
+
 async function api(path, method, body, _retried = 0, asResponse = false) {
   const headers = body || (method && method !== 'GET') ? {'content-type':'application/json'} : {};
   const token = localStorage.getItem('consoleToken');
@@ -2532,12 +2547,8 @@ async function api(path, method, body, _retried = 0, asResponse = false) {
       localStorage.removeItem('consoleToken');
       throw new Error('未授权');
     }
-    const t = prompt('请输入控制台访问令牌：');
-    if (t) {
-      localStorage.setItem('consoleToken', t.trim());
-      return api(path, method, body, _retried + 1, asResponse);
-    }
-    localStorage.removeItem('consoleToken');
+    const ok = await promptConsoleTokenOnce();
+    if (ok) return api(path, method, body, _retried + 1, asResponse);
     throw new Error('未授权');
   }
   return asResponse ? res : res.json();
@@ -3207,8 +3218,8 @@ async function loadVoiceLibrary(force) {
       return;
     }
     const limits = r.limits || {};
-    box.innerHTML = '共 ' + voiceEntries.length + ' 个（上限：' + (limits.maxSeconds || '?') + ' 秒 / '
-      + Math.round((limits.maxBytes || 0) / 1024 / 1024) + ' MiB / ' + (limits.maxPerMinute || '?') + ' 每分钟）：<br>'
+    box.innerHTML = '共 ' + voiceEntries.length + ' 个（上限：' + esc(limits.maxSeconds || '?') + ' 秒 / '
+      + Math.round((limits.maxBytes || 0) / 1024 / 1024) + ' MiB / ' + esc(limits.maxPerMinute || '?') + ' 每分钟）：<br>'
       + voiceEntries.map((v, i) => {
         const bad = v.ok === false;
         // v.name / v.error / v.detail 来自语音库的文件名与探测结果，属于**外部数据**：
@@ -4122,7 +4133,13 @@ async function refreshArchitecture(page) {
       document.getElementById('identitySave').disabled = result.writable === false;
       document.getElementById('identityDelete').disabled = result.writable === false;
       document.getElementById('identityMessage').textContent = result.writable === false ? '身份数据处于只读状态，请检查文件后重启。' : '';
-      document.getElementById('identityList').innerHTML = Object.values(result.people).map(person => `<details><summary>${esc(person.qq)} · ${esc(person.displayName)}</summary><p>${person.globalAliases.map(alias => esc(alias.text) + ' · ' + esc(alias.source) + ' · ' + esc(alias.confidence)).join('<br>')}</p><p>${Object.entries(person.groups).map(([group, scope]) => esc(group) + '：' + scope.aliases.map(alias => esc(alias.text) + '（' + esc(alias.source) + '）').join('、')).join('<br>')}</p><button data-identity-qq="${esc(person.qq)}">编辑此人</button></details>`).join('') || '<p>尚未记录称呼。</p>';
+      const idBox = document.getElementById('identityList');
+      const idSig = JSON.stringify(result.people);
+      if (idBox.dataset.sig !== idSig) {
+        const opened = new Set([...idBox.querySelectorAll('details[open][data-identity-detail]')].map(d => d.dataset.identityDetail));
+        idBox.dataset.sig = idSig;
+        idBox.innerHTML = Object.values(result.people).map(person => `<details data-identity-detail="${esc(person.qq)}"${opened.has(String(person.qq)) ? ' open' : ''}><summary>${esc(person.qq)} · ${esc(person.displayName)}</summary><p>${person.globalAliases.map(alias => esc(alias.text) + ' · ' + esc(alias.source) + ' · ' + esc(alias.confidence)).join('<br>')}</p><p>${Object.entries(person.groups).map(([group, scope]) => esc(group) + '：' + scope.aliases.map(alias => esc(alias.text) + '（' + esc(alias.source) + '）').join('、')).join('<br>')}</p><button data-identity-qq="${esc(person.qq)}">编辑此人</button></details>`).join('') || '<p>尚未记录称呼。</p>';
+      }
     }
     if (page === 'settings' && !architectureSettings) {
       architectureSettings = architectureResult(await api('/api/console/settings'));
@@ -4549,7 +4566,7 @@ function usageNum(n) {
   return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 function usageMoney(n, sym) {
-  const s = sym || '¥';
+  const s = esc(sym || '¥');
   const v = Number(n) || 0;
   if (v === 0) return s + '0';
   if (v < 0.01) return s + v.toFixed(4);
@@ -4650,8 +4667,14 @@ function renderUsageTurns(r) {
   const rows = r.turns || [];
   const sym = r.symbol || '¥';
   if (scope) {
-    scope.textContent = `${esc(r.key || '')} ｜ 共 ${rows.length} 轮可追溯 ｜ 已归属 ${usageMoney(r.attributedCost, sym)}`
-      + (Number(r.unattributedCost) > 0 ? ` ｜ 未逐轮归属 ${usageMoney(r.unattributedCost, sym)}` : '');
+    const rawMoney = (n) => {
+      const v = Number(n) || 0;
+      if (v === 0) return sym + '0';
+      if (v < 0.01) return sym + v.toFixed(4);
+      return sym + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    };
+    scope.textContent = `${r.key || ''} ｜ 共 ${rows.length} 轮可追溯 ｜ 已归属 ${rawMoney(r.attributedCost)}`
+      + (Number(r.unattributedCost) > 0 ? ` ｜ 未逐轮归属 ${rawMoney(r.unattributedCost)}` : '');
   }
   if (!rows.length) {
     box.innerHTML = '<span class="meta">该会话还没有可追溯的逐轮记录（只有累计值）。</span>';
@@ -4807,9 +4830,33 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
 refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshTerms(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
-setInterval(() => { refreshArchitecture(currentConsolePage); refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshTerms(); }, 3000);
+let _mainPollBusy = false;
+let _usagePollBusy = false;
+async function pollMainConsole() {
+  if (document.hidden || _mainPollBusy) return;
+  _mainPollBusy = true;
+  try {
+    const page = currentConsolePage;
+    const tasks = [refreshArchitecture(page), refresh()];
+    if (page === 'overview' || page === 'sessions') tasks.push(refreshSessions(), refreshPending());
+    if (page === 'overview' || page === 'scheduler') tasks.push(refreshSocialStatus());
+    if (page === 'memory') tasks.push(refreshTerms());
+    await Promise.allSettled(tasks);
+  } finally { _mainPollBusy = false; }
+}
+async function pollUsageConsole() {
+  if (document.hidden || currentConsolePage !== 'usage' || _usagePollBusy) return;
+  _usagePollBusy = true;
+  try {
+    await Promise.allSettled([refreshUsage(), refreshUsageChart(), refreshUsageRecent()]);
+  } finally { _usagePollBusy = false; }
+}
+setInterval(() => { void pollMainConsole(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
-setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);
+setInterval(() => { void pollUsageConsole(); }, 3000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { void pollMainConsole(); void pollUsageConsole(); }
+});
 // 主题切换（纯前端，不发任何请求；选择写入 localStorage，未选择时跟随系统）
 (function () {
   var root = document.documentElement;

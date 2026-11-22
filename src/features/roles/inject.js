@@ -148,12 +148,14 @@ export function createRoleInject(b) {
       // 8 秒内重复构建沿用上次判定，避免多耗计数
       const dedupeMs = Number.isFinite(Number(b.cfg.role?.injectDedupeWindowMs)) ? Number(b.cfg.role.injectDedupeWindowMs) : 8000;
       const sameWake = dedupeMs > 0 && rec.lastAt && now - Number(rec.lastAt) < dedupeMs && rec.sig === sig;
+      let dirty = false;
       if (rec.sig !== sig) {
         rec.sig = sig;
         rec.n = 1;
         rec.lastFull = true;
         rec.lastAt = now;
         full = true;
+        dirty = true;
       } else if (sameWake) {
         full = rec.lastFull === true;
       } else {
@@ -161,9 +163,12 @@ export function createRoleInject(b) {
         rec.n = n + 1;
         rec.lastFull = full;
         rec.lastAt = now;
+        dirty = true;
       }
-      store[key] = rec;
-      b.saveRoleInjectStore();
+      if (dirty) {
+        store[key] = rec;
+        b.saveRoleInjectStore();
+      }
     }
     if (!full) {
       return {

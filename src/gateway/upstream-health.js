@@ -6,6 +6,8 @@ export function createUpstreamHealth({ cfg, log, fetch: doFetch, timers }) {
   const SNOWLUMA_STATUS_POLL_MS = 60_000;
   const SNOWLUMA_SILENCE_WARN_MS = Math.max(60_000, Number(cfg.snowluma?.silenceWarnMs) || 10 * 60_000);
   const snowlumaHealth = {
+    connected: false,
+    connectedAt: 0,
     lastPacketAt: 0,      // 最近一个来自 SnowLuma 的事件包（含 meta/心跳）
     lastPacketKind: '',
     accountOnline: null,  // bot_status 的 online/offline（需要较新的 SnowLuma 运行时）
@@ -35,8 +37,10 @@ export function createUpstreamHealth({ cfg, log, fetch: doFetch, timers }) {
   /** 供 /api/console/status 与控制台使用的只读快照。 */
   function snowlumaHealthSnapshot() {
     const now = Date.now();
-    const agoMs = snowlumaHealth.lastPacketAt ? now - snowlumaHealth.lastPacketAt : null;
-    const silent = snowlumaHealth.lastPacketAt > 0 && agoMs > SNOWLUMA_SILENCE_WARN_MS;
+    const refAt = snowlumaHealth.lastPacketAt || (snowlumaHealth.connected ? snowlumaHealth.connectedAt : 0);
+    const agoMs = refAt ? now - refAt : null;
+    // 只有已连接状态下无事件才报「已连接但静默」，断开时不误报
+    const silent = snowlumaHealth.connected !== false && refAt > 0 && agoMs > SNOWLUMA_SILENCE_WARN_MS;
     // 只有 SnowLuma 自己说收不到，才算确认坏了
     // 「静默」只能说明连它的进程/WS 都没动静了 —— 那是**另一个**故障面，措辞必须分开。
     const confirmed = snowlumaHealth.good === false;
@@ -92,6 +96,7 @@ export function createUpstreamHealth({ cfg, log, fetch: doFetch, timers }) {
           ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}),
         },
         body: '{}',
+        redirect: 'error',
         signal: AbortSignal.timeout(8000),
       });
       const body = await res.json().catch(() => ({}));

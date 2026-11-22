@@ -67,7 +67,17 @@ export function validateMemberPolicyDoc(doc) {
   return out;
 }
 
-const deepFreeze = (v) => { if (isObj(v)) { Object.values(v).forEach(deepFreeze); Object.freeze(v); } return v; };
+const deepFreeze = (v) => {
+  if (Array.isArray(v)) {
+    v.forEach(deepFreeze);
+    return Object.freeze(v);
+  }
+  if (isObj(v)) {
+    Object.values(v).forEach(deepFreeze);
+    return Object.freeze(v);
+  }
+  return v;
+};
 
 export function createMemberPolicyStore(b) {
   let doc = deepFreeze(validateMemberPolicyDoc({}));

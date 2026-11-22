@@ -16,48 +16,38 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-// 把地址末 32 位转成点分 IPv4
-function ipv4FromLast32(lower) {
-  const parts = String(lower || '').split(':');
-  if (parts.length < 2) return null;
-  const last = parts[parts.length - 1];
-  const secondLast = parts[parts.length - 2];
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(last)) return last;
-  if (/^[0-9a-f]{1,4}$/.test(secondLast) && /^[0-9a-f]{1,4}$/.test(last)) {
-    const num = (parseInt(secondLast, 16) << 16) + parseInt(last, 16);
-    return `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
+// 把合法 IPv6 展开为 8 个 16-bit 整数，支持 :: 压缩与尾部点分 IPv4
+function parseIpv6Words(ip) {
+  let s = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!s || s.includes('%')) return null;
+  // 若尾部包含点分 IPv4，展开为两个 16-bit 十六进制段
+  const lastColon = s.lastIndexOf(':');
+  if (lastColon >= 0 && s.slice(lastColon + 1).includes('.')) {
+    const v4 = s.slice(lastColon + 1);
+    if (net.isIP(v4) !== 4) return null;
+    const octets = v4.split('.').map(Number);
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    s = `${s.slice(0, lastColon)}:${hi}:${lo}`;
   }
-  return null;
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const parts = halves.length === 2 ? [...left, ...Array(missing).fill('0'), ...right] : left;
+  if (parts.length !== 8) return null;
+  const words = new Uint16Array(8);
+  for (let i = 0; i < 8; i += 1) {
+    if (!/^[0-9a-f]{1,4}$/.test(parts[i])) return null;
+    words[i] = parseInt(parts[i], 16);
+  }
+  return words;
 }
 
-// 提取 IPv6 中内嵌的 IPv4
-function parseEmbeddedIpv4(h) {
-  const lower = String(h || '').toLowerCase().replace(/^\[|\]$/g, '');
-  if (!lower.includes(':')) return null;
-  const dotted = lower.match(/(\d+\.\d+\.\d+\.\d+)$/);
-  if (dotted) return dotted[1];
-  const m = lower.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-  if (m) {
-    const num = (parseInt(m[1], 16) << 16) + parseInt(m[2], 16);
-    return `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
-  }
-  // 兼容非规范的 IPv4-mapped/compatible 写法
-  if (lower.startsWith('::ffff:') || lower.startsWith('::')) {
-    const embedded = ipv4FromLast32(lower);
-    if (embedded) return embedded;
-  }
-  // NAT64 前缀内嵌 IPv4
-  if (lower.startsWith('64:ff9b')) {
-    const embedded = ipv4FromLast32(lower);
-    if (embedded) return embedded;
-  }
-  const nat64 = lower.match(/^64:ff9b:(?:::)?(?:([0-9a-f]{1,4}):([0-9a-f]{1,4})|(\d+\.\d+\.\d+\.\d+))$/i);
-  if (nat64) {
-    if (nat64[3]) return nat64[3];
-    const num = (parseInt(nat64[1], 16) << 16) + parseInt(nat64[2], 16);
-    return `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
-  }
-  return null;
+function wordsToIpv4(hi, lo) {
+  return `${(hi >>> 8) & 255}.${hi & 255}.${(lo >>> 8) & 255}.${lo & 255}`;
 }
 
 // 判断 IP 是否为内网或保留地址
@@ -86,23 +76,43 @@ export function isPrivateIp(ip) {
   }
 
   if (net.isIP(h) === 6) {
-    if (h === '::' || h === '::1') return true;
-    if (h.startsWith('fc') || h.startsWith('fd')) return true;
-    if (/^fe[89ab]/.test(h)) return true;
-    if (h.startsWith('fec') || h.startsWith('fed') || h.startsWith('fee') || h.startsWith('fef')) return true;
-    // 本地 NAT64 整个前缀都不可抓取
-    if (h.startsWith('64:ff9b:1:')) return true;
-    const embedded = parseEmbeddedIpv4(h);
-    if (embedded) return isPrivateIp(embedded);
-    if (h.startsWith('2001:db8')) return true;
-    if (h.startsWith('2001:2:') || h.startsWith('2001:10:') || h.startsWith('2001:20:')) return true;
-    const sixth4 = h.match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4}):/i);
-    if (sixth4) {
-      const num = (parseInt(sixth4[1], 16) << 16) + parseInt(sixth4[2], 16);
-      const ipv4 = `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
-      if (isPrivateIp(ipv4)) return true;
+    const w = parseIpv6Words(h);
+    if (!w) return true;
+    const z = (from, to) => {
+      for (let i = from; i <= to; i += 1) if (w[i] !== 0) return false;
+      return true;
+    };
+    // ::/128 未指定、::1/128 回环
+    if (z(0, 6) && (w[7] === 0 || w[7] === 1)) return true;
+    // ::/96 (IPv4-compatible)、::ffff:0:0/96 (IPv4-mapped)、::ffff:0:0:0/96 (IPv4-translated)
+    if ((z(0, 5) && (w[6] !== 0 || w[7] > 1)) || (z(0, 4) && w[5] === 0xffff) || (z(0, 3) && w[4] === 0xffff && w[5] === 0)) {
+      return isPrivateIp(wordsToIpv4(w[6], w[7]));
     }
-    if (h.startsWith('ff')) return true;
+    // 64:ff9b::/96 (Well-Known NAT64) 与 64:ff9b:1::/48 (Local-Use NAT64)
+    if (w[0] === 0x0064 && w[1] === 0xff9b) {
+      if (w[2] === 0x0001) return true;
+      if (z(2, 5)) return isPrivateIp(wordsToIpv4(w[6], w[7]));
+    }
+    // 100::/64 Discard-Only
+    if (w[0] === 0x0100 && z(1, 3)) return true;
+    // fc00::/7 Unique Local
+    if ((w[0] & 0xfe00) === 0xfc00) return true;
+    // fe80::/10 Link-Local、fec0::/10 Site-Local (deprecated)
+    if ((w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xffc0) === 0xfec0) return true;
+    // ff00::/8 Multicast
+    if ((w[0] & 0xff00) === 0xff00) return true;
+    // 2001::/32 Teredo（内嵌异或 IPv4，整段禁用）
+    if (w[0] === 0x2001 && w[1] === 0x0000) return true;
+    // 2001:db8::/32 文档保留、2001:2::/48 基准测试、2001:10::/28 ORCHID、2001:20::/28 ORCHIDv2
+    if (w[0] === 0x2001) {
+      if (w[1] === 0x0db8) return true;
+      if (w[1] === 0x0002 && w[2] === 0x0000) return true;
+      if ((w[1] & 0xfff0) === 0x0010 || (w[1] & 0xfff0) === 0x0020) return true;
+    }
+    // 2002::/16 6to4：words[1..2] 嵌入 IPv4，无论是否 :: 压缩都检查
+    if (w[0] === 0x2002) {
+      if (isPrivateIp(wordsToIpv4(w[1], w[2]))) return true;
+    }
     return false;
   }
 

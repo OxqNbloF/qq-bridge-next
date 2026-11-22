@@ -6,7 +6,12 @@ import { migrateDocument, stampSchema } from './schema.js';
 
 // 创建会话覆盖表存储
 export function createConversationStore(b) {
-  let overrides = {}; // 标准聊天编号 -> 这个聊天的设置
+  const deepFreeze = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj;
+    for (const v of Object.values(obj)) deepFreeze(v);
+    return Object.freeze(obj);
+  };
+  let overrides = deepFreeze({}); // 标准聊天编号 -> 这个聊天的设置（冻结，供内部零拷贝只读）
   let writable = true;
 
   /** 实际装上的预设名，给路由判断预设属不属于这个模式 */
@@ -39,13 +44,18 @@ export function createConversationStore(b) {
       const doc = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
       migrateDocument('conversations', doc);
       // 有一条不合法就整表拒收，不挑着用
-      overrides = routerWith(doc.conversations ?? {}).snapshot().conversations;
+      overrides = deepFreeze(routerWith(doc.conversations ?? {}).snapshot().conversations);
     } catch (error) { degrade(`内容无效：${error?.message ?? error}`); return; }
     const n = Object.keys(overrides).length;
     if (n) b.log(`已加载 ${n} 条会话策略覆盖项（按模式灰度开关参与路由）`);
   }
 
-  // 列出当前所有覆盖项
+  // 内部零拷贝只读视图（已深冻结）
+  function conversationOverridesReadonly() {
+    return overrides;
+  }
+
+  // 列出当前所有覆盖项（控制台/外部返回深拷贝）
   function listConversationOverrides() {
     return { writable, conversations: structuredClone(overrides) };
   }
@@ -53,12 +63,12 @@ export function createConversationStore(b) {
   /** 执行一次修改；检查不过就抛错，写文件失败也抛错且内存不变 */
   function apply(change) {
     if (!writable) throw new Error('conversations.json 处于只读降级状态，不能修改');
-    const router = routerWith(overrides);
+    const router = routerWith(structuredClone(overrides));
     const result = change(router);
     const next = router.snapshot().conversations;
     atomicWriteJson(b.CONVERSATIONS_FILE, stampSchema('conversations', { conversations: next }));
     const beforePolicy = b.sessionPolicy?.(result.key);
-    overrides = next;
+    overrides = deepFreeze(next);
     if (beforePolicy !== b.sessionPolicy?.(result.key)) {
       b.retireSession(result.key);
       if (b.modeForKey(result.key) === 'reserved2') { b.setupSleepTimerV2(result.key); b.scheduleProactiveCheckV2(result.key); }
@@ -84,5 +94,5 @@ export function createConversationStore(b) {
     return apply((router) => router.deleteConversation(key, { updatedBy }));
   }
 
-  return { loadConversationOverrides, listConversationOverrides, setConversationOverride, deleteConversationOverride };
+  return { loadConversationOverrides, conversationOverridesReadonly, listConversationOverrides, setConversationOverride, deleteConversationOverride };
 }

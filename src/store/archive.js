@@ -105,12 +105,15 @@ export function createMessageArchive({
     return names.map(parseShard).filter(Boolean).sort(compareShards);
   }
 
-  // 记入去重窗口，超出 idWindow 淘汰最老的
+  // 记入去重窗口，超出 idWindow 用 Set 迭代顺序 O(1) 淘汰最老的
   function rememberId(conv, msgId) {
     if (!msgId || conv.ids.has(msgId)) return;
     conv.ids.add(msgId);
-    conv.idOrder.push(msgId);
-    while (conv.idOrder.length > idWindow) conv.ids.delete(conv.idOrder.shift());
+    while (conv.ids.size > idWindow) {
+      const oldest = conv.ids.values().next().value;
+      if (oldest === undefined) break;
+      conv.ids.delete(oldest);
+    }
   }
 
   /** 首次访问会话时从最新分片恢复 lastSeq 与去重窗口 */
@@ -120,14 +123,16 @@ export function createMessageArchive({
     let conv = convs.get(canonical);
     if (conv) return conv;
     const dirPath = path.join(dir, convDirName(canonical));
-    conv = { id: canonical, dirPath, lastSeq: 0, ids: new Set(), idOrder: [], current: null };
+    conv = { id: canonical, dirPath, lastSeq: 0, ids: new Set(), current: null };
     const shards = shardsOf(dirPath);
-    const recovered = [];
+    const chunks = [];
+    let recoveredCount = 0;
     let badTotal = 0;
-    for (let i = shards.length - 1; i >= 0 && recovered.length < idWindow; i -= 1) {
+    for (let i = shards.length - 1; i >= 0 && recoveredCount < idWindow; i -= 1) {
       const { records, bad } = readShardLines(path.join(dirPath, shards[i].name));
       badTotal += bad;
-      recovered.unshift(...records);
+      chunks.push(records);
+      recoveredCount += records.length;
       if (i === shards.length - 1) {
         const file = path.join(dirPath, shards[i].name);
         let bytes = 0;
@@ -146,9 +151,14 @@ export function createMessageArchive({
         conv.current = { file, day: shards[i].day, part: shards[i].part, bytes, needsNewline };
       }
     }
-    for (const rec of recovered) {
-      if (rec.seq > conv.lastSeq) conv.lastSeq = rec.seq;
-      if (rec.type === 'message') rememberId(conv, String(rec.msg_id ?? ''));
+    // 按时间正序回放分片，避免 unshift(...records) 在大分片上栈溢出
+    for (let c = chunks.length - 1; c >= 0; c -= 1) {
+      const records = chunks[c];
+      for (let j = 0; j < records.length; j += 1) {
+        const rec = records[j];
+        if (rec.seq > conv.lastSeq) conv.lastSeq = rec.seq;
+        if (rec.type === 'message') rememberId(conv, String(rec.msg_id ?? ''));
+      }
     }
     if (badTotal) log(`[archive] ${canonical}: 跳过 ${badTotal} 行无法解析的记录（可能是崩溃时的半行）`);
     convs.set(canonical, conv);

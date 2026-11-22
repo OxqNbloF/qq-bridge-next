@@ -21,7 +21,9 @@
 // 加 --direct 可以绕开桥接直连，只在桥接没启动时排查用。
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { adaptLegacyConfig } from '../src/infra/legacy-config.js';
 import {
   describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles,
   parseTargetKey, resolveAudioSource
@@ -31,23 +33,46 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
 
-// ── 读懂命令行参数 ──
-const argv = process.argv.slice(2);
-const flags = new Map();
-const positional = [];
-for (let i = 0; i < argv.length; i++) {
-  const a = argv[i];
-  if (a === '--') { positional.push(...argv.slice(i + 1)); break; }
-  if (a.startsWith('--')) {
-    const [k, v] = a.slice(2).split('=');
-    if (v !== undefined) flags.set(k, v);
-    else if (argv[i + 1] && !argv[i + 1].startsWith('--')) { flags.set(k, argv[++i]); }
-    else flags.set(k, true);
-  } else if (a.startsWith('-') && a.length > 1) {
-    const [k, v] = a.slice(1).split('=');
-    flags.set(k, v ?? true);
-  } else positional.push(a);
+// ── 读懂命令行参数（区分布尔开关与值选项，避免 --dry-run 等开关吞掉位置参数） ──
+const CLI_OPTIONS = {
+  snowluma: { type: 'string' },
+  token: { type: 'string' },
+  'console-port': { type: 'string' },
+  'console-token': { type: 'string' },
+  'voice-dir': { type: 'string' },
+  'max-bytes': { type: 'string' },
+  'max-seconds': { type: 'string' },
+  ffprobe: { type: 'string' },
+  to: { type: 'string' },
+  volume: { type: 'string' },
+  loudness: { type: 'string' },
+  'reveal-token': { type: 'boolean' },
+  quiet: { type: 'boolean', short: 'q' },
+  'no-probe': { type: 'boolean' },
+  'transcode-test': { type: 'boolean' },
+  'dry-run': { type: 'boolean', short: 'n' },
+  force: { type: 'boolean' },
+  direct: { type: 'boolean' },
+  'no-verify': { type: 'boolean' },
+  transcript: { type: 'boolean' },
+  normalize: { type: 'boolean' },
+  debug: { type: 'boolean' },
+  help: { type: 'boolean', short: 'h' },
+};
+
+export function parseVoiceCliArgs(argv) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: CLI_OPTIONS,
+    allowPositionals: true,
+    strict: false,
+  });
+  return { values, positionals };
 }
+
+const parsedCli = parseVoiceCliArgs(process.argv.slice(2));
+const flags = new Map(Object.entries(parsedCli.values).filter(([, v]) => v !== undefined && v !== false));
+const positional = parsedCli.positionals;
 
 // 命令行里有没有带这个选项
 const has = (k) => flags.has(k);
@@ -65,7 +90,8 @@ function loadConfig() {
   try {
     let text = fs.readFileSync(CONFIG_PATH, 'utf8');
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-    return JSON.parse(text);
+    const raw = JSON.parse(text);
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? adaptLegacyConfig(raw) : {};
   } catch {
     return {};
   }
@@ -78,9 +104,10 @@ const consolePort = Number(val('console-port', cfg.consolePort)) || 3100;
 const consoleToken = String(
   val('console-token', cfg.consoleToken || process.env.QQ_CONSOLE_TOKEN || readConsoleTokenFile() || '')
 ).trim();
-const voiceDir = path.resolve(val('voice-dir', cfg.voice?.dir ? path.resolve(ROOT, cfg.voice.dir) : path.join(ROOT, 'audio')));
+const cfgVoiceDir = cfg.socialV2?.voice?.dir ?? cfg.voice?.dir ?? '';
+const voiceDir = path.resolve(val('voice-dir', cfgVoiceDir ? path.resolve(ROOT, cfgVoiceDir) : path.join(ROOT, 'audio')));
 const revealToken = has('reveal-token');
-const quiet = has('q') || has('quiet');
+const quiet = has('quiet');
 
 // 从文件里读出控制台令牌
 function readConsoleTokenFile() {
@@ -361,7 +388,7 @@ async function cmdSend() {
 
   const target = await resolveTarget(targetInput);
   const allowed = isAllowedKey(target.key);
-  const dryRun = has('dry-run') || has('n');
+  const dryRun = has('dry-run');
 
   console.log('─'.repeat(60));
   console.log(`音频  : ${r.path}`);
@@ -481,20 +508,22 @@ send 选项：
 }
 
 // ── 入口 ──
-const cmd = positional[0] || 'list';
-try {
-  switch (cmd) {
-    case 'list': case 'ls': await cmdList(); break;
-    case 'list-voice': case 'voices': await cmdListVoice(); break;
-    case 'check': case 'probe': await cmdCheck(); break;
-    case 'send': case 'voice': await cmdSend(); break;
-    case 'status': await cmdStatus(); break;
-    case 'help': case '-h': case '--help': usage(); break;
-    default:
-      console.error(`未知命令：${cmd}\n`);
-      usage();
-      process.exit(2);
+if (path.resolve(process.argv[1] ?? '') === path.resolve(fileURLToPath(import.meta.url))) {
+  const cmd = has('help') ? 'help' : (positional[0] || 'list');
+  try {
+    switch (cmd) {
+      case 'list': case 'ls': await cmdList(); break;
+      case 'list-voice': case 'voices': await cmdListVoice(); break;
+      case 'check': case 'probe': await cmdCheck(); break;
+      case 'send': case 'voice': await cmdSend(); break;
+      case 'status': await cmdStatus(); break;
+      case 'help': case '-h': case '--help': usage(); break;
+      default:
+        console.error(`未知命令：${cmd}\n`);
+        usage();
+        process.exit(2);
+    }
+  } catch (error) {
+    fail(error?.stack && has('debug') ? error.stack : (error?.message ?? String(error)));
   }
-} catch (error) {
-  fail(error?.stack && has('debug') ? error.stack : (error?.message ?? String(error)));
 }

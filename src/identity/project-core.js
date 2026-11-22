@@ -5,6 +5,7 @@ export const IDENTITY_FIELDS = [
   'qq', 'userId', 'user_id', 'subject_uid',
   'targetId', 'target_id', 'targetUserId', 'target_user_id',
   'senderId', 'sender_id', 'senderUserId', 'sender_user_id',
+  'speakerIds',
 ];
 export const HIDDEN_IDENTITY_FIELDS = ['qq', 'userId', 'user_id', 'isOwner', 'subject_uid', 'qqs'];
 export const MESSAGE_ID_FIELDS = [
@@ -12,6 +13,10 @@ export const MESSAGE_ID_FIELDS = [
   'replyToMessageId', 'source_msg_ids', 'sourceMessageIds', 'forwardIds',
   'readThroughSeq', 'afterSeq', 'requestSeq', 'lastUnreadSeq', 'lastReadThroughSeq',
 ];
+const IDENTITY_FIELD_SET = new Set(IDENTITY_FIELDS);
+const HIDDEN_IDENTITY_FIELD_SET = new Set(HIDDEN_IDENTITY_FIELDS);
+const MESSAGE_ID_FIELD_SET = new Set(MESSAGE_ID_FIELDS);
+const DATA_IMAGE_URI_RE = /^(?:data:image\/[a-z0-9.+-]+;base64,|base64:\/\/)[A-Za-z0-9+/=_-]+$/i;
 
 const CONV_KEY_RE = /^(group|private):[1-9]\d{0,15}$/;
 const BARE_QQ_RE = /(?<!\d)[1-9]\d{0,15}(?!\d)/g;
@@ -34,11 +39,22 @@ export function isImageBase64Field(parent, field, value) {
 /** 从一个或多个原始数据根中收集已知 QQ 号，保证被过滤成员的文本提及同样脱敏 */
 export function collectIdentityIds(roots, { seedIds = [], keyFields = [] } = {}) {
   const ids = new Set(Array.from(seedIds, String).filter(Boolean));
+  const keyFieldSet = new Set(keyFields);
   const collect = (node) => {
     if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i += 1) collect(node[i]);
+      return;
+    }
     for (const [name, child] of Object.entries(node)) {
-      if (IDENTITY_FIELDS.includes(name) && /^[1-9]\d*$/.test(String(child))) ids.add(String(child));
-      if (keyFields.includes(name) && child && typeof child === 'object') {
+      if (IDENTITY_FIELD_SET.has(name)) {
+        if (Array.isArray(child)) {
+          for (const item of child) if (/^[1-9]\d*$/.test(String(item))) ids.add(String(item));
+        } else if (/^[1-9]\d*$/.test(String(child))) {
+          ids.add(String(child));
+        }
+      }
+      if (keyFieldSet.has(name) && child && typeof child === 'object') {
         for (const id of Object.keys(child)) if (/^[1-9]\d*$/.test(id)) ids.add(id);
       }
       collect(child);
@@ -54,17 +70,17 @@ export function projectModelTree(value, { collectRoots = [value], seedIds = [], 
   const labelOf = (id) => displayName?.(String(id)) || '群友';
   const project = (node, field = '') => {
     if (Array.isArray(node)) return node.map((child) => project(child, field));
-    if ((!node || typeof node !== 'object') && MESSAGE_ID_FIELDS.includes(field)) return node;
-    if (typeof node === 'string' && (CONV_KEY_RE.test(node) || MEMBER_REF_RE.test(node))) return node;
+    if ((!node || typeof node !== 'object') && MESSAGE_ID_FIELD_SET.has(field)) return node;
+    if (typeof node === 'string' && (CONV_KEY_RE.test(node) || MEMBER_REF_RE.test(node) || DATA_IMAGE_URI_RE.test(node))) return node;
     if (typeof node === 'string') {
       return node.replace(BARE_QQ_RE, (id, offset) => (
-        ids.has(id) || QQ_PREFIX_RE.test(node.slice(0, offset)) ? labelOf(id) : id
+        ids.has(id) || QQ_PREFIX_RE.test(node.slice(Math.max(0, offset - 32), offset)) ? labelOf(id) : id
       ));
     }
     if (typeof node === 'number' && ids.has(String(node))) return labelOf(node);
     if (!node || typeof node !== 'object') return node;
     const entries = Object.entries(node)
-      .filter(([name]) => !HIDDEN_IDENTITY_FIELDS.includes(name))
+      .filter(([name]) => !HIDDEN_IDENTITY_FIELD_SET.has(name))
       .map(([name, child]) => [
         name,
         isImageBase64Field(node, name, child)

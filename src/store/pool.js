@@ -8,6 +8,7 @@ import { migrateDocument, stampSchema } from './schema.js';
 // 打开记忆池文件，返回读写它的方法
 export function createMemoryPool({ file }) {
   let items = null; // 第一次用到才读；读失败就一直报错，不会当成空池
+  let dirReady = false;
 
   // 把文件里的记忆读出来，只读一次
   function load() {
@@ -18,7 +19,7 @@ export function createMemoryPool({ file }) {
       if (error?.code === 'ENOENT') { items = []; return items; }
       throw new Error(`记忆池读取失败（${error?.code || 'unknown'}）：${error?.message ?? error}`);
     }
-    const lines = text.replace(/^﻿/, '').split('\n').filter((l) => l.trim());
+    const lines = text.replace(/^\uFEFF/, '').split('\n').filter((l) => l.trim());
     const parsed = lines.map((line, i) => {
       try {
         const v = JSON.parse(line);
@@ -36,9 +37,16 @@ export function createMemoryPool({ file }) {
     return items;
   }
 
-  /** 该 kind 的全部条目（副本）。 */
-  function query({ kind } = {}) {
-    return structuredClone(load().filter((it) => !kind || it.kind === kind));
+  /** 按 kind/kinds/convId 过滤条目；默认返回副本，内部只读路径可传 clone: false 零拷贝 */
+  function query({ kind, kinds, convId, clone = true } = {}) {
+    const kindSet = Array.isArray(kinds) ? new Set(kinds) : null;
+    const matched = load().filter((it) => {
+      if (kind && it.kind !== kind) return false;
+      if (kindSet && !kindSet.has(it.kind)) return false;
+      if (convId && it.conv_id !== convId) return false;
+      return true;
+    });
+    return clone ? structuredClone(matched) : matched;
   }
 
   /** 用新的条目替换某一类，其它类不动；存不上就报错 */
@@ -54,7 +62,7 @@ export function createMemoryPool({ file }) {
   /** 统一写入口：传入函数算出新列表，一次写完 */
   function update(fn) {
     const merged = fn(load());
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!dirReady) { fs.mkdirSync(path.dirname(file), { recursive: true }); dirReady = true; }
     atomicWriteText(file, `${[stampSchema('pool', {}), ...merged].map((it) => JSON.stringify(it)).join('\n')}\n`);
     items = merged;
   }

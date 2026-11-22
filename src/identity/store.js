@@ -252,6 +252,16 @@ export function createIdentityStore(b) {
         })
         .join('\n');
     },
+    identityKnownQqs: () => (broken ? [] : Object.keys(doc.people)),
+    identityGroupMembers: (groupId) => {
+      if (broken) return [];
+      const gid = String(groupId ?? '').replace(/^group:/, '');
+      const out = [];
+      for (const [uid, person] of Object.entries(doc.people)) {
+        if (person?.groups && Object.hasOwn(person.groups, gid)) out.push(uid);
+      }
+      return out;
+    },
     identitySnapshot: () => structuredClone(doc),
     identityWritable: () => !broken && statStamp() === fileStamp,
     flushIdentity: saveIdentity,

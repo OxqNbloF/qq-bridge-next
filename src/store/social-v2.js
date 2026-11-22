@@ -162,7 +162,20 @@ export function createSocialV2Store(b) {
           return null;
         }
       })();
-      const raw = readJsonSafe(b.SOCIAL_V2_FILE, null);
+      let raw = null;
+      try {
+        const text = fs.readFileSync(b.SOCIAL_V2_FILE, 'utf8');
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('顶层内容不是 JSON 对象');
+        }
+        raw = parsed;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          b.socialV2.storeReadOnlyReason = `读取或解析失败：${error?.message ?? error}`;
+          b.log(`⚠️ state/social-v2.json：${b.socialV2.storeReadOnlyReason}；本次运行只读不写`);
+        }
+      }
       if (raw && typeof raw === 'object') {
         try { migrateDocument('social-v2', raw); }
         catch (error) {
@@ -346,9 +359,6 @@ export function createSocialV2Store(b) {
         }
       }
       atomicWriteJson(b.SOCIAL_V2_FILE, obj);
-      if (JSON.stringify(JSON.parse(fs.readFileSync(b.SOCIAL_V2_FILE, 'utf8'))) !== JSON.stringify(obj)) {
-        throw new Error('socialV2 状态持久化验证失败');
-      }
       dirty = false;
       memoryStale = !forceMemory;
       return true;

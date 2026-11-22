@@ -24,7 +24,10 @@ export function createTurnWatchdog(b, { v2TurnStartAt, turnLeaseNoted, sendToolS
       b.log(`⚠️ 会话 ${key} 的回合 ${Math.round((now - last) / 1000)} 秒无事件，判定卡死：取消该会话当前回合并释放忙碌状态`);
       b.appendActivity(`${key} 回合卡死，已中断`);
       const scheduledTurn = b.turnEngine?.activeLease(key)?.turnId;
-      Promise.resolve().then(() => b.api.stopSessionWork(sessionId))
+      Promise.resolve()
+        .then(() => b.withTimeout
+          ? b.withTimeout(b.api.stopSessionWork(sessionId), b.DSH_CONTROL_TIMEOUT_MS ?? 15000, 'stopStalledTurn')
+          : b.api.stopSessionWork(sessionId))
         .catch((error) => b.log(`取消卡死回合失败 (${key}): ${error?.message ?? error}`))
         .then(() => b.failScheduledTurn?.(key, sessionId, 'stalled', scheduledTurn));
       b.collectors.delete(sessionId);

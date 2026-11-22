@@ -79,8 +79,9 @@ export function createConversationPolicy(b) {
 
   const conversationEpochs = new Map();
   const conversationEpoch = (key) => conversationEpochs.get(key) ?? 0;
+  const overridesReadonly = () => b.conversationOverridesReadonly?.() ?? b.listConversationOverrides?.().conversations;
   function resolveConversationMode(key, mode = b.currentMode, cfg = b.cfg) {
-    return resolveMode(key, { globalMode: mode, defaults: cfg.modes?.defaults, overrides: b.listConversationOverrides?.().conversations, ownerQQ: cfg.ownerQQ, enabled: cfg.modes?.engine });
+    return resolveMode(key, { globalMode: mode, defaults: cfg.modes?.defaults, overrides: overridesReadonly(), ownerQQ: cfg.ownerQQ, enabled: cfg.modes?.engine });
   }
   function modeForKey(key, mode = b.currentMode, cfg = b.cfg) { return resolveConversationMode(key, mode, cfg).mode; }
 
@@ -111,12 +112,10 @@ export function createConversationPolicy(b) {
     return b.dshDefaultPreset || '';
   }
 
-  /** 当前模式下的会话预设；返回 undefined 表示「该模式下没有可安全使用的 preset」 */
-  function modePreset(key, mode, cfg) {
-    const resolved = resolveConversationMode(key, mode, cfg);
-    mode = resolved.mode;
+  function presetForResolved(resolved, key, cfg) {
+    const mode = resolved.mode;
     if (!mode) return undefined;
-    const explicit = resolved.source === 'conversation' ? b.listConversationOverrides?.().conversations[key] : null;
+    const explicit = resolved.source === 'conversation' ? overridesReadonly()?.[key] : null;
     if (explicit?.preset) return resolvePresetName(explicit.preset, { strict: getModeAdapter(mode).toolPolicy.allowed !== 'full' }) || undefined;
     if (mode === 'closed-agent') {
       const chosen = resolvePresetName(b.closedAgentPreset);
@@ -129,6 +128,11 @@ export function createConversationPolicy(b) {
     return resolvePresetName(wanted, { strict: true }) || undefined;
   }
 
+  /** 当前模式下的会话预设；返回 undefined 表示「该模式下没有可安全使用的 preset」 */
+  function modePreset(key, mode, cfg) {
+    return presetForResolved(resolveConversationMode(key, mode, cfg), key, cfg);
+  }
+
   /** 判断一个会话 key 是否仍被当前模式/白名单允许（供唤醒调度与 HTTP 路由共用）。 */
   function isSessionAllowedInCurrentMode(key) {
     const m = /^(group|private):(\d+)$/.exec(key);
@@ -136,11 +140,12 @@ export function createConversationPolicy(b) {
     return modeAllowed(key, m[1], Number(m[2]), b.cfg, b.currentMode);
   }
 
-  // 给这个聊天的模式、预设和主人信息算一个指纹
+  // 给这个聊天的模式、预设和主人信息算一个指纹（单次解析，零 clone）
   function sessionPolicy(key) {
-    const mode = modeForKey(key);
-    const override = resolveConversationMode(key).source === 'conversation' ? b.listConversationOverrides?.().conversations[key] : null;
-    const base = [mode, modePreset(key, b.currentMode, b.cfg) ?? '', mode === 'closed-agent' ? b.cfg.ownerQQ : null];
+    const resolved = resolveConversationMode(key);
+    const mode = resolved.mode;
+    const override = resolved.source === 'conversation' ? overridesReadonly()?.[key] : null;
+    const base = [mode, presetForResolved(resolved, key, b.cfg) ?? '', mode === 'closed-agent' ? b.cfg.ownerQQ : null];
     return JSON.stringify(override?.model || override?.reasoningEffort ? [...base, override.model ?? '', override.reasoningEffort ?? ''] : base);
   }
 
@@ -177,7 +182,7 @@ export function createConversationPolicy(b) {
   }
 
   // 作废一个聊天：删掉映射并清掉它的所有记录
-  function retireSession(key, { preserveQueue = false, preserveMemorySources = false } = {}) {
+  function retireSession(key, { preserveQueue = false, preserveMemorySources = false, deferSave = false } = {}) {
     conversationEpochs.set(key, conversationEpoch(key) + 1);
     b.resetOutbound?.(key);
     if (!preserveQueue) {
@@ -210,7 +215,10 @@ export function createConversationPolicy(b) {
     }
     b.disarmPendingWakeLease(key);
     b.pendingWakeKeys.delete(key);
-    if (!sessionId) { b.saveState(); b.saveSocialV2State(); return; }
+    if (!sessionId) {
+      if (!deferSave) { b.saveState(); b.saveSocialV2State(); }
+      return;
+    }
     b.reverse.delete(sessionId);
     b.forgetDeliveryCursor(sessionId);
     b.collectors.delete(sessionId);
@@ -228,22 +236,23 @@ export function createConversationPolicy(b) {
     const entry = b.pending.get(key);
     if (entry) { b.clearTimeout(entry.timer); void b.cancelPendingEntry({ ...entry, key }).catch(() => {}); }
     b.pending.delete(key);
-    b.saveState();
-    b.saveSocialV2State();
+    if (!deferSave) { b.saveState(); b.saveSocialV2State(); }
     stopRetiredSessionWork(sessionId, key);
     b.log(`会话权限已变化，停用旧映射 ${key} -> ${sessionId}`);
   }
 
-  // 把不再符合条件的聊天都作废掉
+  // 把不再符合条件的聊天都作废掉（批量合并落盘）
   function reconcileSessionPolicies() {
     // 预设清单还没拿到时不要作废，不然一次网络抖动会把所有聊天全清掉
     if (b.dshPresetIds.length === 0) return;
+    let retired = 0;
     for (const [key, policy] of b.sessionCreationPolicies ?? []) {
-      if (policy !== sessionPolicy(key)) retireSession(key);
+      if (policy !== sessionPolicy(key)) { retireSession(key, { deferSave: true }); retired += 1; }
     }
     for (const [key, sessionId] of Object.entries(b.state.sessions)) {
-      if (!isCurrentSession(key, sessionId)) retireSession(key);
+      if (!isCurrentSession(key, sessionId)) { retireSession(key, { deferSave: true }); retired += 1; }
     }
+    if (retired > 0) { b.saveState(); b.saveSocialV2State(); }
   }
 
   return { modeAdapterForKey: (key) => getModeAdapter(modeForKey(key)), resolveConversationMode, conversationEpoch, refreshMode, refreshPresetList, modeForKey, modeAllowed, resolvePresetName, modePreset, isSessionAllowedInCurrentMode, sessionPolicy, isCurrentSession, stopRetiredSessionWork, forgetConversationCaches, retireSession, reconcileSessionPolicies };

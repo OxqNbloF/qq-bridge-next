@@ -54,6 +54,12 @@ export function decide({ kind, id, qq, cfg, mode, runtime = {}, policy = null, p
   const convDenied = conversationGate({ kind, id, cfg, mode, closedAgentOk: closedAgentOk ?? (kind === 'private' && isOwner && String(id) === sender) });
   if (convDenied) return deny(convDenied);
 
+  if (applyMemberPolicy && policyBroken) {
+    // 策略文件损坏 fail-closed：不回应/不入对话上下文/对模型不可见，但保留原始消息归档；管理员仅保留命令入口
+    if (isOwner) return allow({ respond: true, converse: true, context: false, memory: true }, 'policy-broken');
+    return allow({ respond: false, converse: false, context: false, memory: true }, 'policy-broken');
+  }
+
   if (isOwner) {
     // 管理命令/审批入口不受名单限制，但隐私开关不因管理员身份被抹掉。
     const globalFlags = own(policy?.global, sender)?.flags;
@@ -69,8 +75,8 @@ export function decide({ kind, id, qq, cfg, mode, runtime = {}, policy = null, p
   if (kind === 'private') return allow(normalizeFlags(own(policy?.private, sender) ?? globalFlags, defaultFlags));
 
   const pol = own(policy?.groups, `group:${id}`);
-  // 策略读不出来不能当空表（那是全放行）：群里一律不回应
-  if (policyBroken || (pol && !MEMBER_MODES.includes(pol.mode))) return allow({ ...base(), respond: false }, 'policy-broken');
+  // 名单模式非法时同样关闭回应与模型上下文，保留原始归档
+  if (pol && !MEMBER_MODES.includes(pol.mode)) return allow({ respond: false, converse: false, context: false, memory: true }, 'policy-broken');
   gate.memberMode = pol?.mode ?? 'all';
   const rule = own(pol?.rules, sender);
   if (rule) gate.rule = { qq: Number(sender), ...(rule.note ? { note: String(rule.note) } : {}) };

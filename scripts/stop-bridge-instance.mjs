@@ -15,10 +15,35 @@ const DEFAULT_ROOT = path.dirname(path.dirname(THIS_FILE));
 // macOS/Linux 上启动器是 shell 脚本 start.sh
 const POSIX_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ash', 'ksh']);
 
-// 粗拆命令行，只用来找 node 的脚本入口
+// 粗拆命令行，只用来找 node 的脚本入口（支持单/双引号）
 function commandTokens(commandLine) {
-  return (String(commandLine ?? '').match(/"[^"]*"|\S+/g) ?? [])
-    .map((token) => token.replace(/^"|"$/g, ''));
+  return (String(commandLine ?? '').match(/"[^"]*"|'[^']*'|\S+/g) ?? [])
+    .map((token) => token.replace(/^["']|["']$/g, ''));
+}
+
+// 命令行里去掉可执行文件与前缀选项后的参数部分（用于识别含空格未加引号的绝对路径）
+function commandArgsAfterExecutable(commandLine) {
+  const s = String(commandLine ?? '').trim();
+  if (!s) return '';
+  // 跳过第一个词（node / bash / /usr/bin/env ...）及紧随其后的 -xxx 选项
+  let rest = s.replace(/^(?:"[^"]*"|'[^']*'|\S+)\s*/, '');
+  while (/^-\S+(?:\s+|$)/.test(rest)) {
+    rest = rest.replace(/^-\S+\s*/, '');
+  }
+  return rest.replace(/^["']|["']$/g, '').trim();
+}
+
+// 判断命令行是否直接以 expectedPath 作为脚本入口（兼容路径含空格且未加引号）
+function matchesAbsoluteEntry(commandLine, expectedPath) {
+  const expected = path.resolve(expectedPath);
+  const argsTail = commandArgsAfterExecutable(commandLine);
+  if (!argsTail) return false;
+  const norm = (p) => (process.platform === 'linux' ? p : p.toLowerCase());
+  const tailNorm = norm(argsTail);
+  const expNorm = norm(expected);
+  if (tailNorm === expNorm) return true;
+  if (tailNorm.startsWith(expNorm) && /\s/.test(argsTail[expected.length] ?? '')) return true;
+  return false;
 }
 
 // 从命令行里取出 node 跑的脚本路径
@@ -41,7 +66,9 @@ function samePath(left, right) {
 
 // 看命令行是不是真拿 bridge.js 当脚本入口
 export function isBridgeCommandLine(commandLine) {
-  return /(^|[\\/])bridge\.js$/i.test(nodeScript(commandLine));
+  if (/(^|[\\/])bridge\.js$/i.test(nodeScript(commandLine))) return true;
+  const tail = commandArgsAfterExecutable(commandLine);
+  return /(^|[\\/])bridge\.js(\s|$)/i.test(tail) && !/--\S+\s+.*bridge\.js/i.test(tail);
 }
 
 // 判断这个进程是不是本仓库的桥接
@@ -49,9 +76,10 @@ export function isBridgeProcess(proc, root = DEFAULT_ROOT) {
   if (!proc) return false;
   const name = String(proc.name ?? '').toLowerCase();
   if (name !== 'node.exe' && name !== 'node') return false;
+  const expected = path.join(root, 'src', 'bridge.js');
   const script = nodeScript(proc.commandLine);
-  if (!/(^|[\\/])bridge\.js$/i.test(script) || !path.isAbsolute(script)) return false;
-  return samePath(script, path.join(root, 'src', 'bridge.js'));
+  if (/(^|[\\/])bridge\.js$/i.test(script) && path.isAbsolute(script) && samePath(script, expected)) return true;
+  return matchesAbsoluteEntry(proc.commandLine, expected);
 }
 
 // 守护进程：shell 在跑 start.sh，有 root 时还要对路径
@@ -61,9 +89,15 @@ export function isGuardProcess(proc, root) {
   const cmd = String(proc.commandLine ?? '');
   if (/restart\.(bat|sh)/i.test(cmd)) return false;
   if (POSIX_SHELLS.has(name)) {
+    if (root) {
+      const expected = path.join(root, 'start.sh');
+      const script = commandTokens(cmd).find((token) => /(^|[\\/])start\.sh$/.test(token));
+      if (script && path.isAbsolute(script) && samePath(script, expected)) return true;
+      return matchesAbsoluteEntry(cmd, expected);
+    }
     const script = commandTokens(cmd).find((token) => /(^|[\\/])start\.sh$/.test(token));
-    if (!script || (root && !path.isAbsolute(script))) return false;
-    return !root || samePath(script, path.join(root, 'start.sh'));
+    if (script) return true;
+    return /(^|[\\/])start\.sh(\s|$)/.test(commandArgsAfterExecutable(cmd));
   }
   return false;
 }
@@ -133,20 +167,42 @@ function run(cmd, args) {
   });
 }
 
-// 看懂 ps 输出：前三个字段加剩下整段命令
+// 看懂 ps 输出：前两个数字字段后跟 comm 和 args（兼容 macOS comm 含空格路径）
 export function parsePsTable(stdout) {
   const processes = [];
   for (const line of String(stdout ?? '').split(/\r?\n/)) {
     if (!line.trim()) continue;
-    const matched = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-    if (!matched) continue;
-    const pid = Number(matched[1]);
+    const head = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+    if (!head) continue;
+    const pid = Number(head[1]);
     if (!Number.isInteger(pid) || pid <= 0) continue;
+    const parentPid = Number(head[2]) || 0;
+    const rest = head[3];
+    let comm = '';
+    let commandLine = '';
+    // macOS 下 comm 可能是含空格绝对路径（如 /Applications/Foo Bar.app/.../node），args 以同一可执行路径开头
+    if (rest.startsWith('/')) {
+      const dupIdx = rest.indexOf(' /', 1);
+      if (dupIdx > 0) {
+        const cand = rest.slice(0, dupIdx).trimEnd();
+        const after = rest.slice(dupIdx + 1);
+        if (cand.includes(' ') && after.startsWith(cand)) {
+          comm = cand;
+          commandLine = after;
+        }
+      }
+    }
+    if (!comm) {
+      const split = /^(\S+)\s+(.*)$/.exec(rest);
+      if (!split) continue;
+      comm = split[1];
+      commandLine = split[2];
+    }
     processes.push({
       pid,
-      parentPid: Number(matched[2]) || 0,
-      name: path.basename(matched[3]),
-      commandLine: matched[4]
+      parentPid,
+      name: path.basename(comm),
+      commandLine
     });
   }
   return processes;

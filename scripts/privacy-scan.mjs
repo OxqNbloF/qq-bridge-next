@@ -39,6 +39,7 @@ const DEFAULT_RULES = {
   deny: [
     // 路径中间允许有空格，真实目录常常带空格
     { name: '本机绝对路径（Windows 用户目录）', pattern: '[A-Za-z]:\\\\Users\\\\[^\\\\"\'`<>]{2,}', flags: 'i', reject: rejectUserDirPath },
+    { name: '本机绝对路径（POSIX 用户目录）', pattern: '(?<![A-Za-z0-9._-])/(?:Users|home)/[^/\\s"\'`<>]{2,}/', flags: '', reject: rejectUserDirPath },
     { name: '本机绝对路径（非系统盘的顶层目录）', pattern: '(?<![A-Za-z0-9])(?!C:)[A-Za-z]:\\\\[^\\\\"\'`|<>]{2,}\\\\', flags: 'i', reject: rejectWindowsPathShape },
     { name: 'QQ 号/群号（9-10 位连续数字）', pattern: '(?<![0-9])[1-9][0-9]{8,9}(?![0-9])', flags: '' },
     // 一串全十六进制的多是提交编号，不是密钥，不报
@@ -294,6 +295,11 @@ const HISTORY_RULES = [
     reject: rejectUserDirPath,
   },
   {
+    name: '本机绝对路径（POSIX 用户目录）',
+    check: /(?<![A-Za-z0-9._-])\/(?:Users|home)\/[^/\s"'`<>]{2,}\//,
+    reject: rejectUserDirPath,
+  },
+  {
     name: '本机绝对路径（非系统盘）',
     // 路径中间允许有空格，真实目录常常带空格
     check: /[A-Za-z]:\\[^\\"<>]+\\[^\\"<>]+\\/,
@@ -464,7 +470,7 @@ if (asJson) {
   } else {
     console.log(`[privacy-scan] ❌ 发现 ${findings.length} 处问题：`);
     for (const f of findings) {
-      console.log(`   - [${f.kind}] ${f.rule} → ${f.file}${f.masked ? `  （命中片段：${f.masked}）` : ''}`);
+      console.log(`   - [${f.kind}] ${f.rule} → ${f.file}${f.line ? `:${f.line}` : ''}${f.masked ? `  （命中片段：${f.masked}）` : ''}`);
     }
     console.log('[privacy-scan] 处理方式：① 真实数据删掉/换占位符；② 该文件本就该忽略 → 加进 .gitignore；');
     console.log('[privacy-scan] ③ 是脱敏模板/测试夹具的误报 → 加进 privacy-rules.json 的 allowPaths。');

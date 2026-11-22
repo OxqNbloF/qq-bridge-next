@@ -163,14 +163,14 @@ export function createInboundContext({ getBot, log }) {
   }
 
   // 认出引用的是谁：支持真实 message_id 或本地 seq
-  async function resolveReplyTargetV2(st, kind, convId, ref) {
+  async function resolveReplyTargetV2(st, kind, convId, ref, selfId = getBot?.()?.selfId ?? null) {
     const refStr = String(ref ?? '').trim();
     if (!refStr) return null;
     const found = Array.isArray(st?.recentMessages) ? st.recentMessages.find((m) => m && String(m.seq) === refStr) : null;
     // ref 命中本地 seq 时优先映射到真实 id
     if (found && found.messageId && String(found.messageId) !== refStr) {
       const realId = String(found.messageId);
-      const realInfo = await resolveReplyInfo(kind, convId, realId);
+      const realInfo = await resolveReplyInfo(kind, convId, realId, selfId);
       return {
         info: realInfo || {
           sender: String(found.sender || ''),
@@ -182,11 +182,11 @@ export function createInboundContext({ getBot, log }) {
         messageId: realId
       };
     }
-    let info = await resolveReplyInfo(kind, convId, refStr);
+    let info = await resolveReplyInfo(kind, convId, refStr, selfId);
     if (info) return { info, messageId: refStr };
     if (found && found.messageId) {
       const realId = String(found.messageId);
-      const realInfo = await resolveReplyInfo(kind, convId, realId);
+      const realInfo = realId === refStr ? null : await resolveReplyInfo(kind, convId, realId, selfId);
       return {
         info: realInfo || {
           sender: String(found.sender || ''),

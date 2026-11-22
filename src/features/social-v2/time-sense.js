@@ -103,19 +103,33 @@ export function createTimeSenseV2(b) {
       readThroughSeq: b.readThroughSeqV2(st),
       partial: visibleUnread.length > 0
     };
-    // 试着放一条消息，超过字数就撤回
+    // 增量跟踪序列化长度，避免每条消息都对整个 packet 重复 JSON.stringify（O(M²)）
+    let approxChars = JSON.stringify(packet).length;
     const tryAdd = (field, msg) => {
-      const previousThrough = packet.readThroughSeq;
-      packet[field].push(b.compactModelMessage(msg, { now }));
-      packet.includedUnreadCount = packet.messages.length;
-      packet.readThroughSeq = b.readThroughSeqV2(st, [...packet.messages, ...packet.recent]);
-      packet.partial = packet.messages.length < visibleUnread.length;
-      if (JSON.stringify(packet).length <= maxChars) return true;
-      packet[field].pop();
-      packet.includedUnreadCount = packet.messages.length;
-      packet.readThroughSeq = previousThrough;
-      packet.partial = packet.messages.length < visibleUnread.length;
-      return false;
+      const compact = b.compactModelMessage(msg, { now });
+      const itemChars = JSON.stringify(compact).length + (packet[field].length > 0 ? 1 : 0);
+      // 预留少量数字字段位宽增长余量（includedUnreadCount / readThroughSeq / partial）
+      if (approxChars + itemChars + 16 > maxChars) {
+        // 临近阈值时做一次精确复核，保持与原长度上限完全一致
+        packet[field].push(compact);
+        const previousThrough = packet.readThroughSeq;
+        packet.includedUnreadCount = packet.messages.length;
+        packet.readThroughSeq = b.readThroughSeqV2(st, [...packet.messages, ...packet.recent]);
+        packet.partial = packet.messages.length < visibleUnread.length;
+        const exact = JSON.stringify(packet).length;
+        if (exact <= maxChars) {
+          approxChars = exact;
+          return true;
+        }
+        packet[field].pop();
+        packet.includedUnreadCount = packet.messages.length;
+        packet.readThroughSeq = previousThrough;
+        packet.partial = packet.messages.length < visibleUnread.length;
+        return false;
+      }
+      packet[field].push(compact);
+      approxChars += itemChars;
+      return true;
     };
     if (b.v2ToolEnabled('getUnread')) {
       // 从最旧的未读开始，不能悄悄跳过没看过的消息
@@ -127,6 +141,9 @@ export function createTimeSenseV2(b) {
       for (const msg of recent.reverse()) if (!tryAdd('recent', msg)) break;
       packet.recent.reverse();
     }
+    packet.includedUnreadCount = packet.messages.length;
+    packet.readThroughSeq = b.readThroughSeqV2(st, [...packet.messages, ...packet.recent]);
+    packet.partial = packet.messages.length < visibleUnread.length;
     return packet;
   }
 

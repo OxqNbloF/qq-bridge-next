@@ -219,14 +219,36 @@ export function createTokenLedger({
   }
 
   // ── 存到硬盘 ──
+  let dirReady = false;
+  function ensureDir() {
+    if (dirReady) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    dirReady = true;
+  }
+
   function appendLine(record) {
     try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
+      ensureDir();
       fs.appendFileSync(file, `${JSON.stringify(record)}\n`, 'utf8');
       journalLines += 1;
       return true;
     } catch (error) {
+      dirReady = false;
       log('token 账本：写入失败', error?.message ?? error);
+      return false;
+    }
+  }
+
+  function appendLinesBatch(records) {
+    if (!records.length) return true;
+    try {
+      ensureDir();
+      fs.appendFileSync(file, records.map((r) => `${JSON.stringify(r)}\n`).join(''), 'utf8');
+      journalLines += records.length;
+      return true;
+    } catch (error) {
+      dirReady = false;
+      log('token 账本：批量写入失败', error?.message ?? error);
       return false;
     }
   }
@@ -254,9 +276,9 @@ export function createTokenLedger({
         estimated: e.estimated, dropped: e.dropped, maxSeq: Number(e.maxSeq) >= 0 ? Number(e.maxSeq) : -1
       });
     }
+    const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2, 10)}.tmp`;
     try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.${Math.random().toString(16).slice(2, 10)}.tmp`;
+      ensureDir();
       fs.writeFileSync(tmp, out.map((r) => `${JSON.stringify(r)}\n`).join(''), { encoding: 'utf8', mode: 0o600 });
       fs.renameSync(tmp, file);
       journalLines = out.length;
@@ -264,14 +286,18 @@ export function createTokenLedger({
       lastCompactedAt = now();
       return true;
     } catch (error) {
+      dirReady = false;
+      try { fs.unlinkSync(tmp); } catch {}
       log('token 账本：压缩失败', error?.message ?? error);
       return false;
     }
   }
 
-  /** 删最旧的记录控制体积；只丢明细不丢总数 */
+  /** 删最旧的记录控制体积；只丢明细不丢总数（带滞回水位，防止达上限后每条事件反复重写） */
   function evictOldestSamples() {
-    const overflow = samples.size - maxLines;
+    if (samples.size <= maxLines) return 0;
+    const targetSize = maxLines >= 20 ? Math.max(1, Math.floor(maxLines * 0.85)) : maxLines;
+    const overflow = samples.size - targetSize;
     if (overflow <= 0) return 0;
     const ordered = [...samples.entries()].sort((a, b) => a[1].t - b[1].t);
     for (let i = 0; i < overflow; i += 1) {
@@ -314,11 +340,19 @@ export function createTokenLedger({
     return Number(base.seq) >= maxSeq;
   }
 
-  // 超过上限时删掉旧记录，再整个重写
+  let indexCache = null;
+  let indexDirty = true;
+  function invalidateIndex() { indexDirty = true; }
+
+  // 超过上限时删掉旧记录，再整个重写（带滞回阈值，避免 baselines+samples+evicted 卡在 maxLines 时每事件重写）
   function maybeCompact() {
-    if (journalLines <= maxLines && samples.size <= maxLines && !evictedDirty) return;
+    const journalLimit = Math.max(maxLines + Math.min(200, maxLines), Math.ceil(maxLines * 1.25));
+    if (journalLines <= journalLimit && samples.size <= maxLines && !evictedDirty) return;
     const dropped = evictOldestSamples();
-    if (dropped > 0) log(`token 账本：逐轮明细超过 ${maxLines} 条，已淘汰最旧的 ${dropped} 条（累计总量不受影响）`);
+    if (dropped > 0) {
+      invalidateIndex();
+      log(`token 账本：逐轮明细超过 ${maxLines} 条，已淘汰最旧的 ${dropped} 条（累计总量不受影响）`);
+    }
     compact();
   }
 
@@ -333,9 +367,10 @@ export function createTokenLedger({
    * @param {number} [args.at]        事件时间
    * @param {string} [args.model]     实际模型
    * @param {string} [args.provider]
+   * @param {Array}  [args._batch]    内部批量模式收集待落盘记录
    * @returns {boolean} 是否产生新记录
    */
-  function ingestEvent({ sessionId, event, origin = 'live', at, model, provider } = {}) {
+  function ingestEvent({ sessionId, event, origin = 'live', at, model, provider, _batch = null } = {}) {
     if (typeof sessionId !== 'string' || !sessionId || !event || typeof event !== 'object') return false;
     // 时间优先取事件自带的 time，它决定峰谷档位
     const t = Number.isFinite(Number(at)) ? Number(at)
@@ -384,8 +419,13 @@ export function createTokenLedger({
     });
     if (t > (sessionSeen.get(sessionId) ?? 0)) sessionSeen.set(sessionId, t);
     lastIngestAt = now();
-    appendLine(record);
-    maybeCompact();
+    invalidateIndex();
+    if (_batch) {
+      _batch.push(record);
+    } else {
+      appendLine(record);
+      maybeCompact();
+    }
     return true;
   }
 
@@ -411,6 +451,7 @@ export function createTokenLedger({
     // 内容和序号都没变的重复记录不写文件
     if (same) return false;
     lastIngestAt = now();
+    invalidateIndex();
     appendLine({
       k: 'base', t, sid: sessionId, key, seq,
       model, provider, b: buckets
@@ -420,14 +461,19 @@ export function createTokenLedger({
     return true;
   }
 
-  /** 摄入快照的全部历史记录 */
+  /** 摄入快照的全部历史记录（合并一次批量落盘） */
   function ingestSnapshotRecords({ sessionId, records, at } = {}) {
     if (!Array.isArray(records)) return 0;
     let n = 0;
+    const batch = [];
     for (const entry of records) {
       const event = entry?.type === 'event' ? entry.event : entry;
       if (!event || typeof event !== 'object') continue;
-      if (ingestEvent({ sessionId, event, origin: 'snapshot', at })) n += 1;
+      if (ingestEvent({ sessionId, event, origin: 'snapshot', at, _batch: batch })) n += 1;
+    }
+    if (batch.length) {
+      appendLinesBatch(batch);
+      maybeCompact();
     }
     return n;
   }
@@ -435,8 +481,9 @@ export function createTokenLedger({
   // ── 读取 ──
 
   /** 按会话取起始值加之后记录的累计用量 */
-  /** 一次扫完所有记录，只算序号比起始值大的 */
+  /** 一次扫完所有记录，只算序号比起始值大的（脏标记缓存） */
   function buildIndex() {
+    if (!indexDirty && indexCache) return indexCache;
     const index = new Map();
     for (const s of samples.values()) {
       let entry = index.get(s.sessionId);
@@ -492,6 +539,8 @@ export function createTokenLedger({
       row.cost += p.cost.total;
       row.tier = row.tier === null || row.tier === p.rates.tier ? p.rates.tier : 'mixed';
     }
+    indexCache = index;
+    indexDirty = false;
     return index;
   }
 
@@ -836,6 +885,7 @@ export function createTokenLedger({
     droppedLines = 0;
     lastCompactedAt = 0;
     journalLines = 0;
+    invalidateIndex();
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, '', { encoding: 'utf8', mode: 0o600 });

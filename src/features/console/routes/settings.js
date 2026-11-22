@@ -1,11 +1,12 @@
 import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
+import { withConfigWriteLock } from '../../../infra/config.js';
 // 控制台设置路由：白名单、模型、安全通知、控制台令牌
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { unwrap } from '../../../dsh-client.js';
 import { hardenStateDirAcl } from '../../../infra/state-acl.js';
-import { normalizeOwnerQQ } from '../../../policy/access.js';
+import { normalizeOwnerQQ, normalizeIdList } from '../../../policy/access.js';
 import { REASONING_EFFORT_OPTIONS, REASONING_EFFORT_NONE, REASONING_EFFORT_DEFAULT, normalizeReasoningEffort } from '../../../policy/mode.js';
 import { manualDirCommand } from '../../../state-acl.mjs';
 import { readConfigObject, atomicWriteJson, atomicWriteText } from '../../../store/fs-atomic.js';
@@ -20,39 +21,46 @@ export function createConsoleSettingsRoutes(b) {
     }
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/whitelist') {
       const body = await rq.readBody();
-      // 把一串号码整理成不重复的数字
-      const toNum = (arr) => Array.isArray(arr) ? [...new Set(arr.map((x) => Number(String(x).trim())).filter((n) => Number.isFinite(n)))] : undefined;
-      const configFile = path.join(b.ROOT, 'config.json');
-      // 配置损坏直接 500，绝不回写
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      const allow = {
-        private: toNum(body.allow?.private) ?? (file.allow?.private ?? []),
-        groups: toNum(body.allow?.groups) ?? (file.allow?.groups ?? [])
-      };
-      const deny = {
-        private: toNum(body.deny?.private) ?? (file.deny?.private ?? []),
-        groups: toNum(body.deny?.groups) ?? (file.deny?.groups ?? [])
-      };
+      // 复用 normalizeIdList：仅接受正安全整数 QQ/群号，拒绝空串/负数/小数/超长数
+      const toIds = (arr) => Array.isArray(arr)
+        ? [...new Set(normalizeIdList(arr).map(Number).filter((n) => Number.isSafeInteger(n) && n > 0))]
+        : undefined;
       // 管理员 QQ：空值清除（fail-closed），非法值拒绝
-      let ownerQQ = b.cfg.ownerQQ ?? null;
+      let nextOwnerQQ;
+      let hasOwnerUpdate = false;
       if (body.ownerQQ !== undefined) {
+        hasOwnerUpdate = true;
         try {
-          ownerQQ = normalizeOwnerQQ(body.ownerQQ);
+          nextOwnerQQ = normalizeOwnerQQ(body.ownerQQ);
         } catch (error) {
           rq.sendJson({ ok: false, error: error?.message ?? 'ownerQQ 无效' }, 400);
           return;
         }
       }
-      file.allow = allow;
-      file.deny = deny;
-      file.ownerQQ = ownerQQ;
-      atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.allow = { private: allow.private, groups: allow.groups };
-      b.cfg.deny = { private: deny.private, groups: deny.groups };
-      b.cfg.ownerQQ = ownerQQ;
-      b.reconcileSessionPolicies();
-      b.log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
-      rq.sendJson({ ok: true, allow, deny, ownerQQ });
+      const configFile = path.join(b.ROOT, 'config.json');
+      await withConfigWriteLock(async () => {
+        // 配置损坏直接 500，绝不回写
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        const allow = {
+          private: toIds(body.allow?.private) ?? (file.allow?.private ?? []),
+          groups: toIds(body.allow?.groups) ?? (file.allow?.groups ?? [])
+        };
+        const deny = {
+          private: toIds(body.deny?.private) ?? (file.deny?.private ?? []),
+          groups: toIds(body.deny?.groups) ?? (file.deny?.groups ?? [])
+        };
+        const ownerQQ = hasOwnerUpdate ? nextOwnerQQ : (b.cfg.ownerQQ ?? null);
+        file.allow = allow;
+        file.deny = deny;
+        file.ownerQQ = ownerQQ;
+        atomicWriteJson(configFile, syncConfigAliases(file));
+        b.cfg.allow = { private: allow.private, groups: allow.groups };
+        b.cfg.deny = { private: deny.private, groups: deny.groups };
+        b.cfg.ownerQQ = ownerQQ;
+        b.reconcileSessionPolicies();
+        b.log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
+        rq.sendJson({ ok: true, allow, deny, ownerQQ });
+      });
       return;
     }
 
@@ -111,15 +119,17 @@ export function createConsoleSettingsRoutes(b) {
       try { effort = normalizeReasoningEffort(body.reasoningEffort); }
       catch (error) { rq.sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
       const configFile = path.join(b.ROOT, 'config.json');
-      // 配置损坏直接 500，绝不回写
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
-      atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.dsh = { ...(b.cfg.dsh ?? {}), reasoningEffort: effort };
-      // 递增代号，运行中会话下条消息重新选模型
-      b.modelSelectionEpoch += 1;
-      b.log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
-      rq.sendJson({ ok: true, reasoningEffort: effort });
+      await withConfigWriteLock(async () => {
+        // 配置损坏直接 500，绝不回写
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
+        atomicWriteJson(configFile, syncConfigAliases(file));
+        b.cfg.dsh = { ...(b.cfg.dsh ?? {}), reasoningEffort: effort };
+        // 递增代号，运行中会话下条消息重新选模型
+        b.modelSelectionEpoch += 1;
+        b.log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
+        rq.sendJson({ ok: true, reasoningEffort: effort });
+      });
       return;
     }
 
@@ -146,15 +156,16 @@ export function createConsoleSettingsRoutes(b) {
         return;
       }
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      const next = { ...(file.security ?? {}), ...body };
-      if (typeof next.interceptNotify === 'boolean') next.interceptNotify = next.interceptNotify;
-      else if (next.interceptNotify !== undefined) next.interceptNotify = Boolean(next.interceptNotify);
-      file.security = next;
-      atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.security = { ...(b.cfg.security ?? {}), ...next };
-      b.log(`控制台：安全拦截通知已更新（interceptNotify=${b.cfg.security.interceptNotify}）`);
-      rq.sendJson({ ok: true, security: b.cfg.security });
+      await withConfigWriteLock(async () => {
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        const next = { ...(file.security ?? {}) };
+        if (body.interceptNotify !== undefined) next.interceptNotify = Boolean(body.interceptNotify);
+        file.security = next;
+        atomicWriteJson(configFile, syncConfigAliases(file));
+        b.cfg.security = { ...(b.cfg.security ?? {}), ...next };
+        b.log(`控制台：安全拦截通知已更新（interceptNotify=${b.cfg.security.interceptNotify}）`);
+        rq.sendJson({ ok: true, security: b.cfg.security });
+      });
       return;
     }
     // 控制台访问令牌：手动修改或随机生成
@@ -178,15 +189,17 @@ export function createConsoleSettingsRoutes(b) {
         return;
       }
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      // 手动令牌写 config；随机令牌写 state/console-token
-      file.consoleToken = generated ? '' : newToken;
-      atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.consoleToken = generated ? '' : newToken;
-      atomicWriteText(path.join(b.STATE_DIR, 'console-token'), newToken);
-      b.consoleToken = newToken;
-      b.log(`控制台：访问令牌已${generated ? '重新生成' : '手动修改'}（不记录完整值）`);
-      rq.sendJson({ ok: true, token: newToken, generated });
+      await withConfigWriteLock(async () => {
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        // 手动令牌写 config；随机令牌写 state/console-token
+        file.consoleToken = generated ? '' : newToken;
+        atomicWriteJson(configFile, syncConfigAliases(file));
+        b.cfg.consoleToken = generated ? '' : newToken;
+        atomicWriteText(path.join(b.STATE_DIR, 'console-token'), newToken);
+        b.consoleToken = newToken;
+        b.log(`控制台：访问令牌已${generated ? '重新生成' : '手动修改'}（不记录完整值）`);
+        rq.sendJson({ ok: true, token: newToken, generated });
+      });
       return;
     }
     return ROUTE_NEXT;

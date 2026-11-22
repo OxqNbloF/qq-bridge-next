@@ -1,4 +1,5 @@
 // 每个聊天的记忆搜索索引；从记忆池生成，坏了就改用内存排序
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeConvName } from '../store/views.js';
@@ -77,57 +78,95 @@ export function fuse(items, relevantIds, { now = Date.now(), limit = 8 } = {}) {
  * @param {Function|null} o.DatabaseSync 为空时只用内存
  * @param {(msg: string) => void} [o.log]
  */
-export function createMemoryIndex({ dir, DatabaseSync, log = () => {} }) {
-  const dbs = new Map(); // 每个聊天的数据库连接，空表示改用内存排序
+export function createMemoryIndex({ dir, DatabaseSync, log = () => {}, maxOpenDbs = 32 }) {
+  const dbs = new Map(); // convId -> { db, matchStmt, metaGetStmt } | null（LRU 顺序）
   const failedAt = new Map(); // convId -> 上次失败时间，过 RETRY_MS 再试
   const built = new Set(); // 已按池重建过且文件还在的会话
   const RETRY_MS = 10 * 60 * 1000;
+  let dirReady = false;
   // 算出这个聊天的索引文件放在哪
   const fileOf = (convId) => path.join(dir, `${safeConvName(convId)}.sqlite`);
+  const fingerprintOf = (items) => {
+    const h = crypto.createHash('sha1');
+    h.update(String(items.length));
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i];
+      h.update('\0').update(String(it.id ?? '')).update(':').update(String(it.updated_at ?? '')).update(':').update(String(it.content?.length ?? 0));
+    }
+    return h.digest('hex');
+  };
 
   // 关闭并忘掉一个会话的索引连接
   function forget(convId) {
-    try { dbs.get(convId)?.close(); } catch {}
+    const entry = dbs.get(convId);
+    try { entry?.db?.close(); } catch {}
     dbs.delete(convId);
     built.delete(convId);
   }
 
+  function evictOverflow() {
+    while (dbs.size > maxOpenDbs) {
+      const oldestKey = dbs.keys().next().value;
+      if (oldestKey === undefined) break;
+      const entry = dbs.get(oldestKey);
+      try { entry?.db?.close(); } catch {}
+      dbs.delete(oldestKey);
+    }
+  }
+
   // 打开会话索引，打不开就返回 null，改用内存排序
-  function open(convId) {
+  function openEntry(convId) {
     if (dbs.has(convId)) {
       const cached = dbs.get(convId);
       if (cached && !fs.existsSync(fileOf(convId))) forget(convId); // 运行中被删：重开并重建
       else if (!cached && Date.now() - (failedAt.get(convId) ?? 0) >= RETRY_MS) forget(convId);
-      else return cached;
+      else {
+        // 刷新 LRU 位置
+        dbs.delete(convId);
+        dbs.set(convId, cached);
+        return cached;
+      }
     }
-    let db = null;
+    let entry = null;
     if (DatabaseSync) {
+      let db = null;
       try {
-        fs.mkdirSync(dir, { recursive: true });
+        if (!dirReady) { fs.mkdirSync(dir, { recursive: true }); dirReady = true; }
         db = new DatabaseSync(fileOf(convId));
+        db.exec('pragma journal_mode=WAL; pragma synchronous=NORMAL; pragma busy_timeout=2000;');
         db.exec("create virtual table if not exists items_fts using fts5(id unindexed, body, tokenize='trigram')");
+        db.exec('create table if not exists index_meta(k text primary key, v text)');
+        entry = {
+          db,
+          matchStmt: db.prepare('select id from items_fts where items_fts match ? order by bm25(items_fts) limit 50'),
+          metaGetStmt: db.prepare('select v from index_meta where k = ?'),
+          metaSetStmt: db.prepare('insert or replace into index_meta(k, v) values (?, ?)'),
+        };
       } catch (error) {
         log(`[index] ${convId} 索引不可用，改用内存检索：${error?.message ?? error}`);
         try { db?.close(); } catch {}
-        db = null;
+        entry = null;
         failedAt.set(convId, Date.now());
         // 打不开的索引文件直接删，过重试间隔再建
         for (const suffix of ['', '-wal', '-shm', '-journal']) { try { fs.unlinkSync(fileOf(convId) + suffix); } catch {} }
       }
     }
-    dbs.set(convId, db);
-    return db;
+    dbs.set(convId, entry);
+    evictOverflow();
+    return entry;
   }
 
   /** 用池里的条目把索引整个重建一遍，返回有没有成功 */
   function rebuild(convId, items) {
-    const db = open(convId);
-    if (!db) return false;
+    const entry = openEntry(convId);
+    if (!entry) return false;
+    const { db, metaSetStmt } = entry;
     try {
       db.exec('begin');
       db.exec('delete from items_fts');
       const insert = db.prepare('insert into items_fts(id, body) values (?, ?)');
       for (const it of items) insert.run(String(it.id), textOf(it));
+      metaSetStmt.run('fingerprint', fingerprintOf(items));
       db.exec('commit');
       built.add(convId);
       return true;
@@ -141,6 +180,21 @@ export function createMemoryIndex({ dir, DatabaseSync, log = () => {} }) {
     }
   }
 
+  /** 若磁盘索引指纹已与当前条目一致则直接复用（避免每次重启全量重建） */
+  function ensureBuilt(convId, items) {
+    if (built.has(convId) && fs.existsSync(fileOf(convId))) return true;
+    const entry = openEntry(convId);
+    if (!entry) return false;
+    try {
+      const row = entry.metaGetStmt.get('fingerprint');
+      if (row && row.v === fingerprintOf(items)) {
+        built.add(convId);
+        return true;
+      }
+    } catch {}
+    return rebuild(convId, items);
+  }
+
   /**
    * 检索该会话条目；items 必须已按 conv_id 过滤
    * @returns {object} 结果里有 items、used_memory_ids 和 via
@@ -148,21 +202,34 @@ export function createMemoryIndex({ dir, DatabaseSync, log = () => {} }) {
   function search(convId, items, query, { limit = 8, now = Date.now() } = {}) {
     const grams = queryGrams(query);
     let relevant = null;
-    const db = open(convId);
-    if (db) {
+    const entry = openEntry(convId);
+    if (entry) {
       try {
         const ids = [];
+        const seen = new Set();
         if (grams.tri.length) {
           const match = grams.tri.map((t) => `"${t.replace(/"/g, '""')}"`).join(' OR ');
-          for (const row of db.prepare('select id from items_fts where items_fts match ? order by bm25(items_fts) limit 20').all(match)) ids.push(row.id);
+          for (const row of entry.matchStmt.all(match)) {
+            if (!seen.has(row.id)) { seen.add(row.id); ids.push(row.id); }
+          }
         }
-        // 两个字的小词查不到，就换成模糊查找补在后面
-        const likeHits = new Map();
-        const like = db.prepare("select id from items_fts where body like ? escape '\\' limit 50");
-        for (const term of grams.bi.slice(0, 12)) {
-          for (const row of like.all(`%${term.replace(/[\\%_]/g, '\\$&')}%`)) likeHits.set(row.id, (likeHits.get(row.id) ?? 0) + 1);
+        // 两字短词不走 SQLite 无索引 LIKE 全表扫描，直接在已加载的内存 items 上匹配补齐
+        if (grams.bi.length && items.length) {
+          const biTerms = grams.bi.slice(0, 12);
+          const biHits = [];
+          for (let i = 0; i < items.length; i += 1) {
+            const it = items[i];
+            if (seen.has(it.id)) continue;
+            const body = textOf(it);
+            let hits = 0;
+            for (let j = 0; j < biTerms.length; j += 1) {
+              if (body.includes(biTerms[j])) hits += 1;
+            }
+            if (hits > 0) biHits.push({ id: it.id, hits });
+          }
+          biHits.sort((a, b) => b.hits - a.hits);
+          for (let i = 0; i < biHits.length; i += 1) ids.push(biHits[i].id);
         }
-        for (const id of [...likeHits.keys()].sort((a, b) => likeHits.get(b) - likeHits.get(a))) if (!ids.includes(id)) ids.push(id);
         relevant = ids;
       } catch (error) {
         log(`[index] ${convId} 查询失败，改用内存检索：${error?.message ?? error}`);
@@ -188,16 +255,16 @@ export function createMemoryIndex({ dir, DatabaseSync, log = () => {} }) {
   }
   /** 索引是否可用；没建、被删、重建失败都返回 false */
   function isBuilt(convId) {
-    open(convId);
+    openEntry(convId);
     return built.has(convId);
   }
 
   // 关闭所有索引连接
   function close() {
-    for (const db of dbs.values()) { try { db?.close(); } catch {} }
+    for (const entry of dbs.values()) { try { entry?.db?.close(); } catch {} }
     dbs.clear();
     built.clear();
   }
 
-  return { rebuild, search, drop, close, isBuilt };
+  return { rebuild, ensureBuilt, search, drop, close, isBuilt };
 }

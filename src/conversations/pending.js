@@ -177,6 +177,10 @@ export function createPendingQuestions(b) {
 
   // 回答挂起项；返回 true 表示消息已被消费
   async function handlePendingAnswer(p, answerText, key, isOwner = false) {
+    if (p.inFlight) return true;
+    const respondWithTimeout = (payload) => b.withTimeout
+      ? b.withTimeout(b.api.respond(payload), 10_000, '挂起请求回执')
+      : b.api.respond(payload);
     if (p.kind === 'question') {
       // 答案是权威回执，只认 owner；非 owner 不吞消息
       if (!isOwner) return false;
@@ -187,25 +191,31 @@ export function createPendingQuestions(b) {
         if (hit) answers.push({ id: q.id, selected: [hit.label] });
         else answers.push({ id: q.id, selected: [], custom: answerText });
       }
+      p.inFlight = true;
       try {
-        const receipt = await b.api.respond({
+        const receipt = await respondWithTimeout({
           clientId: p.clientId,
           eventId: p.eventId,
           outcome: { kind: 'result', value: { answers } }
         });
         b.log(`已回答提问 (${key}):`, receipt);
-        // 回执成功且仍是同一挂起项才移除
-        if (b.pending.get(key) === p) b.pending.delete(key);
+        // 回执成功且仍是同一挂起项才移除并清理超时器
+        if (b.pending.get(key) === p) {
+          b.clearTimeout(p.timer);
+          b.pending.delete(key);
+        }
       } catch (error) {
         b.log('回答问题失败（保留挂起以便重试）:', error.message);
         await b.sendToQQ(key, '⚠️ 回答提交失败，请再回复一次。');
+      } finally {
+        p.inFlight = false;
       }
-      return;
+      return true;
     }
     if (p.kind === 'approval') {
       if (!isOwner) {
         await b.sendToQQ(key, '审批仅管理员可操作');
-        return;
+        return true;
       }
       const t = answerText.trim().toLowerCase();
       let outcome = null;
@@ -213,24 +223,31 @@ export function createPendingQuestions(b) {
       for (const w of b.REJECT_WORDS) if (t === w) outcome = 'rejected';
       if (!outcome) {
         await b.sendToQQ(key, '请回复「通过」或「拒绝」来决定这个审批');
-        return;
+        return true;
       }
+      p.inFlight = true;
       try {
-        const receipt = await b.api.respond({
+        const receipt = await respondWithTimeout({
           clientId: p.clientId,
           eventId: p.eventId,
           outcome: { kind: 'result', value: outcome }
         });
         b.log(`已处理审批 (${key}): ${outcome}`, receipt);
+        // 回执成功且仍是同一挂起项才移除并清理超时器
+        if (b.pending.get(key) === p) {
+          b.clearTimeout(p.timer);
+          b.pending.delete(key);
+        }
         await b.sendToQQ(key, outcome === 'allowed-once' ? '✅ 已通过审批' : '❌ 已拒绝审批');
-        // 回执成功且仍是同一挂起项才移除
-        if (b.pending.get(key) === p) b.pending.delete(key);
       } catch (error) {
         b.log('处理审批失败（保留挂起以便重试）:', error.message);
         await b.sendToQQ(key, '⚠️ 审批回执提交失败，请再回复一次「通过」或「拒绝」。');
+      } finally {
+        p.inFlight = false;
       }
-      return;
+      return true;
     }
+    return false;
   }
 
   // 登记挂起项，替换旧项并设超时
@@ -251,6 +268,7 @@ export function createPendingQuestions(b) {
         b.sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
       }
     }, b.cfg.questionTimeoutMs);
+    timer?.unref?.();
     entry.timer = timer;
     b.pending.set(key, entry);
   }

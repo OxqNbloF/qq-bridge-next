@@ -34,17 +34,22 @@ export function createToolContextRoutes(b) {
     }
   }
 
-  async function impressionTarget(key, text, state) {
+  async function impressionTarget(key, text, state, { checkVisibility = false } = {}) {
+    const canonical = canonicalV2Key(key) ?? String(key ?? '').trim();
     const target = String(text ?? '').trim();
-    if (/^[1-9]\d{0,15}$/.test(target)) return target;
-    const resolved = b.resolveIdentityAlias({ conv: key, group: key.startsWith('group:') ? key.slice(6) : null, text: target });
+    const visible = (qq) => !checkVisibility || !b.cfg.architecture?.gateV2 || !b.gateDecide || modelMemberVisible(b, canonical, qq);
+    if (/^[1-9]\d{0,15}$/.test(target)) {
+      if (canonical.startsWith('private:') && target !== canonical.slice(8)) return null;
+      return visible(target) ? target : null;
+    }
+    const resolved = b.resolveIdentityAlias({ conv: canonical, group: canonical.startsWith('group:') ? canonical.slice(6) : null, text: target });
     if (resolved?.ambiguous) return null;
-    const hits = Object.entries(state?.memberImpressions ?? {}).filter(([id, item]) => id === target || impressionRef(id) === target || item.displayName === target).map(([id]) => id);
-    if (resolved?.qq) hits.push(resolved.qq);
+    const hits = Object.entries(state?.memberImpressions ?? {}).filter(([id, item]) => visible(id) && (id === target || impressionRef(id) === target || item.displayName === target)).map(([id]) => id);
+    if (resolved?.qq && visible(resolved.qq)) hits.push(resolved.qq);
     const unique = [...new Set(hits)];
     if (unique.length === 1) return unique[0];
     if (!unique.length && MEMBER_REF_RE.test(target)) {
-      return await resolveMemberTarget(b, key, target, { fieldName: 'target', state, allowDisplayName: false }).catch(() => null);
+      return await resolveMemberTarget(b, canonical, target, { fieldName: 'target', state, allowDisplayName: false, checkVisibility }).catch(() => null);
     }
     return null;
   }
@@ -131,7 +136,8 @@ export function createToolContextRoutes(b) {
     }
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/feedback') {
       const body = await rq.readBody();
-      const key = String(body.key ?? '').trim();
+      const rawKey = String(body.key ?? '').trim();
+      const key = canonicalV2Key(rawKey) ?? rawKey;
       const level = body.level === 'warning' || body.level === 'error' ? body.level : 'info';
       const rawMessage = String(body.message ?? '').trim();
       if (!key || !rawMessage) { rq.sendJson({ ok: false, error: 'key 和 message 不能为空' }, 400); return; }
@@ -161,14 +167,16 @@ export function createToolContextRoutes(b) {
       return;
     }
     if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/my-recent') {
-      const key = String(rq.url.searchParams.get('key') ?? '').trim();
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
+      const rawKey = String(rq.url.searchParams.get('key') ?? '').trim();
+      const key = canonicalV2Key(rawKey) ?? rawKey;
       const limit = Math.min(50, Math.max(1, Number(rq.url.searchParams.get('limit')) || 10));
       if (!key) { rq.sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
       if (rq.req.headers['x-agent-token'] && !b.agentTokenOk(key, rq.req.headers['x-agent-token'])) { rq.sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('getMyRecent')) { rq.sendJson({ ok: false, error: '工具未启用：qq_get_my_recent_messages' }, 403); return; }
       const st = b.getSocialV2State(key);
-      const mine = st.recentMessages.filter((m) => m.isSelf).slice(-limit);
+      const mine = st.recentMessages.filter((m) => m.isSelf && (!isAgent || modelMessageVisible(b, key, m))).slice(-limit);
       rq.sendJson({ ok: true, key, messages: mine, readThroughSeq: b.readThroughSeqV2(st) });
       return;
     }
@@ -614,7 +622,8 @@ export function createToolContextRoutes(b) {
       } else if (category === 'pendingThought' && Array.isArray(st.pendingThoughts)) {
         st.pendingThoughts = st.pendingThoughts.filter((t) => String(t?.text ?? '') !== content);
       } else if (category === 'memberImpression' && st.memberImpressions && typeof st.memberImpressions === 'object') {
-        const resolved = await impressionTarget(key, target, st);
+        const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
+        const resolved = await impressionTarget(key, target, st, { checkVisibility: isAgent });
         if (!resolved || !Object.hasOwn(st.memberImpressions, resolved)) { rq.sendJson({ ok: false, error: '找不到唯一的群友印象' }, 404); return; }
         delete st.memberImpressions[resolved];
       }

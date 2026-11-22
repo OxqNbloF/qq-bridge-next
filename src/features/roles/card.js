@@ -38,17 +38,18 @@ export function createRoleCards(b) {
     return '';
   }
 
-  // 生成卡片的告警列表
-  function roleWarnings(content, mode = 'v2') {
+  // 生成卡片的告警列表（可复用已解析的小节与统计，避免重复扫描）
+  function roleWarnings(content, mode = 'v2', precomputed = null) {
     const text = String(content ?? '');
+    const sections = precomputed?.sections ?? parseRoleSections(text);
+    const stats = precomputed?.stats ?? roleCharStats(text, sections);
     const warnings = [];
-    const stats = roleCharStats(text);
     const injected = mode === 'v1' ? stats.v1 : stats.v2;
     if (injected > b.roleInjectMaxChars) {
       warnings.push(`超出注入上限：当前模式实际注入 ${injected} 字符，只有前 ${b.roleInjectMaxChars} 字符会进入提示词（可在配置里调 role.maxInjectChars）`);
     }
     // 只提示未用模式标记分开的小节，避免误报
-    const untagged = parseRoleSections(text)
+    const untagged = sections
       .filter((section) => section.mode === 'all')
       .map((section) => section.lines.join('\n'))
       .join('\n');
@@ -61,14 +62,15 @@ export function createRoleCards(b) {
     return warnings;
   }
 
-  // 汇总所有角色卡的摘要与字数
+  // 汇总所有角色卡的摘要与字数（单次解析小节并复用给统计与告警）
   function roleSummaries() {
     return b.listRoles().map((name) => {
       const file = roleFilePath(name);
       try {
         const stat = fs.statSync(file);
         const content = fs.readFileSync(file, 'utf8');
-        const stats = roleCharStats(content);
+        const sections = parseRoleSections(content);
+        const stats = roleCharStats(content, sections);
         return {
           name,
           bytes: stat.size,
@@ -83,7 +85,7 @@ export function createRoleCards(b) {
           charsV2: stats.v2,
           hasModeTags: stats.v1Only > 0 || stats.v2Only > 0,
           truncated: stats.v1 > b.roleInjectMaxChars || stats.v2 > b.roleInjectMaxChars,
-          warnings: roleWarnings(content).length,
+          warnings: roleWarnings(content, 'v2', { sections, stats }).length,
         };
       } catch {
         return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', injectedV1: 0, injectedV2: 0, charsV1: 0, charsV2: 0, hasModeTags: false, truncated: false, warnings: 0 };

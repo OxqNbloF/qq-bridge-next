@@ -1370,13 +1370,16 @@
           location.pathname + (query.size ? "?" + query : "") + location.hash,
         );
       }
+      // 不把令牌写进 DOM href 属性（防悬停/复制泄露）；点击站内导航时按需附带一次性引导参数
       document.querySelectorAll('a[href^="/"]').forEach((link) => {
-        const token = localStorage.getItem("consoleToken");
-        if (token) {
-          const url = new URL(link.href);
+        link.addEventListener("click", (e) => {
+          const token = localStorage.getItem("consoleToken");
+          if (!token || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          const url = new URL(link.getAttribute("href"), location.origin);
           url.searchParams.set("token", token);
-          link.href = url.href;
-        }
+          location.href = url.href;
+        });
       });
       async function api(path, body) {
         const token = localStorage.getItem("consoleToken");
@@ -1418,12 +1421,16 @@
               : e.currentTarget;
           if (control.disabled) return;
           control.disabled = true;
+          let keepDisabled = false;
           try {
-            await fn(e);
+            const result = await fn(e);
+            if (result === "keep-disabled") keepDisabled = true;
           } catch (error) {
             notify(error.message, true);
           } finally {
-            control.disabled = false;
+            if (!keepDisabled && !(id === "pause" && paused === null)) {
+              control.disabled = false;
+            }
           }
         });
       }
@@ -1527,8 +1534,8 @@
         if (el.dataset.policy) {
           $("overrideKey").value = el.dataset.policy;
           const s = sessions.find((s) => s.key === el.dataset.policy);
-          $("overrideMode").value = s.mode || status?.mode || "chat";
-          $("overridePreset").value = s.preset || "";
+          $("overrideMode").value = s?.mode || status?.mode || "chat";
+          $("overridePreset").value = s?.preset || "";
           $("overrideKey").focus();
         }
       });
@@ -2005,8 +2012,14 @@
         parameterGroup = el.dataset.group;
         renderParameters();
       });
+      let lastParameterSearch = "";
       $("parameterSearch").addEventListener("change", () => {
-        if (discardParameters()) renderParameters();
+        if (discardParameters()) {
+          lastParameterSearch = $("parameterSearch").value;
+          renderParameters();
+        } else {
+          $("parameterSearch").value = lastParameterSearch;
+        }
       });
       $("parameterFields").addEventListener("input", () => {
         parameterDirty = true;
@@ -2283,9 +2296,9 @@
             revision: deployment.revision,
             apply: true,
           });
-          deployment = null;
+          await loadSettings();
           notify(
-            "配置已校验、备份并保存，重启 Bridge 后生效；再次编辑请重新进入此页面",
+            "配置已校验、备份并保存，重启 Bridge 后生效",
           );
         },
         "submit",
@@ -2302,7 +2315,7 @@
       });
       refresh().catch((error) => notify(error.message, true));
       let refreshing = false;
-      setInterval(async () => {
+      async function pollStudio() {
         if (document.hidden || refreshing) return;
         refreshing = true;
         try {
@@ -2312,7 +2325,11 @@
         } finally {
           refreshing = false;
         }
-      }, 10000);
+      }
+      setInterval(() => { void pollStudio(); }, 10000);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) void pollStudio();
+      });
     </script>
   </body>
 </html>

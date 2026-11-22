@@ -14,7 +14,8 @@ export function synchronizePreset(name, target, {knownPresetName, sourceFor, ren
   if (!knownPresetName(name)) throw new Error('Unknown preset');
   if (!fs.existsSync(target)) return {synced: false, changed: false};
   const content = target.endsWith('.patch.yml') ? renderPatch(name) : fs.readFileSync(sourceFor(name), 'utf8');
-  const changed = fs.readFileSync(target, 'utf8') !== content;
+  const norm = (s) => String(s).replace(/\r\n/g, '\n');
+  const changed = norm(fs.readFileSync(target, 'utf8')) !== norm(content);
   if (changed) writeText(target, content);
   return {synced: true, changed};
 }

@@ -9,8 +9,13 @@ cd "$ROOT"
 node scripts/harden-state-acl.mjs --quiet || true
 
 child=""
+sleep_pid=""
 on_stop() {
   trap - INT TERM
+  if [ -n "$sleep_pid" ]; then
+    kill "$sleep_pid" 2>/dev/null || true
+    sleep_pid=""
+  fi
   if [ -n "$child" ]; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -19,7 +24,9 @@ on_stop() {
 }
 trap on_stop INT TERM
 
+delay=5
 while :; do
+  started_at=$(date +%s)
   node "$ROOT/src/bridge.js" &
   child=$!
   wait "$child"
@@ -29,6 +36,17 @@ while :; do
     echo "[$(date '+%F %T')] bridge already running in another window. Exiting."
     exit 2
   fi
-  echo "[$(date '+%F %T')] bridge exited (code $code), restarting in 5 seconds..."
-  sleep 5 || true
+  ran_for=$(( $(date +%s) - started_at ))
+  if [ "$ran_for" -ge 60 ]; then
+    delay=5
+  fi
+  echo "[$(date '+%F %T')] bridge exited (code $code, uptime ${ran_for}s), restarting in ${delay} seconds..."
+  sleep "$delay" &
+  sleep_pid=$!
+  wait "$sleep_pid" 2>/dev/null || true
+  sleep_pid=""
+  if [ "$ran_for" -lt 60 ]; then
+    delay=$(( delay * 2 ))
+    if [ "$delay" -gt 60 ]; then delay=60; fi
+  fi
 done

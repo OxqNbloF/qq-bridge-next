@@ -53,6 +53,14 @@ export function readOneBotHttpTokens(homeDir) {
     .map((a) => ({ token: a.http.token, uin: a.uin, host: a.http.host, port: a.http.port, file: a.file }));
 }
 
+// 把自动发现的监听地址规范为可连接的本机 URL（0.0.0.0/:: -> 127.0.0.1，IPv6 加方括号）
+function formatLocalEndpoint(scheme, host, port) {
+  let h = String(host ?? '').trim().replace(/^\[|\]$/g, '');
+  if (!h || h === '0.0.0.0' || h === '::') h = '127.0.0.1';
+  const bracketed = h.includes(':') ? `[${h}]` : h;
+  return `${scheme}://${bracketed}:${port}`;
+}
+
 /** 试一次 get_login_info，成功返回 data，失败 null */
 async function probe(baseUrl, token, timeoutMs) {
   try {
@@ -63,9 +71,13 @@ async function probe(baseUrl, token, timeoutMs) {
         ...(token ? { authorization: `Bearer ${token}` } : {})
       },
       body: '{}',
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs)
     });
-    if (!res.ok) return { ok: false, status: res.status };
+    if (!res.ok) {
+      try { await res.body?.cancel(); } catch {}
+      return { ok: false, status: res.status };
+    }
     const body = await res.json().catch(() => ({}));
     if (body.status !== 'ok' || body.retcode !== 0) return { ok: false, status: res.status, retcode: body.retcode, wording: body.wording };
     return { ok: true, data: body.data };
@@ -105,8 +117,8 @@ export async function discoverSnowLumaConnection({
   const wsInfo = new Map();   // uin -> { token, url }
   for (const home of homes) {
     for (const entry of readOneBotTokens(home)) {
-      if (entry.http) add(entry.http.token, `onebot_${entry.uin}.json`, `http://${entry.http.host}:${entry.http.port}`);
-      if (entry.ws?.token) wsInfo.set(entry.uin, { token: entry.ws.token, url: `ws://${entry.ws.host}:${entry.ws.port}` });
+      if (entry.http) add(entry.http.token, `onebot_${entry.uin}.json`, formatLocalEndpoint('http', entry.http.host, entry.http.port));
+      if (entry.ws?.token) wsInfo.set(entry.uin, { token: entry.ws.token, url: formatLocalEndpoint('ws', entry.ws.host, entry.ws.port) });
     }
   }
   if (!explicit && candidates.length === 0) add('', 'no-token', base);
@@ -173,8 +185,16 @@ export function persistSnowLumaEndpoint(cfgPath, { accessToken, wsUrl, httpUrl }
   consider('httpUrl', httpUrl);
   if (Object.keys(changed).length === 0) return { updated: false, changed: {} };
   cfg.snowluma = next;
-  // 回写时保留原 BOM，不做额外字节改动
+  // 回写时保留原 BOM，使用原子写防崩溃损坏
   const serialized = JSON.stringify(cfg, null, 2) + '\n';
-  fs.writeFileSync(cfgPath, hadBom ? `\uFEFF${serialized}` : serialized, 'utf8');
+  const payload = hadBom ? `\uFEFF${serialized}` : serialized;
+  const tmp = `${cfgPath}.${process.pid}.${Math.random().toString(16).slice(2, 8)}.tmp`;
+  try {
+    fs.writeFileSync(tmp, payload, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, cfgPath);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw error;
+  }
   return { updated: true, changed };
 }

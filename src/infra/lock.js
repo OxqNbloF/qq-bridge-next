@@ -20,8 +20,11 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
     try {
       const cfg = readJsonSafe(configFile, {});
       const port = Number(cfg?.consolePort) || 3100;
-      const out = execFileSync('sh', ['-c', 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
-      return new RegExp(`[:.]${port}\\s`).test(out);
+      const cmd = proc.platform === 'darwin'
+        ? `lsof -nP -iTCP:${port} -sTCP:LISTEN 2>/dev/null || netstat -anp tcp 2>/dev/null | grep LISTEN || true`
+        : 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true';
+      const out = execFileSync('sh', ['-c', cmd], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+      return new RegExp(`[:.]${port}(?:\\s|$)`).test(out);
     } catch {
       // 查不出来就当作已有人在跑，免得开两份
       return true;
@@ -44,8 +47,10 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
     if (tryCreate()) return;
     // 锁已存在：PID 不存活或内容为空视为过期，删后重试一次
     let stale = false;
+    let observedContent = null;
     try {
       const content = fs.readFileSync(lockFile, 'utf8').trim();
+      observedContent = content;
       if (!content) {
         stale = true;
       } else {
@@ -81,7 +86,18 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
     }
     if (stale) {
       printError(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);
-      try { fs.unlinkSync(lockFile); } catch {}
+      try {
+        // 二次核对内容未被其他刚启动的进程替换，避免误删并发新锁
+        if (fs.readFileSync(lockFile, 'utf8').trim() === observedContent) {
+          const staleCopy = `${lockFile}.stale.${proc.pid}.${Date.now()}`;
+          try {
+            fs.renameSync(lockFile, staleCopy);
+            try { fs.unlinkSync(staleCopy); } catch {}
+          } catch {
+            try { fs.unlinkSync(lockFile); } catch {}
+          }
+        }
+      } catch {}
       if (tryCreate()) return;
     }
     printError(`[bridge] 已有实例在运行（锁文件 ${lockFile}）。若确认其已死，删除该文件后重试。`);

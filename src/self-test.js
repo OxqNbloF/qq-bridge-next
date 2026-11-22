@@ -9,37 +9,51 @@ import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } fr
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-// 记下自测用的连接和会话，结束时好清理
+// 记下自测用的连接、会话和临时目录，结束或中断时好清理
 let selfTestApi = null;
 let selfTestSessionId = null;
+let selfTestTmpDir = null;
 
 /**
- * 把自测用的会话归档掉，别留在用户的 DSH 里。
+ * 把自测用的会话归档并清理临时目录，别留在用户的 DSH 里。
  */
 async function cleanupSelfTestSession() {
-  if (!selfTestApi || !selfTestSessionId) return;
-  const sid = selfTestSessionId;
-  selfTestSessionId = null;
-  try {
-    await selfTestApi.workspace.archiveSession({ sessionId: sid });
-    console.log('🧹 已归档自测会话:', sid);
-  } catch (error) {
-    console.log('⚠️ 自测会话归档失败（可在 DSH 里手动删除）:', sid, error?.message ?? error);
+  if (selfTestApi && selfTestSessionId) {
+    const sid = selfTestSessionId;
+    selfTestSessionId = null;
+    try {
+      await selfTestApi.workspace.archiveSession({ sessionId: sid });
+      console.log('🧹 已归档自测会话:', sid);
+    } catch (error) {
+      console.log('⚠️ 自测会话归档失败（可在 DSH 里手动删除）:', sid, error?.message ?? error);
+    }
   }
+  if (selfTestTmpDir) {
+    const dir = selfTestTmpDir;
+    selfTestTmpDir = null;
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    void cleanupSelfTestSession().finally(() => process.exit(130));
+  });
 }
 
 // 跑一遍自测：连 DSH、发一句话、等回复
 async function main() {
-  const baseUrl = process.argv[2] ?? 'http://127.0.0.1:3080';
+  let cfg = null;
   let auth;
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+    cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8').replace(/^\uFEFF/, ''));
     auth = {
       token: cfg.dsh?.authToken || discoverDshLaunchToken(),
       header: cfg.dsh?.authHeader,
       prefix: cfg.dsh?.authPrefix
     };
   } catch {}
+  const baseUrl = process.argv[2] ?? cfg?.dsh?.baseUrl ?? 'http://127.0.0.1:3080';
   const api = new NodeApiClient(baseUrl, undefined, auth);
   selfTestApi = api;
   const promptText = process.argv[3] ?? '只回复两个字：收到';
@@ -47,10 +61,9 @@ async function main() {
   const desc = unwrap(await api.settings.describe({}), 'settings.describe');
   console.log('✅ DSH 连接成功:', JSON.stringify(desc).slice(0, 200));
 
-  // 测试会话放在系统临时目录，不放进仓库的 state 目录
-  // 那个目录权限收得紧，自测在里面建目录会被拒绝
-  const cwd = path.join(os.tmpdir(), 'qq-bridge-self-test');
-  fs.mkdirSync(cwd, { recursive: true });
+  // 测试会话放在独立临时目录，不放进仓库的 state 目录
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-bridge-self-test-'));
+  selfTestTmpDir = cwd;
   const created = unwrap(await api.sessions.create({ cwd }), 'session.create');
   const sessionId = created.sessionId;
   selfTestSessionId = sessionId;

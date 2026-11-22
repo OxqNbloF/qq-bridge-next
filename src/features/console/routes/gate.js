@@ -109,7 +109,8 @@ export function createConsoleGateRoutes(b) {
         ['qq', ...FLAG_KEYS, 'aliases', 'note'].join(','),
         ...data.entries.map((entry) => [entry.qq, ...FLAG_KEYS.map((key) => entry.flags?.[key] === true), (entry.aliases ?? []).join('|'), entry.note ?? ''].map(cell).join(',')),
       ].join('\r\n');
-      rq.res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${group}.csv"`, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' });
+      const safeFilename = `${group.replace(':', '-')}.csv`;
+      rq.res.writeHead(200, { ...(rq.SECURITY_HEADERS ?? {}), 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${safeFilename}"`, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' });
       rq.res.end(csv);
       return;
     }

@@ -15,10 +15,10 @@ export function createInboundFilter(b) {
     const senderName = envelope.sender.displayName;
     const { text: textContent, plain: plainContent, media: mediaList, id: messageRef } = envelope;
     const mentionsSelf = envelope.mentions.some((mention) => String(mention.qq) === String(event.self_id ?? ''));
-    cacheIncomingMedia(envelope, key);
     // 引用机器人自己视为对 AI 说；须在空文本过滤前判断
     const quoteTargetIsSelf = await b.isQuoteTargetSelf(event.message ?? [], kind, id, event.self_id);
     if (!b.isSessionAllowedInCurrentMode(key)) return;
+    cacheIncomingMedia(envelope, key);
     // 存档要在丢掉空文字消息之前，纯图片消息也要记
     if (!recordIncoming(envelope, flags)) return;
     if (!plainContent && !quoteTargetIsSelf) return;

@@ -21,7 +21,10 @@ export function createTimerRegistry({ setTimeout, clearTimeout, now = Date.now }
       timers.delete(key);
       run();
     };
-    tick();
+    // 禁止在 at() 内同步执行 run()，避免 drain() 重入丢失定时器或外层覆盖句柄
+    const initial = Math.max(0, until - now());
+    item.handle = setTimeout(tick, Math.min(100009, initial));
+    item.handle?.unref?.();
     return { cancel: () => { if (timers.get(key) === item) cancel(key); }, unref() {} };
   }
   function clear(prefix = '') { for (const key of timers.keys()) if (key.startsWith(prefix)) cancel(key); }

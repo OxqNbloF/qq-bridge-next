@@ -135,13 +135,25 @@ export function beijingParts(atMs) {
   };
 }
 
+const HOLIDAY_SET_CACHE = new WeakMap();
+function holidaySetOf(holidays) {
+  if (holidays instanceof Set) return holidays;
+  if (!Array.isArray(holidays)) return new Set();
+  let cached = HOLIDAY_SET_CACHE.get(holidays);
+  if (!cached) {
+    cached = new Set(holidays);
+    HOLIDAY_SET_CACHE.set(holidays, cached);
+  }
+  return cached;
+}
+
 /** 判断某一时刻是否在高峰时段 */
 export function isPeakAt(atMs, table = DEFAULT_PRICE_TABLE) {
   const ms = Number(atMs);
   if (!Number.isFinite(ms)) return false;
   const { weekday, hour, date } = beijingParts(ms);
   if (!table.peakWeekdays.includes(weekday)) return false;
-  const holidays = table.holidays instanceof Set ? table.holidays : new Set(table.holidays ?? []);
+  const holidays = holidaySetOf(table.holidays);
   if (holidays.has(date)) return false;
   return (table.peakWindows ?? []).some(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && hour >= start && hour < end);
 }

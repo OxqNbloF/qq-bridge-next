@@ -29,6 +29,7 @@ export function createSocialLoopV1(b) {
       }
       b.deliverPrompt(key, promptText, { farewell, media: media ?? [] }).catch((error) => b.log(`社交投递异常 ${key}: ${error?.message ?? error}`));
     }, delay);
+    timer?.unref?.();
     const timers = b.social.pendingTimers.get(key) ?? new Set();
     timers.add(timer);
     b.social.pendingTimers.set(key, timers);
@@ -190,8 +191,10 @@ export function createSocialLoopV1(b) {
     const targets = key ? (b.social.pendingSummaries.has(key) ? [[key, b.social.pendingSummaries.get(key)]] : []) : [...b.social.pendingSummaries.entries()];
     for (const [k, entry] of targets) {
       if (!entry.items.length) continue;
-      const visible = entry.items.filter(message => modelMessageVisible(b, k, message));
-      if (!visible.length) { entry.items = []; continue; }
+      const flushedCount = entry.items.length;
+      const snapshot = entry.items.slice(0, flushedCount);
+      const visible = snapshot.filter(message => modelMessageVisible(b, k, message));
+      if (!visible.length) { entry.items.splice(0, flushedCount); continue; }
       rememberModelSources(b, k, visible);
       const lines = visible.map((m) => `${m.isOwner ? '【管理员】' : ''}${b.sanitizeUntrustedText(m.sender)}：${b.sanitizeUntrustedText(m.text)}${b.mediaHintFor(k, m.messageId, m.media)}`).join('\n');
       const summaryMedia = visible.flatMap((m) => Array.isArray(m.media) ? m.media : []);
@@ -200,8 +203,8 @@ export function createSocialLoopV1(b) {
       try {
         const result = await b.deliverPrompt(k, summaryText, { silent: true, media: summaryMedia });
         if (result.ok) {
-          b.log(`已投喂群聊摘要 (${k}) ${entry.items.length} 条`);
-          entry.items = [];
+          b.log(`已投喂群聊摘要 (${k}) ${flushedCount} 条`);
+          entry.items.splice(0, flushedCount);
         } else {
           b.log(`摘要投喂被拒 (${k}): ${result.error || '未知错误'}`);
         }

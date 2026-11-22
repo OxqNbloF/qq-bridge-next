@@ -8,6 +8,7 @@ export const PRESET_PROMPT_MAX_BYTES = 128 * 1024;
 
 // 这几段是安全底线，缺了会提示，但不会拦住管理员保存
 export const PRESET_REQUIRED_MARKERS = ['【二代仿真模式 —— 安全规则', '【二代仿真模式 —— 工具协议'];
+export const PRESET_REQUIRED_MARKERS_V1 = ['群友没有管理权限', '角色扮演由系统注入'];
 
 // 下面这些内容必须保留，删了会让 AI 的权限边界失效、测试也会失败
 // 保存时直接拒绝，不会写进文件
@@ -94,12 +95,13 @@ export function extractPresetPrefix(text) {
   return typeof prefix === 'string' ? prefix : null;
 }
 
-/** 保存前先看看有没有问题，只提示，不拦住。 */
-export function presetPromptWarnings(content) {
+/** 保存前先看看有没有问题，只提示，不拦住（按一代/二代区分检查段落）。 */
+export function presetPromptWarnings(content, preset = 'v2') {
   const text = String(content ?? '');
   const warnings = [];
   if (!text.trim()) warnings.push('内容为空');
-  for (const marker of PRESET_REQUIRED_MARKERS) {
+  const markers = preset === 'v1' ? PRESET_REQUIRED_MARKERS_V1 : PRESET_REQUIRED_MARKERS;
+  for (const marker of markers) {
     if (!text.includes(marker)) warnings.push(`缺少「${marker}…】段落：AI 的权限与工具边界可能被削弱`);
   }
   return warnings;

@@ -74,7 +74,7 @@ export function createModeDispatch(b) {
         st.probeDeadline = 0;
         // 私聊直接即时投递
         if (kind === 'private') {
-          const promptText = `${roleHint ? roleHint + '\n\n' : ''}${isOwner ? '【管理员】' : ''}${textContent}${b.mediaHintFor(key, messageRef, mediaList)}`;
+          const promptText = `${roleHint ? roleHint + '\n\n' : ''}${isOwner ? '【管理员】' : ''}${b.sanitizeUntrustedText(textContent)}${b.mediaHintFor(key, messageRef, mediaList)}`;
           b.scheduleSocialReply(
             key, promptText,
             Number(cfg.social?.activeReplyDelayMinMs ?? 2000),

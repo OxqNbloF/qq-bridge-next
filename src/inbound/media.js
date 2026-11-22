@@ -1,6 +1,7 @@
 // 图片/表情的定位、抓取、检查和统一处理
 import fs from 'node:fs';
 import path from 'node:path';
+import { sniffImage } from '../media-normalize.js';
 
 /**
  * 创建入站媒体模块
@@ -21,9 +22,11 @@ export function createInboundMedia({
   cfg, log, getBot, getMode, getSocialV2, getSocialV2State, getMessageMediaStore,
   safeFetchBuffer, looksLikeImageBuffer, normalizeImageForModel, env,
 }) {
-  // 按文件头魔数判断图片 MIME
+  // 按文件头魔数判断图片 MIME（复用 media-normalize.js 的 sniffImage 单一解析实现）
   function mimeFromBuffer(buf) {
     if (!buf || buf.length < 12) return 'image/jpeg';
+    const info = sniffImage(buf);
+    if (info?.format) return `image/${info.format === 'jpeg' ? 'jpeg' : info.format}`;
     if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
     if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
     if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') return 'image/gif';
@@ -43,53 +46,15 @@ export function createInboundMedia({
     return fallback;
   }
 
-  // 读出图片宽高，用来限制超大图
+  // 读出图片宽高，用来限制超大图（复用 media-normalize.js 的 sniffImage）
   function getImageDimensions(buf) {
-    if (!buf || buf.length < 24) return null;
+    if (!buf || buf.length < 12) return null;
     try {
-      if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
-        return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-      }
-      if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') {
-        return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
-      }
-      if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-        let offset = 2;
-        while (offset + 9 < buf.length) {
-          if (buf[offset] !== 0xff) { offset += 1; continue; }
-          const marker = buf[offset + 1];
-          if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) { offset += 2; continue; }
-          const len = buf.readUInt16BE(offset + 2);
-          if (len < 2) return null;
-          // SOF0-SOF15（排除 DHT C4、JPG C8、DAC CC）
-          if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-            return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) };
-          }
-          offset += 2 + len;
-        }
-      }
-      // WebP 三种格式都读宽高，防止绕过像素上限
-      if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
-        const fourcc = buf.toString('ascii', 12, 16);
-        if (fourcc === 'VP8X' && buf.length >= 30) {
-          const width = 1 + buf[24] + (buf[25] << 8) + (buf[26] << 16);
-          const height = 1 + buf[27] + (buf[28] << 8) + (buf[29] << 16);
-          return { width, height };
-        }
-        if (fourcc === 'VP8L' && buf.length >= 25) {
-          const bits = [buf[21], buf[22], buf[23], buf[24]];
-          const width = 1 + (((bits[1] & 0x3f) << 8) | bits[0]);
-          const height = 1 + (((bits[3] & 0x0f) << 10) | (bits[2] << 2) | ((bits[1] & 0xc0) >> 6));
-          return { width, height };
-        }
-        if (fourcc === 'VP8 ' && buf.length >= 30) {
-          const width = buf.readUInt16LE(26) & 0x3fff;
-          const height = buf.readUInt16LE(28) & 0x3fff;
-          return { width, height };
-        }
-      }
-    } catch {}
-    return null;
+      const info = sniffImage(buf);
+      return info ? { width: info.width, height: info.height } : null;
+    } catch {
+      return null;
+    }
   }
 
   // 从 base64://、data URL 或裸串取出纯 base64
@@ -317,53 +282,88 @@ export function createInboundMedia({
     return { text: fallbackText };
   }
 
-  // 把媒体列表转成模型可用的文本与图片片段
-  async function resolveMediaList(mediaList) {
-    const parts = [];
+  // 共享媒体抓取与预算收敛逻辑，供 resolveMediaList 和 fetchMediaData 复用
+  async function prepareMediaEntries(mediaList) {
+    const entries = [];
     let index = 0;
     let totalBytes = 0;
     for (const media of Array.isArray(mediaList) ? mediaList : []) {
       index += 1;
+      const kind = media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : 'image');
       if (index > MAX_MEDIA_COUNT) {
-        parts.push({ type: 'text', text: `[图片/表情 ${index}（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）]` });
+        entries.push({ status: 'over-count', index, kind, media });
         continue;
       }
       if (!media || typeof media !== 'object') continue;
-      if (media.kind === 'face') {
+      if (kind === 'face') {
         const face = await fetchFaceMedia(media);
         const prep = face.buffer ? await toModelMedia(face.buffer, face.mimeType, `表情#${media.faceId ?? index}`) : null;
         if (prep?.ok) {
           if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
-            parts.push({ type: 'text', text: `[表情${index}（图片总大小超限，已跳过）]` });
+            entries.push({ status: 'over-bytes', index, kind, media, face });
             continue;
           }
           totalBytes += prep.buffer.length;
+          entries.push({ status: 'ok', index, kind, media, face, prep });
+        } else if (prep && !prep.ok) {
+          entries.push({ status: 'norm-failed', index, kind, media, face, error: prep.error });
+        } else {
+          entries.push({ status: 'text-only', index, kind, media, face });
+        }
+      } else {
+        const img = await fetchOneBotImage(media);
+        const noun = kind === 'sticker' ? '表情' : '图片';
+        const summary = kind === 'sticker' && media.summary ? `:${String(media.summary).slice(0, 20)}` : '';
+        const label = kind === 'sticker' ? (summary ? `[表情${summary}]` : `[表情${index}]`) : `[图片${index}]`;
+        const prep = img?.buffer ? await toModelMedia(img.buffer, img.mimeType, `${noun}${index}`) : null;
+        if (prep?.ok) {
+          if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
+            entries.push({ status: 'over-bytes', index, kind, media, noun, label });
+            continue;
+          }
+          totalBytes += prep.buffer.length;
+          entries.push({ status: 'ok', index, kind, media, noun, label, prep });
+        } else if (prep && !prep.ok) {
+          entries.push({ status: 'norm-failed', index, kind, media, noun, label, error: prep.error });
+        } else {
+          entries.push({ status: 'fetch-failed', index, kind, media, noun, label });
+        }
+      }
+    }
+    return entries;
+  }
+
+  // 把媒体列表转成模型可用的文本与图片片段
+  async function resolveMediaList(mediaList) {
+    const parts = [];
+    for (const item of await prepareMediaEntries(mediaList)) {
+      const { status, index, kind, media, face, prep, label, error } = item;
+      if (status === 'over-count') {
+        parts.push({ type: 'text', text: `[图片/表情 ${index}（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）]` });
+        continue;
+      }
+      if (kind === 'face') {
+        if (status === 'ok') {
           if (face.text) parts.push({ type: 'text', text: face.text });
           if (prep.note) parts.push({ type: 'text', text: `（${prep.note}）` });
           parts.push({ type: 'image', mediaType: prep.mimeType, data: prep.buffer.toString('base64'), name: `face-${media.faceId}.${(prep.mimeType || 'png').split('/')[1]}` });
-        } else if (prep && !prep.ok) {
-          // 压不动时写明原因
-          parts.push({ type: 'text', text: `[表情${index}（${prep.error}）]` });
+        } else if (status === 'over-bytes') {
+          parts.push({ type: 'text', text: `[表情${index}（图片总大小超限，已跳过）]` });
+        } else if (status === 'norm-failed') {
+          parts.push({ type: 'text', text: `[表情${index}（${error}）]` });
         } else {
           parts.push({ type: 'text', text: face.text || `[表情#${media.faceId}]` });
         }
       } else {
-        const img = await fetchOneBotImage(media);
-        const sticker = media.kind === 'sticker';
-        const summary = sticker && media.summary ? `:${String(media.summary).slice(0, 20)}` : '';
-        const label = sticker ? (summary ? `[表情${summary}]` : `[表情${index}]`) : `[图片${index}]`;
-        const prep = img?.buffer ? await toModelMedia(img.buffer, img.mimeType, `${label}`) : null;
-        if (prep?.ok) {
-          if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
-            parts.push({ type: 'text', text: `${label}（图片总大小超限，已跳过）` });
-            continue;
-          }
-          totalBytes += prep.buffer.length;
+        const sticker = kind === 'sticker';
+        if (status === 'ok') {
           parts.push({ type: 'text', text: label });
           if (prep.note) parts.push({ type: 'text', text: `（${prep.note}）` });
           parts.push({ type: 'image', mediaType: prep.mimeType, data: prep.buffer.toString('base64'), name: `qq-${sticker ? 'sticker' : 'image'}-${index}.${(prep.mimeType || 'image/jpeg').split('/')[1]}` });
-        } else if (prep && !prep.ok) {
-          parts.push({ type: 'text', text: `${label}（${prep.error}）` });
+        } else if (status === 'over-bytes') {
+          parts.push({ type: 'text', text: `${label}（图片总大小超限，已跳过）` });
+        } else if (status === 'norm-failed') {
+          parts.push({ type: 'text', text: `${label}（${error}）` });
         } else {
           parts.push({ type: 'text', text: `${label}（获取失败）` });
         }
@@ -375,65 +375,48 @@ export function createInboundMedia({
   // 抓媒体列表的原始数据，受数量和总字节限制
   async function fetchMediaData(mediaList) {
     const out = [];
-    let index = 0;
-    let totalBytes = 0;
-    for (const media of Array.isArray(mediaList) ? mediaList : []) {
-      index += 1;
-      if (index > MAX_MEDIA_COUNT) {
-        out.push({ index, kind: media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : 'image'), text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
+    for (const item of await prepareMediaEntries(mediaList)) {
+      const { status, index, kind, media, face, prep, noun, error } = item;
+      if (status === 'over-count') {
+        out.push({ index, kind, text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
         continue;
       }
-      if (!media || typeof media !== 'object') continue;
-      if (media.kind === 'face') {
-        const face = await fetchFaceMedia(media);
-        const prep = face.buffer ? await toModelMedia(face.buffer, face.mimeType, `表情#${media.faceId ?? index}`) : null;
-        if (prep?.ok) {
-          if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
-            out.push({ index, kind: 'face', faceId: media.faceId ? String(media.faceId) : undefined, text: '（图片总大小超限，已跳过）' });
-            continue;
-          }
-          totalBytes += prep.buffer.length;
+      if (kind === 'face') {
+        const faceId = media.faceId ? String(media.faceId) : undefined;
+        if (status === 'ok') {
           out.push({
-            index,
-            kind: 'face',
-            faceId: media.faceId ? String(media.faceId) : undefined,
+            index, kind: 'face', faceId,
             mimeType: prep.mimeType,
             data: prep.buffer.toString('base64'),
             text: [face.text || '', prep.note ? `（${prep.note}）` : ''].filter(Boolean).join(' ')
           });
-        } else if (prep && !prep.ok) {
-          out.push({ index, kind: 'face', faceId: media.faceId ? String(media.faceId) : undefined, text: `（获取失败：${prep.error}）` });
+        } else if (status === 'over-bytes') {
+          out.push({ index, kind: 'face', faceId, text: '（图片总大小超限，已跳过）' });
+        } else if (status === 'norm-failed') {
+          out.push({ index, kind: 'face', faceId, text: `（获取失败：${error}）` });
         } else {
-          out.push({ index, kind: 'face', faceId: media.faceId ? String(media.faceId) : undefined, text: face.text || `[表情#${media.faceId}]` });
+          out.push({ index, kind: 'face', faceId, text: face.text || `[表情#${media.faceId}]` });
         }
       } else {
-        const img = await fetchOneBotImage(media);
-        const kind = media.kind === 'sticker' ? 'sticker' : 'image';
-        const noun = kind === 'sticker' ? '表情' : '图片';
         const base = {
-          index,
-          kind,
+          index, kind,
           ...(media.file ? { file: String(media.file) } : {}),
           ...(media.url ? { url: String(media.url) } : {}),
           ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
           ...(media.summary ? { summary: String(media.summary) } : {}),
           ...(media.subType ? { subType: String(media.subType) } : {})
         };
-        const prep = img?.buffer ? await toModelMedia(img.buffer, img.mimeType, `${noun}${index}`) : null;
-        if (prep?.ok) {
-          if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
-            out.push({ ...base, text: `（${noun}总大小超限，已跳过）` });
-            continue;
-          }
-          totalBytes += prep.buffer.length;
+        if (status === 'ok') {
           out.push({
             ...base,
             mimeType: prep.mimeType,
             data: prep.buffer.toString('base64'),
             text: prep.note ? `（${prep.note}）` : ''
           });
-        } else if (prep && !prep.ok) {
-          out.push({ ...base, text: `（${noun}获取失败：${prep.error}）` });
+        } else if (status === 'over-bytes') {
+          out.push({ ...base, text: `（${noun}总大小超限，已跳过）` });
+        } else if (status === 'norm-failed') {
+          out.push({ ...base, text: `（${noun}获取失败：${error}）` });
         } else {
           out.push({ ...base, text: `（${noun}获取失败）` });
         }

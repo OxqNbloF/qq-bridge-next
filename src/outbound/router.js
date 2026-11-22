@@ -1,4 +1,5 @@
 import { escapeCqText } from '../policy/audit.js';
+import { canonicalV2Key } from '../policy/access.js';
 import { assertOutboundPolicy, assertOutboundMode } from './policy.js';
 import { prepareOutboundItems, validateOutboundReferences, outboundError } from './validation.js';
 import { createOutboundRate } from './rate.js';
@@ -6,7 +7,8 @@ import { createOutboundRate } from './rate.js';
 // batch: SendIntent overrides sharing one FIFO slot and full-payload audit.
 export function createOutbound(b) {
   const sendTimes = new Map();
-  function enqueueOutbound(key, intent) {
+  function enqueueOutbound(rawKey, intent) {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
     const assertSendAllowed = intent.assertSendAllowed ?? b.captureSendGuard(key, { ai: intent.ai, explicitAllow: intent.explicitAllow });
     const epoch = b.conversationEpoch?.(key);
     const audit = { key, session: b.state.sessions[key] ?? null, turn: b.turnEngine?.activeRequest(key)?.turnId ?? null,
@@ -52,7 +54,7 @@ export function createOutbound(b) {
         if (failures.length) throw Object.assign(new Error(`QQ 发送失败 ${failures.length}/${items.length} 条：${failures[0]?.message ?? '未知错误'}`), { sent, statusCode: failures[0]?.statusCode });
         return intent.batch ? { sent, results, quoted } : results[0];
       } catch (error) {
-        b.lastSendFailed.set(key, true);
+        if (epoch === b.conversationEpoch?.(key)) b.lastSendFailed.set(key, true);
         b.log('[outbound]', JSON.stringify({ ...audit, result: 'failed', error: b.redactSensitiveText(b.redactKnownTokensOnly(String(error?.message ?? error))) }));
         error.sent ??= sent;
         throw error;
@@ -79,7 +81,8 @@ export function createOutbound(b) {
   }
   return {
     enqueueOutbound,
-    resetOutbound: (key) => {
+    resetOutbound: (rawKey) => {
+      const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
       const list = sendTimes.get(key);
       if (list) list.length = 0;
       sendTimes.delete(key);

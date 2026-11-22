@@ -24,6 +24,7 @@ export function createOneBotHttp({ cfg, fetch: doFetch, log, hasKnownTokenFragme
       method: 'POST',
       headers: headers(),
       body: JSON.stringify(params ?? {}),
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs)
     });
     const body = await res.json().catch(() => ({}));
@@ -55,19 +56,11 @@ export function createOneBotHttp({ cfg, fetch: doFetch, log, hasKnownTokenFragme
       throw new Error('发送内容包含会话令牌，已阻止发送');
     }
     segments.push({ type: 'text', data: { text: escapeCqText(rawMessage) } });
+    const numId = Number(id);
+    if (!Number.isSafeInteger(numId) || numId <= 0) throw new Error(`无效的目标编号: ${id}`);
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
-    const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
-    const res = await doFetch(`${httpBase()}/${action}`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout(15000)
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
-      const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址）' : '';
-      throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}${hint}`);
-    }
+    const params = kind === 'private' ? { user_id: numId, message: segments } : { group_id: numId, message: segments };
+    const body = await onebotHttpAction(action, params, { timeoutMs: 15000 });
     onSent(kind, id, rawMessage, body.data, {
       replyTo: segments.find((seg) => seg.type === 'reply')?.data?.id ?? null,
     });

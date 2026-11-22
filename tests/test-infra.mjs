@@ -459,9 +459,9 @@ await test('tool-defaults: every MCP registration flag has a bridge default (sin
   const block = source.slice(source.indexOf('const TOOL_CONFIG_FLAGS = {'), source.indexOf('};', source.indexOf('const TOOL_CONFIG_FLAGS = {')));
   const flags = [...block.matchAll(/^\s+qq_\w+: '(\w+)',/gm)].map((m) => m[1]);
   assert.ok(flags.length >= 30, `解析到 ${flags.length} 个开关`);
-// 没登记的开关默认算开着，这里列出例外，漏登记就会报错
+// 所有 MCP 工具开关都必须在 DEFAULT_SOCIAL_V2_TOOLS 显式登记，不允许隐式遗漏
   const implicit = [...new Set(flags.filter((flag) => DEFAULT_SOCIAL_V2_TOOLS[flag] === undefined))];
-  assert.deepEqual(implicit, ['getGroupMembers']);
+  assert.deepEqual(implicit, []);
   for (const flag of flags) assert.notEqual(resolveSocialV2Tools(undefined)[flag], undefined === DEFAULT_SOCIAL_V2_TOOLS[flag] ? false : undefined);
   assert.equal(DEFAULT_SOCIAL_V2_TOOLS.sendVoice, false);
   assert.equal(DEFAULT_SOCIAL_V2_TOOLS.setStickerRemark, false);

@@ -2,21 +2,32 @@
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { unwrap } from '../../../dsh-client.js';
 import { normalizeModeInput, VALID_MODES } from '../../../policy/mode.js';
 import { readJsonSafe, atomicWriteJson } from '../../../store/fs-atomic.js';
+
+const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
 
 // 创建控制台的这些基础接口
 export function createConsoleCoreRoutes(b) {
   return async function consoleCoreRoutes(rq) {
     if (rq.req.method === 'GET' && rq.url.pathname === '/') {
-      rq.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...rq.SECURITY_HEADERS });
+      const page = rq.url.searchParams.get('classic') === '1' ? 'console.html' : 'studio.html';
+      let html;
       try {
-        const page = rq.url.searchParams.get('classic') === '1' ? 'console.html' : 'studio.html';
-        rq.res.end(fs.readFileSync(path.join(b.ROOT, 'src', 'features', 'console', 'web', page), 'utf8'));
+        html = fs.readFileSync(path.join(b.ROOT, 'src', 'features', 'console', 'web', page), 'utf8');
       } catch {
-        rq.res.end('控制台页面缺失：请检查 src/features/console/web/');
+        try {
+          html = fs.readFileSync(path.join(WEB_DIR, page), 'utf8');
+        } catch {
+          rq.res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', ...rq.SECURITY_HEADERS });
+          rq.res.end('控制台页面缺失：请检查 src/features/console/web/');
+          return;
+        }
       }
+      rq.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...rq.SECURITY_HEADERS });
+      rq.res.end(html);
       return;
     }
     if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/status') {

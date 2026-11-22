@@ -241,8 +241,8 @@ export function createDeliveryCursors(b) {
     b.recordSessionSnapshot(sessionId, snapshot);
     const records = snapshot?.records;
     if (!b.modeKnown) {
-      // 模式未定：先暂存，等 refreshMode 后再判断
-      if (Array.isArray(records) && records.length > 0) pendingDeliveryReplays.set(sessionId, records);
+      // 模式未定：即使快照为空也要暂存，保证 refreshMode 后触发 reconcileScheduledSnapshot 解除 awaitingSnapshots
+      pendingDeliveryReplays.set(sessionId, Array.isArray(records) ? records : []);
       return;
     }
     try {

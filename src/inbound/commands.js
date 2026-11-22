@@ -32,60 +32,27 @@ export function createInboundCommands(b) {
       }
       if (plainContent === '/reset' || plainContent === '/new') {
         const old = b.state.sessions[key];
-        b.retireSession(key);
+        // 先清记忆再 retireSession，避免会话状态先被删导致清理遗漏
         b.forgetConversationMemory(key);
-        if (!old) {
-          b.forgetAgentToken(key);
-          b.socialV2.conversations.delete(key);
-          b.saveSocialV2State();
-        }
+        b.retireSession(key);
+        b.social.recentMessages.delete(key);
+        b.messageMediaStore.delete(key);
+        b.social.pendingSummaries.delete(key);
+        b.seenForwardIds.delete(key);
+        b.forgetAgentToken(key);
+        b.socialV2.conversations.delete(key);
         if (old) {
           b.sessionEpoch++;
-          delete b.state.sessions[key];
-          b.modelAppliedSessions.delete(old);
-          delete b.state.sessionPolicies[key];
-          b.reverse.delete(old);
-          b.forgetDeliveryCursor(old);
-          b.collectors.delete(old);
-          b.sendToolSucceededSessions.delete(old);
-          b.pendingSendToolCalls.delete(old);
-          b.v2TurnStartAt.delete(old);
-          b.turnLeaseNoted.delete(old);
-          b.toolCallNames.delete(old);
-          b.social.silentTurns.delete(old);
-          b.social.exitingSessions.delete(old);
-          const pe = b.pending.get(key);
-          if (pe) {
-            b.clearTimeout(pe.timer);
-            b.cancelPendingEntry({ ...pe, key }).catch(() => {});
-          }
-          b.pending.delete(key);
-          b.queued.delete(key);
-          b.queuedHintAt.delete(key);
-          b.sessionPromises.delete(key);
-          b.drainPromptQueue(key, '会话已重置');
-          b.social.recentMessages.delete(key);
-          b.messageMediaStore.delete(key);
-          b.social.pendingSummaries.delete(key);
-          b.social.states.delete(key);
-          b.social.silentContext.delete(key);
-          b.cancelSocialTimers(key);
-          b.clearSocialV2Timers(key);
-          b.pendingWakeKeys.delete(key);
-          b.wakeConfigUpdatedKeys.delete(key);
-          b.markReadCalledKeys.delete(key);
-          b.wakeConfigMissCount.delete(key);
-          b.forgetAgentToken(key);
-          b.socialV2.conversations.delete(key);
-          b.seenForwardIds.delete(key);
           b.saveSocialV2State();
           b.saveState();
           // 先停 DSH 侧排队工作，再归档
           try { await b.withTimeout(b.api.stopSessionWork(old), b.DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork'); }
           catch (error) { b.log(`⚠️ 停止旧会话失败 ${key}：${error?.message ?? error}；请在 DSH 检查旧任务`); }
           try { await b.withTimeout(b.api.workspace.archiveSession({ sessionId: old }), b.DSH_CONTROL_TIMEOUT_MS, 'archiveSession'); } catch {}
-          await b.sendToQQ(key, '已重置会话，下次消息将开新上下文');
+        } else {
+          b.saveSocialV2State();
         }
+        await b.sendToQQ(key, '已重置会话，下次消息将开新上下文');
         return true;
       }
       if (plainContent === '/status') {

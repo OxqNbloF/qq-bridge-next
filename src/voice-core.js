@@ -4,6 +4,84 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
+// ffmpeg / ffprobe 并发信号量，防止并发转码打满 CPU 或产生孤儿进程
+const MEDIA_PROC_MAX_CONCURRENT = 3;
+let mediaProcActive = 0;
+const mediaProcQueue = [];
+function acquireMediaSlot() {
+  if (mediaProcActive < MEDIA_PROC_MAX_CONCURRENT) {
+    mediaProcActive += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => mediaProcQueue.push(resolve));
+}
+function releaseMediaSlot() {
+  mediaProcActive = Math.max(0, mediaProcActive - 1);
+  if (mediaProcQueue.length > 0 && mediaProcActive < MEDIA_PROC_MAX_CONCURRENT) {
+    mediaProcActive += 1;
+    const next = mediaProcQueue.shift();
+    next();
+  }
+}
+
+/** 统一子进程执行器：有界并发、超时先 SIGTERM 后 2s SIGKILL、等 close 退出再结算防删临时文件竞态 */
+export async function runMediaProcess(cmd, args, { timeoutMs = 25000, label = 'ffmpeg', notFoundMessage = '' } = {}) {
+  await acquireMediaSlot();
+  try {
+    return await new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(cmd, args, { windowsHide: true, stdio: 'ignore' });
+      } catch (error) {
+        resolve({ code: -1, enoent: error?.code === 'ENOENT', error: `${label} 启动失败：${error?.message ?? error}` });
+        return;
+      }
+      let settled = false;
+      let timedOut = false;
+      let killTimer = null;
+      let hardWaitTimer = null;
+      const settle = (outcome) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        if (hardWaitTimer) clearTimeout(hardWaitTimer);
+        resolve(outcome);
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGTERM'); } catch {}
+        killTimer = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch {}
+        }, 2000);
+        killTimer.unref?.();
+        // 兜底：若 2.5s 后仍未收到 close，强制结算以免挂死
+        hardWaitTimer = setTimeout(() => {
+          settle({ code: -2, timedOut: true, error: `${label} 超时（${Math.round(timeoutMs / 1000)}s）` });
+        }, 2500);
+        hardWaitTimer.unref?.();
+      }, timeoutMs);
+      timer.unref?.();
+      child.on('error', (error) => settle({
+        code: -1,
+        enoent: error?.code === 'ENOENT',
+        error: error?.code === 'ENOENT' && notFoundMessage
+          ? notFoundMessage
+          : `${label} 不可用：${error?.message ?? error}`
+      }));
+      child.on('close', (code) => {
+        if (timedOut) {
+          settle({ code: -2, timedOut: true, error: `${label} 超时（${Math.round(timeoutMs / 1000)}s）` });
+        } else {
+          settle({ code });
+        }
+      });
+    });
+  } finally {
+    releaseMediaSlot();
+  }
+}
+
 /** 网关能直接吃进去的音频扩展名（SnowLuma 会自动转 SILK）。 */
 export const AUDIO_EXTS = [
   '.mp3', '.wav', '.ogg', '.oga', '.opus', '.m4a', '.aac', '.flac',
@@ -158,27 +236,13 @@ export async function probeAudio(file, { ffprobePath = 'ffprobe', timeoutMs = 10
   if (!dir) return { ok: false, reason: '没有可写的临时目录用于 ffprobe 输出' };
 
   const outFile = path.join(dir, `p-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
-  // 跑一次 ffprobe，等它结束
-  const run = () => new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(ffprobePath, [
-        '-v', 'error',
-        '-show_entries', 'format=duration,format_name',
-        '-show_entries', 'stream=codec_name,codec_type,sample_rate,channels',
-        '-of', 'json', '-o', outFile, file
-      ], { windowsHide: true, stdio: 'ignore' });
-    } catch (error) {
-      resolve({ code: -1, error: `ffprobe 启动失败：${error?.message ?? error}` });
-      return;
-    }
-    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ code: -2, error: 'ffprobe 超时' }); }, timeoutMs);
-    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, error: `ffprobe 不可用：${e.message}` }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code }); });
-  });
-
   try {
-    const res = await run();
+    const res = await runMediaProcess(ffprobePath, [
+      '-v', 'error',
+      '-show_entries', 'format=duration,format_name',
+      '-show_entries', 'stream=codec_name,codec_type,sample_rate,channels',
+      '-of', 'json', '-o', outFile, file
+    ], { timeoutMs, label: 'ffprobe' });
     if (res.error) return { ok: false, reason: res.error };
     let raw = '';
     try { raw = fs.readFileSync(outFile, 'utf8'); }
@@ -367,46 +431,25 @@ export async function processAudioVolume(file, {
     ? [`loudnorm=I=${plan.loudness}:TP=-1.5:LRA=11`]
     : [`volume=${plan.volume}`];
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-af', filters.join(','), '-ac', '1', outPath];
+  const notFoundMessage = '找不到 ffmpeg（请设置 FFMPEG_PATH 或在 config.json 里指定 socialV2.voice.ffmpegPath）';
 
-  // 跑一次 ffmpeg，等它结束
-  const run = () => new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(ffmpeg, args, { windowsHide: true, stdio: 'ignore' });
-    } catch (error) {
-      resolve({ code: -1, error: `ffmpeg 启动失败：${error?.message ?? error}` });
-      return;
-    }
-    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ code: -2, error: 'ffmpeg 超时' }); }, timeoutMs);
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: -1, error: e.code === 'ENOENT' ? '找不到 ffmpeg（请设置 FFMPEG_PATH 或在 config.json 里指定 socialV2.voice.ffmpegPath）' : `ffmpeg 不可用：${e.message}` });
-    });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code }); });
-  });
-
-  let res = await run();
-  // 原扩展名可能没有可用编码器（如 .amr/.silk 只读）→ 退回 wav 再试一次
-  if ((res.error || res.code !== 0 || !fs.existsSync(outPath)) && ext && ext.toLowerCase() !== '.wav') {
+  let res = await runMediaProcess(ffmpeg, args, { timeoutMs, label: 'ffmpeg', notFoundMessage });
+  // 原扩展名可能没有可用编码器（如 .amr/.silk 只读）→ 退回 wav 再试一次；ENOENT 或超时直接失败不重试
+  if (!res.enoent && !res.timedOut && (res.error || res.code !== 0 || !fs.existsSync(outPath)) && ext && ext.toLowerCase() !== '.wav') {
+    try { fs.unlinkSync(outPath); } catch {}
     const wavPath = outPath.replace(/\.[^.]+$/, '.wav');
     const wavArgs = ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-af', filters.join(','), '-ac', '1', wavPath];
-    res = await new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn(ffmpeg, wavArgs, { windowsHide: true, stdio: 'ignore' });
-      } catch (error) {
-        resolve({ code: -1, error: `ffmpeg 启动失败：${error?.message ?? error}` });
-        return;
-      }
-      const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ code: -2, error: 'ffmpeg 超时' }); }, timeoutMs);
-      child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, error: `ffmpeg 不可用：${e.message}` }); });
-      child.on('close', (code) => { clearTimeout(timer); resolve({ code }); });
-    });
+    res = await runMediaProcess(ffmpeg, wavArgs, { timeoutMs, label: 'ffmpeg', notFoundMessage });
     if (!res.error && res.code === 0 && fs.existsSync(wavPath)) outPath = wavPath;
+    else { try { fs.unlinkSync(wavPath); } catch {} }
   }
 
-  if (res.error) throw new Error(res.error);
+  if (res.error) {
+    try { fs.unlinkSync(outPath); } catch {}
+    throw new Error(res.error);
+  }
   if (res.code !== 0 || !fs.existsSync(outPath)) {
+    try { fs.unlinkSync(outPath); } catch {}
     throw new Error(`ffmpeg 音量处理失败（退出码 ${res.code}）`);
   }
   const st = fs.statSync(outPath);

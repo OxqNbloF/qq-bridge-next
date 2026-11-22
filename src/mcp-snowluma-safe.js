@@ -8,7 +8,6 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 // 出站敏感词拦截统一由桥接做，MCP 侧不重复拦
-import { SENSITIVE_RE } from './sensitive.js';
 import { serializeModelData } from './qq-model-view.js';
 import { resolveSocialV2Tools } from './policy/tool-defaults.js';
 import { filterAndProjectGroupHistory as filterAndProjectGroupHistoryCore, groupAllowed } from './gate/mcp-history.js';
@@ -41,15 +40,38 @@ function selfKeyGuard(key) {
   return '';
 }
 
-// 读取 config.json
-function loadConfig() {
+// 按 stat.mtimeMs + size 缓存本机配置文件，避免每次工具调用重复同步 readFileSync + JSON.parse
+const FILE_CACHE = new Map();
+function readCachedFile(filePath, parser, fallback) {
+  let stamp = null;
   try {
-    let text = fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8');
-    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-    return adaptLegacyConfig(JSON.parse(text));
+    const stat = fs.statSync(filePath);
+    stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    const hit = FILE_CACHE.get(filePath);
+    if (hit && hit.stamp === stamp) return hit.value;
   } catch {
-    return {};
+    stamp = null;
   }
+  try {
+    let text = fs.readFileSync(filePath, 'utf8');
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const value = parser(text);
+    if (stamp !== null) FILE_CACHE.set(filePath, { stamp, value });
+    return value;
+  } catch (error) {
+    FILE_CACHE.delete(filePath);
+    if (typeof fallback === 'function') return fallback(error);
+    return fallback;
+  }
+}
+
+// 读取 config.json（mtime 未变命中缓存）
+function loadConfig() {
+  return readCachedFile(
+    path.join(ROOT, 'config.json'),
+    (text) => adaptLegacyConfig(JSON.parse(text)),
+    () => ({})
+  );
 }
 
 const cfg = loadConfig();
@@ -74,26 +96,31 @@ function filterAndProjectGroupHistory(groupId, data) {
   let policy = null;
   let policyBroken = false;
   if (c.architecture?.gateV2 === true) {
-    try {
-      let text = fs.readFileSync(path.join(ROOT, 'state', 'member-policy.json'), 'utf8');
-      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-      const parsed = JSON.parse(text);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid member-policy');
-      policy = parsed;
-    } catch (error) {
-      if (error?.code !== 'ENOENT' && !/Unexpected fixture file/.test(String(error?.message ?? ''))) {
-        policyBroken = true;
+    const loaded = readCachedFile(
+      path.join(ROOT, 'state', 'member-policy.json'),
+      (text) => {
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid member-policy');
+        return { ok: true, policy: parsed };
+      },
+      (error) => {
+        const broken = error?.code !== 'ENOENT' && !/Unexpected fixture file/.test(String(error?.message ?? ''));
+        return { ok: false, broken };
       }
-    }
+    );
+    if (loaded.ok) policy = loaded.policy;
+    else if (loaded.broken) policyBroken = true;
   }
   let identityPeople = {};
   if (c.identity?.exposeQqInPrompt !== true && c.identity?.enabled !== false) {
-    try {
-      let text = fs.readFileSync(path.join(ROOT, 'state', 'identity.json'), 'utf8');
-      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-      const parsed = JSON.parse(text);
-      if (parsed?.people && typeof parsed.people === 'object') identityPeople = parsed.people;
-    } catch {}
+    identityPeople = readCachedFile(
+      path.join(ROOT, 'state', 'identity.json'),
+      (text) => {
+        const parsed = JSON.parse(text);
+        return (parsed?.people && typeof parsed.people === 'object') ? parsed.people : {};
+      },
+      () => ({})
+    );
   }
   return filterAndProjectGroupHistoryCore({ groupId, data, cfg: c, policy, policyBroken, identityPeople });
 }
@@ -146,12 +173,11 @@ function readConsoleToken() {
     const configured = String(c.consoleToken ?? '').trim();
     if (/^[A-Za-z0-9_-]{16,128}$/.test(configured)) return configured;
   } catch {}
-  try {
-    const tokenFile = path.join(ROOT, 'state', 'console-token');
-    return fs.readFileSync(tokenFile, 'utf8').trim();
-  } catch {
-    return '';
-  }
+  return readCachedFile(
+    path.join(ROOT, 'state', 'console-token'),
+    (text) => text.trim(),
+    () => ''
+  );
 }
 
 /** 把桥接返回的 error 转成可读文本，防 [object Object] */
@@ -275,12 +301,6 @@ function agentApiLongPoll(path, init = {}) {
       req?.destroy();
     }
   });
-}
-
-// 检查能不能读这个聊天
-async function authorizeRead(key) {
-  // 必须带会话令牌；旧只读工具改走 legacyReadToolAllowed
-  throw new Error('旧只读工具没有会话令牌；请使用带会话令牌的 v2 读工具');
 }
 
 // 旧只读工具仅在 closed-agent 放行；用白名单判断，fail closed

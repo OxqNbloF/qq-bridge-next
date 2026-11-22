@@ -63,7 +63,7 @@ export function createDshDeliver(b) {
         ...wakeState.unread.filter(message => !wakeSnapshot || message.seq <= wakeSnapshot.readThroughSeq).map(message => message.userId).filter(Boolean),
       ])];
       if (wakeSnapshot) {
-        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
+        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已内联，无需重查；partial=true 时传 afterSeq=readThroughSeq 续读；收尾传 throughSeq=readThroughSeq（本地 seq，非 messageId）。`;
       }
     }
     const mode = b.modeForKey(key);

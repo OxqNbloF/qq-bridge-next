@@ -1,5 +1,6 @@
 // 表情发送、备注与收藏
 import { canonicalV2Key } from '../../policy/access.js';
+import { modelMessageVisible } from '../../gate/model-visibility.js';
 import { resolveMemberTarget } from '../../identity/target.js';
 import { findSticker, markStickerUsed, stickerForScope, applyStickerNote } from '../../sticker-lib.js';
 
@@ -28,7 +29,7 @@ export function createStickerSender(b) {
       const at = await resolveMemberTarget(b, key, atUserId, { fieldName: 'atUserId' });
       segments.push({ type: 'at', data: { qq: at } });
     }
-    // 在桥接内安全下载，不能把 URL 交给网关重抓
+    // 在桥接内安全下载，不能把 URL 交给网关重抓（safeFetchBuffer 内部已验证图片魔数）
     let image;
     try {
       image = await b.safeFetchBuffer(url, b.MAX_MEDIA_BYTES, { allowPorts: b.MEDIA_FETCH_ALLOW_PORTS });
@@ -92,17 +93,22 @@ export function createStickerSender(b) {
   }
 
   // 收藏聊天中的表情并写备注
-  async function collectStickerV2(key, messageRef, remark) {
+  async function collectStickerV2(rawKey, messageRef, remark) {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
     const assertSendAllowed = b.captureSendGuard(key, { ai: true });
     const st = b.getSocialV2State(key);
-    const found = (st.recentMessages || []).find((m) => m && (String(m.seq) === String(messageRef) || (m.messageId && String(m.messageId) === String(messageRef))));
+    const matchRef = (m) => m && (String(m.seq) === String(messageRef) || (m.messageId && String(m.messageId) === String(messageRef)));
+    const found = (st.recentMessages || []).find(matchRef) ?? (st.unread || []).find(matchRef);
     if (!found) throw new Error('找不到这条消息，请确认 messageId/seq 有效且属于当前会话');
+    if (!modelMessageVisible(b, key, found)) {
+      throw Object.assign(new Error('成员策略不允许读取或收藏该消息中的表情'), { statusCode: 403 });
+    }
     if (found.isSelf) throw new Error('不能收藏自己发的表情，只能收藏群友发的');
     const mediaList = Array.isArray(found.media) ? found.media : [];
     if (!mediaList.length) throw new Error('这条消息没有可收藏的图片/表情');
     const media = mediaList[0];
     let file = '';
-    if (media?.kind === 'image') {
+    if (media?.kind === 'image' || media?.kind === 'sticker') {
       // 先取图片字节转 base64；禁止把原始 url/file 交给 OneBot 下载
       const img = await b.fetchOneBotImage(media);
       if (img?.buffer) {

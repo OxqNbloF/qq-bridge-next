@@ -4,12 +4,32 @@ import { normalizeOwnerQQ, normalizeIdList } from '../policy/access.js';
 import { REASONING_EFFORT_DEFAULT, normalizeReasoningEffort } from '../policy/mode.js';
 import { DEFAULT_SOCIAL_V2_TOOLS, resolveSocialV2Tools } from '../policy/tool-defaults.js';
 
+// config.json 读-改-写串行锁：防止控制台并发写入导致 TOCTOU 互相覆盖
+let configWriteChain = Promise.resolve();
+export function withConfigWriteLock(fn) {
+  const run = configWriteChain.catch(() => {}).then(() => fn());
+  configWriteChain = run.catch(() => {});
+  return run;
+}
+
 // 读取配置并合并默认值
 export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, log = () => {}, roleInjectMaxCharsDefault = 8000 }) {
   const p = configFile;
   const raw = readJsonSafe(p, null, true);
   const file = raw && typeof raw === 'object' && !Array.isArray(raw) ? adaptLegacyConfig(raw) : raw;
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
+  // 有界纯对象深合并：嵌套配置局部覆盖时保留同级默认值（如 wake/send/wait/proactive/feedback/context）
+  const isPlainObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+  function deepMergePlain(defaults, override, depth = 0) {
+    if (!isPlainObj(override) || depth > 8) return defaults;
+    const out = { ...defaults };
+    for (const [k, v] of Object.entries(override)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      if (v === undefined) continue;
+      out[k] = isPlainObj(out[k]) && isPlainObj(v) ? deepMergePlain(out[k], v, depth + 1) : v;
+    }
+    return out;
+  }
   const cfg = {
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
@@ -58,7 +78,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       interceptNotify: true,
       ...(file.security ?? {})
     },
-    social: {
+    social: deepMergePlain({
       enabled: true,
       // 观望阶段
       triggerProbability: 0.1,        // 普通消息触发进入活跃的概率
@@ -95,9 +115,8 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       longGapProbability: 0.1,        // 长间隔概率
       longGapMinMs: 2500,             // 长间隔下限
       longGapMaxMs: 5000,             // 长间隔上限
-      ...(file.social ?? {})
-    },
-    socialV2: {
+    }, file.social),
+    socialV2: deepMergePlain({
       enabled: true,
       autoReplyCheckMs: 30000,
       agentPreset: 'qq-chat-v2',
@@ -161,6 +180,20 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
           maxRemarkChars: 20       // 收藏时备注最大长度
         }
       },
+      voice: {
+        enabled: false,
+        dir: 'audio',
+        maxSeconds: 300,
+        maxBytes: 20 * 1024 * 1024,
+        maxPerMinute: 2,
+        maxPerHour: 10,
+        allowAbsolutePath: false,
+        // 音量须本地调好再发，网关无增益字段
+        defaultVolume: 1,
+        loudness: 'normal',
+        ffmpegPath: '',
+        autoReadback: true,
+      },
       proactive: {
         enabled: true,
         checkIntervalMinMs: 30 * 60 * 1000,
@@ -188,9 +221,8 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
         maxBytes: 8 * 1024 * 1024,
         maxPixels: 64_000_000,
         maxCount: 5
-      },
-      ...(file.socialV2 ?? {})
-    }
+      }
+    }, file.socialV2)
   };
 
   // tools 与默认值深度合并，防丢新开关
@@ -211,38 +243,6 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
     ffmpegPath: '',
     autoReadback: true,
     ...(cfg.socialV2?.voice ?? {})
-  };
-
-  // sticker.collect 深度合并默认值
-  cfg.socialV2.sticker = {
-    enabled: true,
-    syncTtlMs: 60000,
-    maxListCount: 100,
-    includeInPrompt: true,
-    promptMaxStickers: 8,
-    collect: {
-      enabled: true,
-      maxPerMinute: 2,
-      maxPerHour: 10,
-      maxRemarkChars: 20,
-      ...((cfg.socialV2?.sticker?.collect) ?? {})
-    },
-    ...(cfg.socialV2?.sticker ?? {}),
-    collect: {
-      enabled: true,
-      maxPerMinute: 2,
-      maxPerHour: 10,
-      maxRemarkChars: 20,
-      ...((cfg.socialV2?.sticker?.collect) ?? {})
-    }
-  };
-
-  // media 深度合并，否则缺失即无上限
-  cfg.socialV2.media = {
-    maxBytes: 8 * 1024 * 1024,
-    maxPixels: 64_000_000,
-    maxCount: 5,
-    ...((cfg.socialV2?.media && typeof cfg.socialV2.media === 'object' && !Array.isArray(cfg.socialV2.media)) ? cfg.socialV2.media : {})
   };
 
   // 初始提示词上限收敛到安全区间

@@ -4,8 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { resolveFfmpeg } from './voice-core.js';
+import { resolveFfmpeg, runMediaProcess } from './voice-core.js';
 
 /** 默认值集中一处，配置只做覆盖 */
 export const MEDIA_DEFAULTS = Object.freeze({
@@ -231,36 +230,15 @@ export function planAnimation(info, limits = {}) {
 }
 
 
-/** 跑一次 ffmpeg：输入输出走文件，stdio 全 ignore（pipe 会 EPERM） */
-function runFfmpeg(ffmpeg, args, { timeoutMs = MEDIA_DEFAULTS.timeoutMs } = {}) {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(ffmpeg, args, { windowsHide: true, stdio: 'ignore' });
-    } catch (error) {
-      resolve({ ok: false, error: `ffmpeg 启动失败：${error?.message ?? error}` });
-      return;
-    }
-    let settled = false;
-    // 只结算一次结果并清定时器
-    const settle = (outcome) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(outcome);
-    };
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch {}
-      settle({ ok: false, error: `ffmpeg 超时（${Math.round(timeoutMs / 1000)}s）` });
-    }, timeoutMs);
-    child.on('error', (error) => settle({
-      ok: false,
-      error: error?.code === 'ENOENT'
-        ? '找不到 ffmpeg（设置 FFMPEG_PATH 或 config.json 的 socialV2.voice.ffmpegPath）'
-        : `ffmpeg 不可用：${error?.message ?? error}`
-    }));
-    child.on('close', (code) => settle(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg 退出码 ${code}` }));
+/** 跑一次 ffmpeg：输入输出走文件，stdio 全 ignore（pipe 会 EPERM），复用共享并发控制与 SIGKILL 升级 */
+async function runFfmpeg(ffmpeg, args, { timeoutMs = MEDIA_DEFAULTS.timeoutMs } = {}) {
+  const res = await runMediaProcess(ffmpeg, args, {
+    timeoutMs,
+    label: 'ffmpeg',
+    notFoundMessage: '找不到 ffmpeg（设置 FFMPEG_PATH 或 config.json 的 socialV2.voice.ffmpegPath）'
   });
+  if (res.error) return { ok: false, error: res.error };
+  return res.code === 0 ? { ok: true } : { ok: false, error: `ffmpeg 退出码 ${res.code}` };
 }
 
 // 建临时工作目录

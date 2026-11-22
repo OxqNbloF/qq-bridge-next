@@ -1,9 +1,11 @@
 // 发送前的最后检查：确认这条消息还允许发出去
 import { SENSITIVE_RE } from '../sensitive.js';
+import { canonicalV2Key } from './access.js';
 
 const validQq = qq => /^[1-9]\d{0,15}$/.test(String(qq ?? ''));
 
-export function toolSources(b, key) {
+export function toolSources(b, rawKey) {
+  const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
   const st = b.socialV2?.conversations.get(key);
   const selfQq = validQq(b.selfUserId) ? String(b.selfUserId) : '';
   const actors = new Set();
@@ -43,7 +45,8 @@ export function createSendGuard(b) {
   }
 
   // 排队期间权限可能变了，所以每条消息发送前再查一次
-  function captureSendGuard(key, { ai = false, explicitAllow = false } = {}) {
+  function captureSendGuard(rawKey, { ai = false, explicitAllow = false } = {}) {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
     const originalSources = ai && b.cfg.architecture?.gateV2 ? toolSources(b, key) : undefined;
     const policy = b.sessionPolicy(key);
     const epoch = b.conversationEpoch?.(key);
@@ -85,7 +88,8 @@ export function createSendGuard(b) {
   }
 
   // 静默模式：除 owner 私聊外，不发送任何在途 AI 回复。
-  function shouldBlockSilentReply(key) {
+  function shouldBlockSilentReply(rawKey) {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
     const roleState = b.readRoleState();
     return roleState.mode === 'silent' && key !== `private:${String(b.cfg.ownerQQ ?? '')}`;
   }

@@ -89,6 +89,14 @@ const tests = [
   'test-http-auth-matrix.mjs',
   // 表情同步的 HTTP 退路回归（纯模拟数据）
   'test-sticker-http-fallback.mjs',
+  // 阶段 1（P0）安全边界与关键正确性修复回归
+  'test-p0-hardening-fixes.mjs',
+  // 阶段 2（P1）热路径性能、I/O 与 Token 成本优化回归
+  'test-p1-perf-fixes.mjs',
+  // 阶段 3（P2）协议、调度、HTTP/配置并发、FFmpeg 与运维脚本可靠性回归
+  'test-p2-reliability-fixes.mjs',
+  // 阶段 4（P3）工具清单单一来源、去重、配置模板对齐与工程化回归
+  'test-p3-architecture-fixes.mjs',
 ];
 
 // 要真实环境、不进主回归的测试，必须写明理由

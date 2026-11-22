@@ -11,7 +11,7 @@ export function createAliasMemory(b) {
     if (!conv || !/^[1-9]\d{0,15}$/.test(qq) || !text || text.length > 32 || /[\r\n【】]/.test(text) || SENSITIVE_RE.test(text)) throw new Error('称呼候选需要合法会话、extra.target QQ 和安全称呼');
     const id = `alias:${conv}:${crypto.createHash('sha256').update(qq + '\n' + normalizeAliasText(text)).digest('hex').slice(0, 12)}`;
     const now = new Date().toISOString();
-    const old = b.memoryPool.query({ kind: 'alias' }).find(item => item.id === id && (!item.expire_at || Date.parse(item.expire_at) > Date.now()));
+    const old = b.memoryPool.query({ kind: 'alias', convId: conv, clone: false }).find(item => item.id === id && (!item.expire_at || Date.parse(item.expire_at) > Date.now()));
     const item = { ...old, id, conv_id: conv, kind: 'alias', status: old?.status ?? 'candidate', content: text, subject_uid: qq,
       source_msg_ids: old?.source_msg_ids ?? [], created_at: old?.created_at ?? now, updated_at: now, expire_at: old?.expire_at ?? new Date(Date.now() + 30 * 86400000).toISOString() };
     b.memoryPool.update(items => {
@@ -26,7 +26,7 @@ export function createAliasMemory(b) {
     const key = `${envelope.conv.kind}:${envelope.conv.id}`;
     const text = normalizeAliasText(envelope.plain);
     try {
-      const candidates = b.memoryPool.query({ kind: 'alias' }).filter(item => item.status === 'candidate' && item.conv_id === key);
+      const candidates = b.memoryPool.query({ kind: 'alias', convId: key, clone: false }).filter(item => item.status === 'candidate');
       if (!candidates.length) return;
       const updates = new Map();
       const expired = new Set();

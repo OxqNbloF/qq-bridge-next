@@ -57,10 +57,25 @@ export function createTokenHeal({ cfg, bot, configFile, log, persistSnowLumaEndp
     } catch (error) {
       log(`   ⚠️ 写回 config.json 失败：${error?.message ?? error}`);
     }
-    // 更新了就让 SDK 立刻用新参数重连（否则要等下一轮退避，最长要好几秒）
+    // 更新了就让 SDK 立刻用新参数重连（先等旧连接关掉再连，防旧 close 回调冲掉新 socket，并接住异步拒绝）
     if (wsChanged) {
+      const waitClosed = typeof bot.once === 'function'
+        ? new Promise((resolve) => {
+            let done = false;
+            const finish = () => { if (!done) { done = true; resolve(); } };
+            bot.once('close', finish);
+            setTimeout(finish, 300).unref?.();
+          })
+        : Promise.resolve();
       try { bot.close(1000, 'token-refresh'); } catch {}
-      try { bot.connect(); } catch {}
+      await waitClosed;
+      try {
+        await Promise.resolve(bot.connect()).catch((error) => {
+          log(`⚠️ SnowLuma WS 重连失败（将由退避循环重试）：${error?.message ?? error}`);
+        });
+      } catch (error) {
+        log(`⚠️ SnowLuma WS 重连异常：${error?.message ?? error}`);
+      }
     }
     return wsChanged;
   }
@@ -75,22 +90,29 @@ export function createTokenHeal({ cfg, bot, configFile, log, persistSnowLumaEndp
   }
 
   let tokenHealAt = 0;
-  // 连不上时重新找 token，十秒内只试一次
+  let healingPromise = null;
+  // 连不上时重新找 token，十秒内且同时间只试一次（单飞锁）
   async function healTokenIfStale(reason) {
+    if (healingPromise) return healingPromise;
     const t = now();
     if (t - tokenHealAt < 10000) return;   // 十秒内只试一次，断开事件会连着来
     tokenHealAt = t;
-    try {
-      const r = await discoverSnowLumaConnection({ cfg, timeoutMs: 4000 });
-      if (!r.ok) {
-        log(`⚠️ token 自愈失败（${reason}）：${r.error}`);
-        return;
+    healingPromise = (async () => {
+      try {
+        const r = await discoverSnowLumaConnection({ cfg, timeoutMs: 4000 });
+        if (!r.ok) {
+          log(`⚠️ token 自愈失败（${reason}）：${r.error}`);
+          return;
+        }
+        await applyHealedTokens(r);
+        log(`   自愈完成：账号 ${r.self?.user_id ?? '?'}（${reason}）`);
+      } catch (error) {
+        log(`⚠️ token 自愈异常：${error?.message ?? error}`);
+      } finally {
+        healingPromise = null;
       }
-      await applyHealedTokens(r);
-      log(`   自愈完成：账号 ${r.self?.user_id ?? '?'}（${reason}）`);
-    } catch (error) {
-      log(`⚠️ token 自愈异常：${error?.message ?? error}`);
-    }
+    })();
+    return healingPromise;
   }
 
   return { applyHealedTokens, syncTokenToFile, healTokenIfStale };

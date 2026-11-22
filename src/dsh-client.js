@@ -29,12 +29,29 @@ export function discoverDshLaunchToken() {
       continue;
     }
     for (const { name } of files) {
+      let fd = null;
       try {
-        const text = fs.readFileSync(path.join(logsDir, name), 'utf8');
-        const match = text.match(/[?&]token=([A-Za-z0-9_-]+)/);
+        const fullPath = path.join(logsDir, name);
+        fd = fs.openSync(fullPath, 'r');
+        const { size } = fs.fstatSync(fd);
+        // 只扫描首尾各 64KB，避免大日志文件阻塞事件循环
+        const sliceSize = 64 * 1024;
+        const headLen = Math.min(size, sliceSize);
+        const headBuf = Buffer.allocUnsafe(headLen);
+        fs.readSync(fd, headBuf, 0, headLen, 0);
+        let match = headBuf.toString('utf8').match(/[?&]token=([A-Za-z0-9_-]+)/);
+        if (!match && size > sliceSize) {
+          const tailStart = Math.max(headLen, size - sliceSize);
+          const tailLen = size - tailStart;
+          const tailBuf = Buffer.allocUnsafe(tailLen);
+          fs.readSync(fd, tailBuf, 0, tailLen, tailStart);
+          match = tailBuf.toString('utf8').match(/[?&]token=([A-Za-z0-9_-]+)/);
+        }
         if (match) return match[1];
       } catch {
         // 单个日志文件可能正被 DSH 占用/轮转，跳过继续看更早的日志。
+      } finally {
+        if (fd !== null) { try { fs.closeSync(fd); } catch {} }
       }
     }
   }
@@ -263,6 +280,8 @@ export class NodeApiClient extends AbstractApiClient {
     if (!next || next === this.baseUrl) return false;
     this.baseUrl = next;
     this.invalidateAuth();
+    // 换地址时主动中止旧 mux 连接，防止半开 WebSocket 长期钉死在旧端口
+    try { this._activeMuxAbort?.(); } catch {}
     return true;
   }
 
@@ -276,8 +295,11 @@ export class NodeApiClient extends AbstractApiClient {
     this._secret = undefined;
     // 这里不改登录方式的偏好：断线是常态，只有真被拒才换
     this._strategy = null;
-    const discovered = discoverDshLaunchToken();
-    if (discovered) this.launchToken = discovered;
+    // 用户显式配置了 authToken 时不得被本机日志覆盖
+    if (!this.tokenExplicit) {
+      const discovered = discoverDshLaunchToken();
+      if (discovered) this.launchToken = discovered;
+    }
   }
 
   /** 取本机存着的签名钥匙，取到就记住。 */
@@ -427,10 +449,11 @@ export class NodeApiClient extends AbstractApiClient {
 
   /** 回退路径：全宿主 `session/control` 流的开场 baseline。 */
   async _readSessionQueueViaControl(sessionId, signal) {
+    const cookie = await this.ensureAuth(signal);
     signal?.throwIfAborted();
     const url = new URL('/api/remote.mux', this.baseUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(url, { headers: { cookie: this.cookie } });
+    const socket = new WebSocket(url, { headers: { cookie } });
     const streamId = randomUUID();
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -501,11 +524,12 @@ export class NodeApiClient extends AbstractApiClient {
     const response = await fetch(input, { ...init, headers, redirect: 'error' });
     if (!isRetry && response.status === 401 && this.hasAuth()) {
       await response.body?.cancel();
-      // 只有真被拒才换登录方式：自己签的被拒就改用启动令牌
-      if (this._strategy === 'minted' && this.launchToken) this._preferToken = true;
-      else if (this._strategy === 'token') this._preferToken = false;
-      // 多个请求同时被拒时只换一次凭证，别把新换的也作废
-      if (authEpoch === this._authEpoch) this.invalidateAuth();
+      // 多个请求同时被拒时只在同一 epoch 内切换策略并换一次凭证，避免并发 401 互相把策略翻回旧值
+      if (authEpoch === this._authEpoch) {
+        if (this._strategy === 'minted' && this.launchToken) this._preferToken = true;
+        else if (this._strategy === 'token') this._preferToken = false;
+        this.invalidateAuth();
+      }
       return this._doFetchWithAuth(input, init, true);
     }
     return response;
@@ -587,11 +611,11 @@ export class NodeApiClient extends AbstractApiClient {
     const own = signal === undefined ? new AbortController() : undefined;
     const sig = signal ?? own.signal;
     sig.throwIfAborted();
-    await this.ensureAuth(sig);
+    const cookie = await this.ensureAuth(sig);
     sig.throwIfAborted();
     const url = new URL('/api/remote.mux', this.baseUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(url, { headers: { cookie: this.cookie } });
+    const socket = new WebSocket(url, { headers: { cookie } });
     const inbox = [];
     let wake;
     let socketOpen = false;
@@ -601,6 +625,12 @@ export class NodeApiClient extends AbstractApiClient {
     const followed = new Set();
     const streamToSession = new Map();
     const sessionToStream = new Map();
+    const resubscribeTimers = new Map();
+    const resubscribeAttempts = new Map();
+    const clearResubscribeTimers = () => {
+      for (const timer of resubscribeTimers.values()) clearTimeout(timer);
+      resubscribeTimers.clear();
+    };
     // 把一条数据放进待发队列
     const enqueue = (item) => {
       inbox.push(item);
@@ -611,6 +641,7 @@ export class NodeApiClient extends AbstractApiClient {
     const endStream = () => {
       if (ended) return;
       ended = true;
+      clearResubscribeTimers();
       if (this._muxSendOpen === sendOpen) this._muxSendOpen = null;
       // 连接断了就丢掉旧凭证，重连时重新登录
       if (!sig.aborted) this.invalidateAuth();
@@ -772,10 +803,18 @@ export class NodeApiClient extends AbstractApiClient {
           // 服务端结束了这条会话流（归档、空闲清理等）。
           // 不重新订阅的话，这个聊天就永远收不到消息了。
           if (this._desiredFollows.has(sessionId)) {
-            console.error(`[dsh-client] session/follow 已被服务端结束，重新订阅：${sessionId}`);
-            setTimeout(() => {
+            const attempt = (resubscribeAttempts.get(sessionId) ?? 0) + 1;
+            resubscribeAttempts.set(sessionId, attempt);
+            const delayMs = Math.min(30000, 2000 * Math.pow(2, Math.min(attempt - 1, 4)));
+            console.error(`[dsh-client] session/follow 已被服务端结束，${Math.round(delayMs / 1000)}s 后重新订阅：${sessionId}`);
+            const prevTimer = resubscribeTimers.get(sessionId);
+            if (prevTimer) clearTimeout(prevTimer);
+            const timer = setTimeout(() => {
+              resubscribeTimers.delete(sessionId);
               if (!ended && this._desiredFollows.has(sessionId)) sendOpen(sessionId);
-            }, 2000);
+            }, delayMs);
+            timer.unref?.();
+            resubscribeTimers.set(sessionId, timer);
           }
         }
       } else if (msg.type === 'error') {
@@ -807,6 +846,7 @@ export class NodeApiClient extends AbstractApiClient {
       endStream();
       if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) socket.close();
     };
+    this._activeMuxAbort = handleAbort;
     socket.addEventListener('open', handleOpen);
     socket.addEventListener('message', handleMessage);
     socket.addEventListener('close', handleClose, { once: true });
@@ -823,6 +863,8 @@ export class NodeApiClient extends AbstractApiClient {
         await new Promise((resolve) => { wake = resolve; });
       }
     } finally {
+      clearResubscribeTimers();
+      if (this._activeMuxAbort === handleAbort) this._activeMuxAbort = null;
       if (this._muxSendOpen === sendOpen) this._muxSendOpen = null;
       sig.removeEventListener('abort', handleAbort);
       socket.removeEventListener('open', handleOpen);

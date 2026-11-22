@@ -105,6 +105,18 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
     }, () => b.settleScheduledTurn?.(key, sessionId, ended.turn, 'dispatch-dropped'));
   }
 
+  // 统一收尾退场状态，消除各退出分支的重复状态清理
+  function finishFarewell(key, isFarewell, reason, { onlyIfExiting = true } = {}) {
+    if (!isFarewell) return;
+    const st = b.socialState(key);
+    if (!onlyIfExiting || st.phase === 'exiting') {
+      st.phase = 'idle';
+      st.activeDeadlineAt = 0;
+      st.activeExitAt = 0;
+      b.log(`社交模式：${key} ${reason}`);
+    }
+  }
+
   // 回合结束后把回复发到 QQ
   async function deliverEndedTurn(key, ended, isFarewell, sendToolSucceeded) {
     const adapter = getModeAdapter(b.modeForKey(key));
@@ -115,43 +127,19 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
       // 只有格式没有文字就当没回复
       if (!plain.trim()) {
         b.log(`agent 回复为空（仅格式/空白）(${key})`);
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 空退场回合，回到观望`);
-          }
-        }
+        finishFarewell(key, isFarewell, '空退场回合，回到观望');
         return;
       }
       // 社交模式静默标记：AI 主动选择“潜水/不接话”，不发送到 QQ
       if (isSilentMarker(plain)) {
         b.log(`社交模式：AI 选择静默（${SILENT_MARKER}）(${key})`);
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 退场选择静默，回到观望`);
-          }
-        }
+        finishFarewell(key, isFarewell, '退场选择静默，回到观望');
         return;
       }
       // 本回合已经通过 MCP 发送工具成功发出消息：跳过自动转发，避免重复发送。
       if (sendToolSucceeded) {
         b.log(`工具已发送消息，跳过自动转发 (${key})`);
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 工具发送后退场完成，回到观望`);
-          }
-        }
+        finishFarewell(key, isFarewell, '工具发送后退场完成，回到观望');
         return;
       }
       // 审计（对完整文本执行，避免截断漏判；这里只判断，不发送，避免双重发送）
@@ -162,15 +150,7 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
         if (b.cfg.security?.interceptNotify !== false) {
           await b.sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
         }
-        if (isFarewell) {
-          const st = b.socialState(key);
-          if (st.phase === 'exiting') {
-            st.phase = 'idle';
-            st.activeDeadlineAt = 0;
-            st.activeExitAt = 0;
-            b.log(`社交模式：${key} 退场发言被拦截，回到观望`);
-          }
-        }
+        finishFarewell(key, isFarewell, '退场发言被拦截，回到观望');
         return;
       }
       // 仿真群友模式：时间线多段发送（主回复 + 可选二次补刀）
@@ -178,15 +158,7 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
         if (b.shouldBlockSilentReply(key)) {
           b.log(`静默模式，拦截在途回复 (${key})`);
           b.appendActivity(`${key} 静默模式，拦截在途回复`);
-          if (isFarewell) {
-            const st = b.socialState(key);
-            if (st.phase === 'exiting') {
-              st.phase = 'idle';
-              st.activeDeadlineAt = 0;
-              st.activeExitAt = 0;
-              b.log(`社交模式：${key} 静默模式下退场回合被拦截，回到观望`);
-            }
-          }
+          finishFarewell(key, isFarewell, '静默模式下退场回合被拦截，回到观望');
           return;
         }
         const timeline = b.planSocialTimeline(plain, b.cfg.social);
@@ -202,10 +174,7 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
         const st = b.socialState(key);
         if (isFarewell) {
           // 确认为退场发言：不再刷新活跃时间、不调度补刀，直接进入观望
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场发言完成，进入观望`);
+          finishFarewell(key, true, '退场发言完成，进入观望', { onlyIfExiting: false });
         } else if (st.phase === 'exiting') {
           // 退场期间有旧回复恰好完成：照常发出，但不把它当作退场，也不调度补刀
           b.log(`社交模式：${key} 退场期间旧回复完成，保持退场状态`);
@@ -236,38 +205,14 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
       }
     } else if (ended.reason.kind === 'error') {
       await b.reportTurnFailure(key, 'error', ended.reason.error);
-      if (isFarewell) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') {
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场发言出错，回到观望`);
-        }
-      }
+      finishFarewell(key, isFarewell, '退场发言出错，回到观望');
     } else if (ended.reason.kind === 'aborted') {
       await b.reportTurnFailure(key, 'aborted');
-      if (isFarewell) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') {
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场发言中止，回到观望`);
-        }
-      }
+      finishFarewell(key, isFarewell, '退场发言中止，回到观望');
     } else if (!ended.text.trim()) {
       // completed 但没文本（纯工具调用回合）
       b.log(`回合完成但无文本 (${key})`);
-      if (isFarewell) {
-        const st = b.socialState(key);
-        if (st.phase === 'exiting') {
-          st.phase = 'idle';
-          st.activeDeadlineAt = 0;
-          st.activeExitAt = 0;
-          b.log(`社交模式：${key} 退场回合无文本，回到观望`);
-        }
-      }
+      finishFarewell(key, isFarewell, '退场回合无文本，回到观望');
     }
   }
 

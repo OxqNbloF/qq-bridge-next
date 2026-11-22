@@ -3,49 +3,39 @@ import { createIdentityProjection } from './identity/projection.js';
 import { createAliasMemory } from './memory/aliases.js';
 import { createInboundCommands } from './inbound/commands.js';
 import { createOutbound } from './outbound/router.js';
-import { resolveInstalledPreset, synchronizePreset } from './preset-sync.js';
 import { renderPatch } from './preset-patch.js';
-import { readJsonSafe, readConfigObject, renameWithRetry, atomicWriteJson, atomicWriteText } from './store/fs-atomic.js';
-import { migrateDocument, stampSchema } from './store/schema.js';
+import { readJsonSafe, atomicWriteText } from './store/fs-atomic.js';
 import { createMessageArchive } from './store/archive.js';
 import { startArchiveRetention, compressCursorFrom } from './store/archive-retention.js';
 import { createAppContext } from './app-context.js';
-import { MODE_INPUT_ALIASES, VALID_MODES, normalizeModeInput, settingFromDshNamespace, REASONING_EFFORT_OPTIONS, REASONING_EFFORT_DEFAULT, REASONING_EFFORT_NONE, normalizeReasoningEffort } from './policy/mode.js';
-import { normalizeOwnerQQ, normalizeIdList, ignoredSender, allowed, canonicalV2Key, convKey } from './policy/access.js';
-import { SILENT_MARKER, isSilentMarker, SEND_TOOL_RE, isSendToolName, createAgentTokenRegistry, createTokenAudit, escapeCqText, unquoteJsonString } from './policy/audit.js';
+import { convKey } from './policy/access.js';
+import { createAgentTokenRegistry, createTokenAudit, escapeCqText } from './policy/audit.js';
 // 组装层：把各个功能模块拼成一个能运行的程序，并提供启动主流程。
 // 消息走向：QQ 消息 → 本程序 → DSH 里的 AI → AI 的回复 → 发回 QQ。
 // 用法：先编辑 config.json，再运行 node src/bridge.js。
 import fs from 'node:fs';
-import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import yaml from 'js-yaml';
-import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
-import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
-import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
+import { NodeApiClient, discoverDshLaunchToken } from './dsh-client.js';
 import { discoverDshBaseUrl } from './dsh-endpoint.js';
-import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
-import { looksLikeUnfinished } from './v2-wait.js';
 import { compactModelMessage, describeAge, sanitizeUntrustedText } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel } from './media-normalize.js';
-import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
+import { cleanupTemp, inspectAudio, processAudioVolume } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
-import { boundedTimerDelay, createAsyncHelpers } from './infra/async.js';
-import { createCappedLogger, createBridgeLog, createActivityLog } from './infra/log.js';
+import { createAsyncHelpers } from './infra/async.js';
+import { createBridgeLog, createActivityLog } from './infra/log.js';
 import { createInstanceLock } from './infra/lock.js';
 import { loadConfig } from './infra/config.js';
 import { createOneBotHttp } from './gateway/onebot-http.js';
 import { createTokenHeal } from './gateway/token-heal.js';
 import { createUpstreamHealth } from './gateway/upstream-health.js';
 import { createSnowlumaWs } from './gateway/snowluma-ws.js';
-import { segmentsToText, sanitizeMediaSummary, extractMediaFromSegments } from './inbound/normalize.js';
 import { createInboundMedia } from './inbound/media.js';
 import { createInboundContext } from './inbound/context.js';
 import { createForwardMediaRegistry } from './inbound/forward.js';
@@ -114,21 +104,9 @@ import { createDshSession } from './dsh/session.js';
 import { createDshWatch } from './dsh/watch.js';
 import { createDshModel } from './dsh/model.js';
 import { hardenStateDirAcl } from './infra/state-acl.js';
-import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
-import {
-  loadStickerStore,
-  saveStickerStore,
-  mergeStickerLibrary,
-  findSticker,
-  stickerForScope,
-  formatStickerList,
-  buildStickerContext,
-  buildStickerStrategyHint,
-  applyStickerNote,
-  markStickerUsed
-} from './sticker-lib.js';
+import { loadStickerStore } from './sticker-lib.js';
 
 // 共享工具箱：别的模块需要什么功能，都从这里取。
 // 各模块提供的函数最后都挂到这个对象上。
@@ -564,7 +542,7 @@ async function main() {
   if (messageArchive) log(`消息池 archive 已启用：${path.relative(ROOT, ctx.paths.archive)}（全量原文，只追加）`);
   // 每天清理一次过期存档，只删已经压缩过记忆的旧文件。
   if (messageArchive) {
-    startArchiveRetention({
+    app.archiveRetention = startArchiveRetention({
       archive: messageArchive,
       retentionDays: cfg.archive.retentionDays,
       cursorFor: compressCursorFrom(ctx.stores),
@@ -822,7 +800,7 @@ async function main() {
   assembleMemory();
 
   // DSH 消息投递队列；代码在 dsh/deliver.js
-  const { promptQueues, promptActors, deliverPromptNow, deliverPrompt, processPromptQueue, drainPromptQueue, drainAllPromptQueues } = Object.assign(app, createDshDeliver(app));
+  const { promptQueues, deliverPromptNow, deliverPrompt, processPromptQueue, drainPromptQueue, drainAllPromptQueues } = Object.assign(app, createDshDeliver(app));
 
   Object.assign(app, createSchedulerExecutor(app));
 

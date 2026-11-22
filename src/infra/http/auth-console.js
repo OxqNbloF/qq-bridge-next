@@ -28,15 +28,8 @@ export function rejectBadConsoleToken({ req, res, url, sendJson, consoleToken })
   // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
   // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
   const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
-  // 用不会泄露信息的方式比较两个令牌
-  const tokenMatches = (() => {
-    if (!consoleToken) return false; // 上面已拒绝空令牌；真出现也只许失败关闭，绝不 return true
-    const a = Buffer.from(suppliedToken, 'utf8');
-    const b = Buffer.from(consoleToken, 'utf8');
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
-  })();
-  if (consoleToken && !tokenMatches) {
+  // 空控制台令牌必须失败关闭（tokenEq 在任一侧为空时返回 false）
+  if (!tokenEq(suppliedToken, consoleToken)) {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
       res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
@@ -52,16 +45,17 @@ export function rejectBadConsoleToken({ req, res, url, sendJson, consoleToken })
 export function rejectCsrf({ req, sendJson, boundPort }) {
   // 写操作必须是本站页面发的，防止别的网站偷偷触发重启等操作
   if (req.method !== 'GET') {
-    const ctype = String(req.headers['content-type'] ?? '');
-    if (!ctype.toLowerCase().includes('application/json')) {
+    const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (ctype !== 'application/json') {
       sendJson({ ok: false, error: '请求必须是 application/json' }, 415);
       return true;
     }
     const origin = req.headers['origin'];
     if (origin) {
-      let originHost = '';
-      try { originHost = new URL(String(origin)).host; } catch {}
-      if (![`127.0.0.1:${boundPort}`, `localhost:${boundPort}`, `[::1]:${boundPort}`].includes(originHost)) {
+      let parsedOrigin = null;
+      try { parsedOrigin = new URL(String(origin)); } catch {}
+      const allowedOrigins = [`http://127.0.0.1:${boundPort}`, `http://localhost:${boundPort}`, `http://[::1]:${boundPort}`];
+      if (!parsedOrigin || !allowedOrigins.includes(`${parsedOrigin.protocol}//${parsedOrigin.host.toLowerCase()}`)) {
         sendJson({ ok: false, error: '跨站请求被拒绝' }, 403);
         return true;
       }

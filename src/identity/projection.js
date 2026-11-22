@@ -5,9 +5,12 @@ import { projectModelTree } from './project-core.js';
 export function createIdentityProjection(b) {
   function projectForModel(value, surface = 'tool') {
     if (surface === 'console' || b.cfg.identity?.exposeQqInPrompt === true) return value;
+    const knownQqs = typeof b.identityKnownQqs === 'function'
+      ? b.identityKnownQqs()
+      : Object.keys(b.identitySnapshot?.().people ?? {});
     return projectModelTree(value, {
       collectRoots: [value],
-      seedIds: [String(b.cfg.ownerQQ ?? ''), ...Object.keys(b.identitySnapshot?.().people ?? {})],
+      seedIds: [String(b.cfg.ownerQQ ?? ''), ...knownQqs],
       keyFields: ['memberImpressions'],
       displayName: (id) => b.identityDisplayName?.(id),
       transformFieldValue: (name, child, project) => (

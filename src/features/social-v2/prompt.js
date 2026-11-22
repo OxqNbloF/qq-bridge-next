@@ -119,21 +119,27 @@ export function createWakePromptV2(b) {
         const times = (st.wakeTimes || []).filter((t) => now - t < 3600000).sort((a, b) => a - b);
         if (times.length) retryAfterMs = Math.max(retryAfterMs, 3600000 - (now - times[0]) + 500);
       }
-      // 每次最多等 60s，避免错过中途可用窗口
+      // 每次最多等 60s，避免错过中途可用窗口；已有重试定时器时按优先级升级重试原因
       const waitMs = Math.min(60000, Math.max(1000, Math.round(retryAfterMs) || 5000));
+      const reasonRank = (r) => (b.isDirectedWakeReason(r) ? 3 : b.isTimerWakeReason(r) ? 2 : 1);
+      if (!runtime.rateLimitRetryReason || reasonRank(reason) >= reasonRank(runtime.rateLimitRetryReason)) {
+        runtime.rateLimitRetryReason = reason;
+      }
       if (!runtime.rateLimitRetryTimer) {
         runtime.rateLimitRetryTimer = b.setTimeout(() => {
           runtime.rateLimitRetryTimer = null;
+          const retryReason = runtime.rateLimitRetryReason || reason;
+          runtime.rateLimitRetryReason = null;
           // 重试前确认消息仍未处理，定时器类原因不查
-          if (!b.isTimerWakeReason(reason) && !b.isDirectedWakeReason(reason) && !(Array.isArray(st.unread) && st.unread.length > 0)) {
-            b.log(`[reserved2] 限频重试前发现未读已清空，跳过 ${key}（${reason}）`);
+          if (!b.isTimerWakeReason(retryReason) && !b.isDirectedWakeReason(retryReason) && !(Array.isArray(st.unread) && st.unread.length > 0)) {
+            b.log(`[reserved2] 限频重试前发现未读已清空，跳过 ${key}（${retryReason}）`);
             return;
           }
-          void sendWakePromptV2(key, reason).catch((error) => b.log(`[reserved2] 限频重试唤醒异常 ${key}:`, error?.message ?? error));
+          void sendWakePromptV2(key, retryReason).catch((error) => b.log(`[reserved2] 限频重试唤醒异常 ${key}:`, error?.message ?? error));
         }, waitMs);
         runtime.rateLimitRetryTimer.unref?.();
       }
-      b.log(`[reserved2] 唤醒频率超限，${Math.round(waitMs / 1000)}s 后重试 ${key}（${reason}）`);
+      b.log(`[reserved2] 唤醒频率超限，${Math.round(waitMs / 1000)}s 后重试 ${key}（${runtime.rateLimitRetryReason}）`);
       return;
     }
     // 只有真正唤醒才重置观察，跳过/忙时保留进度
@@ -141,6 +147,10 @@ export function createWakePromptV2(b) {
       (b.clearSchedulerTimer ?? b.clearTimeout)(runtime.rateLimitRetryTimer);
       runtime.rateLimitRetryTimer = null;
     }
+    runtime.rateLimitRetryReason = null;
+    const prevPreSleepSatisfiedAt = st.preSleepWaitSatisfiedAt;
+    const prevPreSleepObservedAt = st.preSleepWaitObservedAt;
+    const prevPreSleepAccumMs = st.preSleepWaitAccumMs;
     st.preSleepWaitSatisfiedAt = 0;
     st.preSleepWaitObservedAt = 0;
     st.preSleepWaitAccumMs = 0;
@@ -163,42 +173,40 @@ export function createWakePromptV2(b) {
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
     b.saveSocialV2State();
-    const promptText = buildWakePromptV2(key, reason);
+    // 唤醒提示词推迟到 deliverPromptNow 建会话后再唯一构造一次，避免重复跑角色计数/记忆检索/快照
     b.log(`[reserved2] 唤醒 ${key}（${reason}）`);
-    // 投递失败时回滚唤醒计时
-    const rollbackWakeTime = () => {
+    // 投递失败/重试时统一回滚唤醒状态与沉睡前观察进度
+    const rollbackWakeState = () => {
       const idx = st.wakeTimes.lastIndexOf(wakeTime);
       if (idx >= 0) st.wakeTimes.splice(idx, 1);
+      st.wakeConfig.lastWakeAt = prevLastWakeAt;
+      st.wakeConfig.wakeCount = prevWakeCount;
+      st.lastWakeReason = prevLastWakeReason;
+      st.preSleepWaitSatisfiedAt = prevPreSleepSatisfiedAt;
+      st.preSleepWaitObservedAt = prevPreSleepObservedAt;
+      st.preSleepWaitAccumMs = prevPreSleepAccumMs;
+      if (hadFiniteSleep) {
+        st.wakeConfig.sleepUntil = prevSleepUntil;
+        st.wakeConfig.infinite = false;
+      } else {
+        st.wakeConfig.sleepUntil = prevSleepUntil;
+      }
       b.saveSocialV2State();
+      if (hadFiniteSleep) b.setupSleepTimerV2(key);
     };
     try {
       b.pendingWakeKeys.add(key);
       if (!opts.schedulerTurnId) b.armPendingWakeLease(key);
-      const result = await b.deliverPrompt(key, promptText, { ...opts, wakeReason: reason });
+      const result = await b.deliverPrompt(key, '', { ...opts, wakeReason: reason });
       if (result?.retry) {
         b.pendingWakeKeys.delete(key);
-        st.wakeConfig.sleepUntil = prevSleepUntil;
-        st.wakeConfig.lastWakeAt = prevLastWakeAt;
-        st.wakeConfig.wakeCount = prevWakeCount;
-        st.lastWakeReason = prevLastWakeReason;
-        rollbackWakeTime();
-        if (hadFiniteSleep) b.setupSleepTimerV2(key);
+        rollbackWakeState();
         return result;
       }
-      // 投递失败时恢复有限睡眠
-      const restoreFiniteSleep = () => {
-        if (hadFiniteSleep) {
-          st.wakeConfig.sleepUntil = prevSleepUntil;
-          st.wakeConfig.infinite = false;
-          b.saveSocialV2State();
-          b.setupSleepTimerV2(key);
-        }
-      };
       if (result && result.ok === false) {
         b.pendingWakeKeys.delete(key);
         b.disarmPendingWakeLease(key);
-        rollbackWakeTime();
-        restoreFiniteSleep();
+        rollbackWakeState();
         b.log(`[reserved2] 唤醒投递被拒 ${key}: ${result.error || '未知错误'}`);
       } else if (result && (result.queued === true || result.retry === true)) {
         // 只在入队时保留 pendingWakeKeys，否则补投会丢收尾保底
@@ -208,13 +216,7 @@ export function createWakePromptV2(b) {
     } catch (error) {
       b.pendingWakeKeys.delete(key);
       b.disarmPendingWakeLease(key);
-      rollbackWakeTime();
-      if (hadFiniteSleep) {
-        st.wakeConfig.sleepUntil = prevSleepUntil;
-        st.wakeConfig.infinite = false;
-        b.saveSocialV2State();
-        b.setupSleepTimerV2(key);
-      }
+      rollbackWakeState();
       b.log(`[reserved2] 唤醒投递失败 ${key}: ${error?.message ?? error}`);
       if (opts.schedulerTurnId) throw error;
     }

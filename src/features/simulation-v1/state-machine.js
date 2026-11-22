@@ -54,7 +54,8 @@ export function createSocialStateMachineV1(b) {
   // 活跃期判断必须回：昵称、关键词或直接提问
   function isMustReplyText(textContent) {
     const lower = String(textContent ?? '').toLowerCase();
-    if (b.selfNickname && (lower.includes('@' + b.selfNickname) || lower.includes(b.selfNickname))) return true;
+    const nick = String(b.selfNickname ?? '').toLowerCase();
+    if (nick && (lower.includes('@' + nick) || lower.includes(nick))) return true;
     for (const kw of (b.cfg.social?.mustReplyKeywords ?? [])) {
       if (lower.includes(String(kw).toLowerCase())) return true;
     }

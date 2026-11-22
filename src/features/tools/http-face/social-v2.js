@@ -1,10 +1,12 @@
 import { modelMemberVisible, modelMessageVisible } from '../../../gate/model-visibility.js';
 import { resolveMemberTarget } from '../../../identity/target.js';
 import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
+import { withConfigWriteLock } from '../../../infra/config.js';
 // 二代仿真内部 Agent API：配置、状态、未读、唤醒、发送
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import path from 'node:path';
 import { canonicalV2Key } from '../../../policy/access.js';
+import { SOCIAL_V2_TOOL_FLAGS, SOCIAL_V2_TOOL_PROMPT_MAP, STICKER_TOOL_FLAGS } from '../../../policy/tool-defaults.js';
 import { SENSITIVE_RE } from '../../../sensitive.js';
 import { buildStickerContext, buildStickerStrategyHint } from '../../../sticker-lib.js';
 import { readConfigObject, atomicWriteJson } from '../../../store/fs-atomic.js';
@@ -19,41 +21,41 @@ export function createToolSocialV2Routes(b) {
     }
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/config') {
       const body = await rq.readBody();
+      // HTTP 接口不能更换可执行文件路径（先校验，无需抢锁）
+      if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice) && Object.prototype.hasOwnProperty.call(body.voice, 'ffmpegPath')) {
+        rq.sendJson({ ok: false, error: 'ffmpegPath 只能在本机 config.json 或 FFMPEG_PATH 中配置' }, 400);
+        return;
+      }
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      // 没有保存过就用现在生效的配置打底，否则会把默认关的工具打开
-      const fileV2 = (file.socialV2 && typeof file.socialV2 === 'object' && !Array.isArray(file.socialV2))
-        ? file.socialV2
-        : null;
-      const current = fileV2 ? { ...fileV2, tools: { ...b.cfg.socialV2?.tools, ...fileV2.tools } } : b.cfg.socialV2 ?? {};
-      const merged = { ...current, ...body };
-      // 子对象须为非 null 对象，否则保留当前值，防绕过工具开关
-      for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'voice']) {
-        if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
-          merged[sub] = current[sub] ?? {};
+      await withConfigWriteLock(async () => {
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        // 没有保存过就用现在生效的配置打底，否则会把默认关的工具打开
+        const fileV2 = (file.socialV2 && typeof file.socialV2 === 'object' && !Array.isArray(file.socialV2))
+          ? file.socialV2
+          : null;
+        const current = fileV2 ? { ...fileV2, tools: { ...b.cfg.socialV2?.tools, ...fileV2.tools } } : b.cfg.socialV2 ?? {};
+        const merged = { ...current, ...body };
+        // 子对象须为非 null 对象，否则保留当前值，防绕过工具开关
+        for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'voice']) {
+          if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
+            merged[sub] = current[sub] ?? {};
+          }
         }
-      }
-      // HTTP 接口不能更换可执行文件路径
-      if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice)) {
-        if (Object.prototype.hasOwnProperty.call(body.voice, 'ffmpegPath')) {
-          rq.sendJson({ ok: false, error: 'ffmpegPath 只能在本机 config.json 或 FFMPEG_PATH 中配置' }, 400);
-          return;
+        if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice)) {
+          const currentVoice = b.cfg.socialV2?.voice ?? {};
+          merged.voice = { ...currentVoice, ...body.voice, ffmpegPath: currentVoice.ffmpegPath ?? '' };
         }
-        const currentVoice = b.cfg.socialV2?.voice ?? {};
-        merged.voice = { ...currentVoice, ...body.voice, ffmpegPath: currentVoice.ffmpegPath ?? '' };
-      }
-      if (merged.autoReplyCheckMs !== undefined) {
-        const n = Number(merged.autoReplyCheckMs);
-        merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
-      }
-      // tools：只接受布尔开关
-      const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
-      if (body.tools && typeof body.tools === 'object') {
-        merged.tools = { ...(current.tools ?? {}), ...body.tools };
-        for (const k of toolFlags) {
-          if (typeof merged.tools[k] !== 'boolean') merged.tools[k] = current.tools?.[k] !== false;
+        if (merged.autoReplyCheckMs !== undefined) {
+          const n = Number(merged.autoReplyCheckMs);
+          merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
         }
-      }
+        // tools：只接受布尔开关（直接复用 tool-defaults 单一清单）
+        if (body.tools && typeof body.tools === 'object') {
+          merged.tools = { ...(current.tools ?? {}), ...body.tools };
+          for (const k of SOCIAL_V2_TOOL_FLAGS) {
+            if (typeof merged.tools[k] !== 'boolean') merged.tools[k] = current.tools?.[k] !== false;
+          }
+        }
       // wake：把数字和文字列表统一成一样的格式
       if (body.wake && typeof body.wake === 'object') {
         merged.wake = { ...(current.wake ?? {}), ...body.wake };
@@ -181,6 +183,7 @@ export function createToolSocialV2Routes(b) {
       if (wakeDefaultChanged) b.refreshAllDefaultWakeConfigsV2();
       b.log('控制台：二代仿真配置已更新');
       rq.sendJson({ ok: true, config: b.cfg.socialV2 });
+      });
       return;
     }
     if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/activity') {
@@ -281,40 +284,10 @@ export function createToolSocialV2Routes(b) {
         try { await b.syncStickerLibrary(false); } catch {}
       }
       const roleState = b.readRoleState();
-      const toolMap = {
-        getPrompt: 'qq_get_prompt',
-        getUnread: 'qq_get_unread_messages',
-        getRecent: 'qq_get_recent_messages',
-        socialState: 'qq_social_state',
-        sendGroup: 'qq_send_group_message',
-        sendPrivate: 'qq_send_private_message',
-        reply: 'qq_reply',
-        sendBurst: 'qq_send_burst',
-        sendMessage: 'qq_send_message',
-        waitMessages: 'qq_wait_for_messages',
-        feedback: 'qq_report_feedback',
-        getMyRecent: 'qq_get_my_recent_messages',
-        getMessageDetail: 'qq_get_message_detail',
-        getActiveMembers: 'qq_get_active_members',
-        setWakeConfig: 'qq_set_wake_config',
-        markRead: 'qq_mark_read',
-        memory: 'qq_memory_append / qq_memory_query / qq_memory_remove / qq_memory_clear',
-        getImages: 'qq_get_message_images',
-        getForwardMsg: 'qq_get_forward_msg',
-        sendPoke: 'qq_send_poke',
-        listStickers: 'qq_list_stickers',
-        getStickerImage: 'qq_get_sticker_image',
-        sendSticker: 'qq_send_sticker',
-        setStickerRemark: 'qq_set_sticker_remark',
-        stickerNote: 'qq_sticker_note',
-        collectSticker: 'qq_collect_sticker',
-        getSelfImage: 'qq_get_self_image',
-        sendVoice: 'qq_send_voice / qq_list_voices'
-      };
       const tools = b.cfg.socialV2?.tools ?? {};
-      const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
+      const stickerToolFlags = new Set(STICKER_TOOL_FLAGS);
       const enabledTools = [];
-      for (const [flag, name] of Object.entries(toolMap)) {
+      for (const [flag, name] of Object.entries(SOCIAL_V2_TOOL_PROMPT_MAP)) {
         if (tools[flag] !== false && (!rq.toolPolicy || b.toolFlagAllowed(key, flag)) && !(stickerToolFlags.has(flag) && !b.stickerEnabled())) enabledTools.push(name);
       }
       rq.sendJson({
@@ -563,12 +536,12 @@ export function createToolSocialV2Routes(b) {
         const rawSpeakers = Array.isArray(next.triggers.speakerIds)
           ? next.triggers.speakerIds
           : String(next.triggers.speakerIds ?? '').split(/[,，\s]+/);
+        const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
         const resolvedSpeakers = [];
         for (const item of rawSpeakers) {
           const raw = String(item ?? '').trim();
           if (!raw) continue;
-          if (/^[1-9]\d*$/.test(raw)) { resolvedSpeakers.push(raw); continue; }
-          try { resolvedSpeakers.push(await resolveMemberTarget(b, key, raw, { fieldName: 'speakerIds', state: st })); } catch {}
+          try { resolvedSpeakers.push(await resolveMemberTarget(b, key, raw, { fieldName: 'speakerIds', state: st, checkVisibility: isAgent })); } catch {}
         }
         next.triggers.speakerIds = b.normalizeSpeakerIdsV2(resolvedSpeakers);
       }

@@ -33,9 +33,9 @@ export function assertMemoryWriteAllowed(b, key, { state, targetQq, sourceMessag
   if (st?.modelSourcesIncomplete) deny('model-sources-incomplete');
   for (const qq of new Set(actors.filter(Boolean).map(String).filter(qq => /^[1-9]\d{0,15}$/.test(qq)))) {
     const decision = b.gateDecide({ kind, id: Number(id), qq });
-    if (!decision.allowed || !decision.flags.memory) {
+    if (!decision.allowed || !decision.flags.memory || decision.reason === 'policy-broken') {
       // 历史硬 deny 来源仍可能在模型上下文里；清理/撤销机制落地前不能直接跳过。
-      deny(decision.allowed ? 'memory=false' : decision.reason);
+      deny(decision.reason === 'policy-broken' ? 'policy-broken' : (decision.allowed ? 'memory=false' : decision.reason));
     }
   }
 }
