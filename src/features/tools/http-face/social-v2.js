@@ -1,7 +1,7 @@
 import { modelMemberVisible, modelMessageVisible } from '../../../gate/model-visibility.js';
 import { resolveMemberTarget } from '../../../identity/target.js';
 import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
-import { withConfigWriteLock } from '../../../infra/config.js';
+import { withConfigWriteLock, deepMergePlain } from '../../../infra/config.js';
 // 二代仿真内部 Agent API：配置、状态、未读、唤醒、发送
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import path from 'node:path';
@@ -22,9 +22,13 @@ export function createToolSocialV2Routes(b) {
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/agent/config') {
       const body = await rq.readBody();
       // HTTP 接口不能更换可执行文件路径（先校验，无需抢锁）
-      if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice) && Object.prototype.hasOwnProperty.call(body.voice, 'ffmpegPath')) {
-        rq.sendJson({ ok: false, error: 'ffmpegPath 只能在本机 config.json 或 FFMPEG_PATH 中配置' }, 400);
-        return;
+      if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice)) {
+        for (const forbidden of ['ffmpegPath', 'dir', 'allowAbsolutePath']) {
+          if (Object.prototype.hasOwnProperty.call(body.voice, forbidden)) {
+            rq.sendJson({ ok: false, error: `voice.${forbidden} 只能在本机 config.json 中配置` }, 400);
+            return;
+          }
+        }
       }
       const configFile = path.join(b.ROOT, 'config.json');
       await withConfigWriteLock(async () => {
@@ -43,7 +47,13 @@ export function createToolSocialV2Routes(b) {
         }
         if (body.voice && typeof body.voice === 'object' && !Array.isArray(body.voice)) {
           const currentVoice = b.cfg.socialV2?.voice ?? {};
-          merged.voice = { ...currentVoice, ...body.voice, ffmpegPath: currentVoice.ffmpegPath ?? '' };
+          merged.voice = {
+            ...currentVoice,
+            ...body.voice,
+            ffmpegPath: currentVoice.ffmpegPath ?? '',
+            dir: currentVoice.dir ?? 'audio',
+            allowAbsolutePath: currentVoice.allowAbsolutePath === true,
+          };
         }
         if (merged.autoReplyCheckMs !== undefined) {
           const n = Number(merged.autoReplyCheckMs);
@@ -169,7 +179,7 @@ export function createToolSocialV2Routes(b) {
       if (merged.agentPreset !== undefined) merged.agentPreset = String(merged.agentPreset ?? '');
       file.socialV2 = merged;
       atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.socialV2 = { ...(b.cfg.socialV2 ?? {}), ...merged };
+      b.cfg.socialV2 = deepMergePlain(b.cfg.socialV2 ?? {}, merged);
       // 只有影响默认唤醒的字段变了才同步到使用默认配置的会话
       const WAKE_DEFAULT_KEYS = [
         'defaultMode', 'recommendedDefaultInfinite',
@@ -234,6 +244,7 @@ export function createToolSocialV2Routes(b) {
           b.api.events.forget?.(sid);
         }
         delete b.state.sessionPolicies[key];
+        b.bumpConversationEpoch?.(key);
         b.forgetAgentToken(key);
         b.socialV2.conversations.delete(key);
         b.seenForwardIds.delete(key);

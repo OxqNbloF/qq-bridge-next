@@ -187,6 +187,8 @@ export function createTokenLedger({
   function load() {
     baselines.clear();
     samples.clear();
+    evicted.clear();
+    evictedDirty = false;
     retryAxis.clear();
     sessionKeys.clear();
     sessionSeen.clear();
@@ -269,7 +271,11 @@ export function createTokenLedger({
         model: s.model, provider: s.provider, b: s.buckets
       });
     }
-    for (const e of evicted.values()) {
+    for (const [sid, e] of evicted.entries()) {
+      if (evictionCovered(e)) {
+        evicted.delete(sid);
+        continue;
+      }
       out.push({
         k: 'evict', t: sessionSeen.get(e.sessionId) ?? 0, sid: e.sessionId, key: e.key,
         b: e.buckets, cost: e.cost, peak: e.byTier.peak, off: e.byTier.off,
@@ -344,9 +350,11 @@ export function createTokenLedger({
   let indexDirty = true;
   function invalidateIndex() { indexDirty = true; }
 
-  // 超过上限时删掉旧记录，再整个重写（带滞回阈值，避免 baselines+samples+evicted 卡在 maxLines 时每事件重写）
+  // 超过上限时删掉旧记录，再整个重写（带滞回阈值，且计入 baselines/evicted 基数防止长期累积后每事件重写）
   function maybeCompact() {
-    const journalLimit = Math.max(maxLines + Math.min(200, maxLines), Math.ceil(maxLines * 1.25));
+    const fixedRecords = baselines.size + evicted.size;
+    const hysteresis = Math.max(Math.min(200, maxLines), Math.ceil(maxLines * 0.25));
+    const journalLimit = fixedRecords + maxLines + hysteresis;
     if (journalLines <= journalLimit && samples.size <= maxLines && !evictedDirty) return;
     const dropped = evictOldestSamples();
     if (dropped > 0) {

@@ -2397,6 +2397,7 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getImages"> <span><b>qq_get_message_images</b><span class="meta">查看消息中的图片/表情内容</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getForwardMsg"> <span><b>qq_get_forward_msg</b><span class="meta">查看当前会话收到的合并转发消息内容</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getActiveMembers"> <span><b>qq_get_active_members</b><span class="meta">查看最近活跃成员列表</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getGroupMembers"> <span><b>qq_get_group_members</b><span class="meta">分页查看本群成员列表</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setWakeConfig"> <span><b>qq_set_wake_config</b><span class="meta">设置唤醒/潜水条件：无限期、有限时间、@/名字/关键词/概率等</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="markRead"> <span><b>qq_mark_read</b><span class="meta">标记当前未读为已读（看过但决定不回复）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="memory"> <span><b>qq_memory_append / qq_memory_query</b><span class="meta">轻量记忆：话题/想说的话/群友印象</span></span></label>
@@ -4511,16 +4512,16 @@ function renderUsageChart(series) {
   box.appendChild(svg);
 
   const windowTotal = buckets.reduce((sum, b) => sum + usageBucketValue(b, metric), 0);
-  totalEl.textContent = metric === 'tokens' ? `${usageNum(windowTotal)} token` : usageMoney(windowTotal, sym);
+  totalEl.textContent = metric === 'tokens' ? `${usageNum(windowTotal)} token` : usageMoneyRaw(windowTotal, sym);
   const busiest = series.busiest;
   hintEl.textContent = `窗口内合计 ｜ 每格 ${Math.round(series.bucketMs / 60000)} 分钟`
-    + (busiest && metric === 'cost' ? ` ｜ 最贵一格：${usageBucketClock(busiest.t, series.bucketMs)} ${usageMoney(busiest.cost, sym)}` : '')
+    + (busiest && metric === 'cost' ? ` ｜ 最贵一格：${usageBucketClock(busiest.t, series.bucketMs)} ${usageMoneyRaw(busiest.cost, sym)}` : '')
     + (series.estimated ? ' ｜ ⚠️ 含按兜底价估算的模型' : '');
 
   // 图上一定要能看出"还有多少没画进来"：投影基线覆盖的更早历史没有逐时明细。
   const notes = [];
   if (Number(series.offChartCost) > 0.0001) {
-    notes.push(`另有 ${usageMoney(series.offChartCost, sym)}（约 ${usageNum(series.offChartTokens)} token）属于更早的历史，只有累计值、没有逐时明细，因此不在上图里；所以本图合计会小于「总花费」。`);
+    notes.push(`另有 ${usageMoneyRaw(series.offChartCost, sym)}（约 ${usageNum(series.offChartTokens)} token）属于更早的历史，只有累计值、没有逐时明细，因此不在上图里；所以本图合计会小于「总花费」。`);
   }
   if (series.countedSamples === 0) {
     notes.push('所选时间窗内没有采样：要么这段时间真的没调用，要么逐轮明细已被容量上限淘汰（累计总量仍然准确）。');
@@ -4565,12 +4566,15 @@ function usageNum(n) {
   if (v >= 1e4) return (v / 1e4).toFixed(1) + ' 万';
   return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
-function usageMoney(n, sym) {
-  const s = esc(sym || '¥');
+function usageMoneyRaw(n, sym) {
+  const s = String(sym || '¥');
   const v = Number(n) || 0;
   if (v === 0) return s + '0';
   if (v < 0.01) return s + v.toFixed(4);
   return s + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function usageMoney(n, sym) {
+  return esc(usageMoneyRaw(n, sym));
 }
 function usagePct(n) {
   const v = Number(n);

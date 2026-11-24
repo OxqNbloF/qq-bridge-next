@@ -15,6 +15,7 @@ export function createSchedulerExecutor(b) {
     if (!b.isSessionAllowedInCurrentMode(request.conv) || b.modeForKey(request.conv) !== request.mode) return false;
     const reason = request.payload.wakeReason;
     if (!reason) return true;
+    if (request.mode !== 'reserved2') return false;
     if (b.cfg.socialV2?.enabled === false || b.socialV2.paused) return false;
     if (isTimerReason(reason) || isDirectedReason(reason) || request.trigger.seq === 0) return true;
     return b.getSocialV2State(request.conv).unread.some((message) => Number(message.seq) >= request.trigger.seq);
@@ -35,7 +36,7 @@ export function createSchedulerExecutor(b) {
       return key && schedulerEnabled(key) && turnEngine.activeLease(key)?.sessionId !== sessionId && sessionBusy(sessionId);
     }).length,
     emit: (event) => {
-      if (event.code === 'lease-expired') {
+      if (event.code === 'lease-expired' || event.type === 'turn:error' || (event.type === 'turn:skipped' && !turnEngine.stats(event.conv).queueDepth)) {
         b.pendingWakeKeys.delete(event.conv);
         b.disarmPendingWakeLease(event.conv);
       }
@@ -72,7 +73,9 @@ export function createSchedulerExecutor(b) {
       strategy: decision?.strategy ?? (kind === 'manual' ? 'manual' : windowMs ? 'batched' : timer ? 'timer' : 'immediate'), reason: decision?.reason ?? wakeReason ?? 'prompt' },
       payload: { promptText, opts, wakeReason, sourceQqs: opts?.sourceQqs ?? (st?.unread ?? []).map(message => message.userId).filter(Boolean) }, priority: Math.max(decision?.priority ?? 0, wakePriority(wakeReason)), windowMs,
       batchKey: windowMs ? 'messages' : null,
-      rate: { perMinute: Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0, perHour: Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0 },
+      rate: wakeReason
+        ? { perMinute: Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0, perHour: Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0 }
+        : null,
     };
   }
   function submit(request) {

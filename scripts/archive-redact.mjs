@@ -13,12 +13,18 @@ import { atomicWriteJson } from '../src/store/fs-atomic.js';
 import { redactIdentityAliases } from '../src/identity/registry.js';
 import { migrateDocument } from '../src/store/schema.js';
 import { canonicalV2Key } from '../src/policy/access.js';
+import { parseLockContent } from '../src/infra/lock.js';
 
 const args = process.argv.slice(2);
 let root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rootIdx = args.indexOf('--root');
 if (rootIdx >= 0) {
-  root = path.resolve(args[rootIdx + 1] ?? '');
+  const rootArg = args[rootIdx + 1];
+  if (!rootArg || rootArg.startsWith('-')) {
+    console.error('用法：--root 后必须提供有效目录路径');
+    process.exit(64);
+  }
+  root = path.resolve(rootArg);
   args.splice(rootIdx, 2);
 }
 const [convArg, ...msgIds] = args;
@@ -36,7 +42,7 @@ if (!fs.existsSync(archiveDir)) {
   process.exit(1);
 }
 try {
-  fs.writeFileSync(lockFile, String(process.pid), { flag: 'wx', mode: 0o600 });
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, kind: 'redact', root, startedAt: Date.now() }), { flag: 'wx', mode: 0o600 });
 } catch (error) {
   if (error?.code === 'EEXIST') {
     console.error(`桥接似乎正在运行（${lockFile} 存在）。请先停止桥接再执行隐私删除；若确认桥接已退出，删除该锁文件后重试。`);
@@ -46,7 +52,8 @@ try {
 }
 const releaseOwnLock = () => {
   try {
-    if (Number(fs.readFileSync(lockFile, 'utf8').trim()) === process.pid) fs.unlinkSync(lockFile);
+    const meta = parseLockContent(fs.readFileSync(lockFile, 'utf8'));
+    if (meta?.pid === process.pid) fs.unlinkSync(lockFile);
   } catch {}
 };
 for (const sig of ['SIGINT', 'SIGTERM']) {

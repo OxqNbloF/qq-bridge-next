@@ -132,18 +132,33 @@ export function planStop({ port, root = DEFAULT_ROOT, lockPid = null, processes 
     };
   }
 
+  // 即使锁已过期或尚未重写（如退避睡眠期），若能按绝对路径证实是本仓库的 start.sh 守护进程，直接停止它
+  const ownGuard = processes.find((p) => isGuardProcess(p, root)) ?? null;
+  if (ownGuard) {
+    return {
+      action: 'stop',
+      reason: `检测到本仓库守护进程 start.sh（PID ${ownGuard.pid}），停止其进程树并清理残留锁`,
+      port, lockPid, listenerPid,
+      bridgePid: null,
+      guardPid: ownGuard.pid,
+      killPid: ownGuard.pid
+    };
+  }
+
   if (lockPid != null) {
     const detail = !lockProcess
       ? `PID ${lockPid} 已不存在`
       : `PID ${lockPid} 是 ${lockProcess.name || '未知进程'}，不是本项目的 bridge.js`;
-    // 锁没了但还有 start.sh 在跑：没法证明是本仓库的
-    // 这时删锁起新守护，可能和旧的抢同一个进程
-    // 宁可中止让用户重试，也不按名字猜着杀
-    const guard = processes.find((p) => isGuardProcess(p));
-    if (guard) {
+    // 只对无法判定绝对目录的相对路径 start.sh 保守中止；绝对路径属于其他目录的守护直接忽略
+    const ambiguousGuard = processes.find((p) => {
+      if (!isGuardProcess(p)) return false;
+      const script = commandTokens(p.commandLine).find((token) => /(^|[\\/])start\.sh$/.test(token));
+      return !script || !path.isAbsolute(script);
+    });
+    if (ambiguousGuard) {
       return {
         action: 'abort',
-        reason: `锁文件已过期（${detail}），但仍检测到 start.sh 守护循环 PID ${guard.pid}，无法证明归属；请等它把实例拉起来后重试，或手动关闭旧窗口`,
+        reason: `锁文件已过期（${detail}），但仍检测到无法判定目录的 start.sh 守护循环 PID ${ambiguousGuard.pid}；请等它把实例拉起来后重试，或手动关闭旧窗口`,
         port, lockPid, listenerPid
       };
     }

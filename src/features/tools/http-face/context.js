@@ -352,6 +352,14 @@ export function createToolContextRoutes(b) {
           const ref = b.forwardMediaKey(media);
           if (ref) rememberOrigin(st, `media:${ref}`, sources);
         }
+        for (const preview of nestedPreviews) {
+          if (!Array.isArray(preview?.messages)) continue;
+          b.rememberForwardMedia(key, preview.messages);
+          for (const message of preview.messages) for (const media of message.media || []) {
+            const ref = b.forwardMediaKey(media);
+            if (ref) rememberOrigin(st, `media:${ref}`, sources);
+          }
+        }
         rq.sendJson({ ok: true, key, id, ...formatted, nestedPreviews });
       } catch (error) {
         b.log(`合并转发查询失败 ${key} ${id}: ${error?.message ?? error}`);
@@ -481,8 +489,9 @@ export function createToolContextRoutes(b) {
       if (rq.req.headers['x-agent-token'] && !b.v2SessionAllowed(key)) { rq.sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('memory')) { rq.sendJson({ ok: false, error: '工具未启用：qq_memory_append' }, 403); return; }
       if (category === 'memberImpression') {
+        const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
         const rawTarget = String(extra.target ?? '').trim();
-        const qq = await impressionTarget(key, extra.target, b.getSocialV2State(key));
+        const qq = await impressionTarget(key, extra.target, b.getSocialV2State(key), { checkVisibility: isAgent });
         if (!qq) { rq.sendJson({ ok: false, error: '群友称呼无法唯一解析，请指定 member-* 标识或 QQ' }, 400); return; }
         extra.targetName = b.identityDisplayName(qq, key.startsWith('group:') ? key.slice(6) : null) || (/^[1-9]\d*$/.test(rawTarget) || MEMBER_REF_RE.test(rawTarget) ? '群友' : rawTarget);
         extra.target = qq;
@@ -519,23 +528,31 @@ export function createToolContextRoutes(b) {
       if (rq.req.headers['x-agent-token'] && !b.v2ToolEnabled('memory')) { rq.sendJson({ ok: false, error: '工具未启用：qq_memory_*' }, 403); return; }
       b.memoryAPI.assertWritable(key, category);
       const st = b.getSocialV2State(key);
+      const isAgent = rq.namespace === 'agent' || Boolean(rq.req.headers['x-agent-token'] || rq.req.headers['x-agent-call']);
+      const mergeVisibleSources = (prev) => {
+        const recentIds = [...(st.recentMessages ?? []), ...(st.unread ?? [])]
+          .filter((m) => m?.messageId != null && modelMessageVisible(b, key, m))
+          .slice(-8)
+          .map((m) => String(m.messageId));
+        return [...new Set([...(Array.isArray(prev) ? prev.map(String) : []), ...recentIds])].slice(-50);
+      };
       if (category !== 'memberImpression') assertMemoryWriteAllowed(b, key, { state: st });
       if (category === 'activeTopic' && Array.isArray(st.activeTopics)) {
         const idx = st.activeTopics.findIndex((t) => String(t?.text ?? '') === oldContent);
         if (idx < 0) { rq.sendJson({ ok: false, error: '找不到要编辑的 activeTopic' }, 404); return; }
-        st.activeTopics[idx].sourceMessageIds = [];
+        st.activeTopics[idx].sourceMessageIds = mergeVisibleSources(st.activeTopics[idx].sourceMessageIds);
         if (newContent !== undefined) st.activeTopics[idx].text = newContent.slice(0, 200);
         if (cleanNewExtra.pendingQuestion !== undefined) st.activeTopics[idx].pendingQuestion = String(cleanNewExtra.pendingQuestion).slice(0, 200);
         if (Array.isArray(cleanNewExtra.participants)) st.activeTopics[idx].participants = cleanNewExtra.participants.map(String).slice(0, 10);
       } else if (category === 'pendingThought' && Array.isArray(st.pendingThoughts)) {
         const idx = st.pendingThoughts.findIndex((t) => String(t?.text ?? '') === oldContent);
         if (idx < 0) { rq.sendJson({ ok: false, error: '找不到要编辑的 pendingThought' }, 404); return; }
-        st.pendingThoughts[idx].sourceMessageIds = [];
+        st.pendingThoughts[idx].sourceMessageIds = mergeVisibleSources(st.pendingThoughts[idx].sourceMessageIds);
         if (newContent !== undefined) st.pendingThoughts[idx].text = newContent.slice(0, 200);
         if (cleanNewExtra.motivation !== undefined) st.pendingThoughts[idx].motivation = String(cleanNewExtra.motivation).slice(0, 50);
         if (cleanNewExtra.expiresAtMs !== undefined) st.pendingThoughts[idx].expiresAt = Date.now() + Math.max(0, Number(cleanNewExtra.expiresAtMs) || 0);
       } else if (category === 'memberImpression' && st.memberImpressions && typeof st.memberImpressions === 'object') {
-        const oldTarget = await impressionTarget(key, target, st);
+        const oldTarget = await impressionTarget(key, target, st, { checkVisibility: isAgent });
         if (!oldTarget) { rq.sendJson({ ok: false, error: '找不到唯一的群友印象，请指定 member-* 标识或 QQ' }, 404); return; }
         if (oldTarget.startsWith('legacy:')) { rq.sendJson({ ok: false, error: '未解析的历史印象只读，请指定 QQ 重新记录' }, 400); return; }
         if (['__proto__', 'constructor', 'prototype'].includes(oldTarget)) { rq.sendJson({ ok: false, error: '非法的群友名字' }, 400); return; }
@@ -547,10 +564,10 @@ export function createToolContextRoutes(b) {
           return;
         }
         const im = st.memberImpressions[oldTarget];
-        const newTarget = cleanNewExtra.target ? await impressionTarget(key, cleanNewExtra.target, st) : oldTarget;
+        const newTarget = cleanNewExtra.target ? await impressionTarget(key, cleanNewExtra.target, st, { checkVisibility: isAgent }) : oldTarget;
         if (newTarget !== oldTarget) { rq.sendJson({ ok: false, error: '印象不能改变所属 QQ，请移除再添加' }, 400); return; }
         if (!newTarget || ['__proto__', 'constructor', 'prototype'].includes(newTarget)) { rq.sendJson({ ok: false, error: '非法的群友名字' }, 400); return; }
-        im.sourceMessageIds = [];
+        im.sourceMessageIds = mergeVisibleSources(im.sourceMessageIds);
         if (newContent !== undefined) {
           im.traits = newContent.split(/[,，、]/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
         }

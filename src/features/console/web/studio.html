@@ -1393,10 +1393,17 @@
           },
           body: body === undefined ? undefined : JSON.stringify(body),
         });
-        if (res.status === 401)
+        if (res.status === 401) {
+          localStorage.removeItem("consoleToken");
+          const entered = window.prompt("控制台令牌已失效，请输入新的访问令牌（位于 state/console-token）：");
+          if (entered && entered.trim()) {
+            localStorage.setItem("consoleToken", entered.trim());
+            location.reload();
+          }
           throw new Error(
-            "令牌已失效，请通过部署机提供的带令牌地址重新打开控制台",
+            "令牌已失效，请重新输入有效令牌或通过带令牌地址打开控制台",
           );
+        }
         const data = await res.json();
         if (!res.ok || data.ok === false)
           throw new Error(data.error || "请求失败（" + res.status + "）");

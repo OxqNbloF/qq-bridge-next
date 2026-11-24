@@ -43,7 +43,23 @@ export function hasTokenFragment(text, tokens) {
   }
   if (!hasAny) return false;
   const forms = sensitiveTextForms(value);
-  for (const form of forms) {
+  // 对纯十六进制令牌补充去常见分隔符形态与原始 Base64 二进制 hex 形态
+  const extraForms = [];
+  if (allHex) {
+    const stripped = forms[0].replace(/[\s._\-:/,;|'"`]+/g, '');
+    if (stripped.length >= TOKEN_FRAGMENT_WIDTH) extraForms.push(stripped);
+    for (const match of forms[0].matchAll(/[A-Za-z0-9+/_-]{8,}={0,2}/g)) {
+      const raw = match[0].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = raw.replace(/=+$/, '');
+      if (padded.length % 4 === 1) continue;
+      const buf = Buffer.from(padded, 'base64');
+      if (buf.length < 6) continue;
+      if (buf.toString('base64').replace(/=+$/, '') !== padded) continue;
+      extraForms.push(buf.toString('hex'));
+    }
+  }
+  const allCandidateForms = extraForms.length ? [...forms, ...extraForms] : forms;
+  for (const form of allCandidateForms) {
     if (form.length < TOKEN_FRAGMENT_WIDTH) continue;
     if (allHex && !/[0-9a-f]{12}/i.test(form)) continue;
     for (const token of tokens) {

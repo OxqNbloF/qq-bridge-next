@@ -39,10 +39,17 @@ async function gatewayInfo() {
   const { httpUrl, token } = getHostConfig();
   try {
     const res = await fetch(`${httpUrl}/get_login_info`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: '{}',
+      redirect: 'error',
       signal: AbortSignal.timeout(5000)
     });
     if (!res.ok) {
+      try { await res.body?.cancel(); } catch {}
       const hint = res.status === 426 ? '（HTTP 426：snowluma.httpUrl 可能指向了 WebSocket 端口，请改为 OneBot HTTP API 地址）' : '';
       return { reachable: false, httpStatus: res.status, ...(hint ? { hint } : {}) };
     }

@@ -16,7 +16,7 @@ function usesSource(item, key, messageId) {
   }
   if (ids.length) return false;
   if (item.conv_id !== key && item.conv_id !== 'global') return false;
-  return (LIGHT_MEMORY_KINDS.includes(item.kind) || ['term', 'slang'].includes(item.kind)) && (item.data?.source ?? item.source) !== 'manual';
+  return (LIGHT_MEMORY_KINDS.includes(item.kind) || ['term', 'slang', 'alias'].includes(item.kind)) && (item.data?.source ?? item.source) !== 'manual';
 }
 
 function evidenceUsesSource(value, key, messageId) {
@@ -53,7 +53,8 @@ export function redactLightMemory(state, messageId) {
 
 // 无来源号的旧日志只保留时间和会话占位；带来源号的新日志只删目标消息。
 export function redactActivityLog(file, key, messageId) {
-  const match = new RegExp(`^\\[\\d{2}:\\d{2}:\\d{2}\\] (?:\\[msg:[^\\]]*\\] )?${key}(?=\\s|（|$)`);
+  const escapedKey = String(key ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`^\\[\\d{2}:\\d{2}:\\d{2}\\] (?:\\[msg:[^\\]]*\\] )?${escapedKey}(?=\\s|（|$)`);
   for (const target of [file, `${file}.1`]) {
     let text;
     try { text = fs.readFileSync(target, 'utf8'); }

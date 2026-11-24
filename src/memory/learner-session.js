@@ -56,11 +56,22 @@ export function createMemoryLearnerSession(b) {
       reuseGeneration = generation;
       if (oldId) retire(oldId);
     } else if (saved.scope !== learnerScope) {
-      // 换范围时先把旧会话存起来，不同范围互不串话
+      // 换范围时先验证目标范围的停放会话，成功后再提交切换，避免 RPC 抛错丢失停放会话
       const oldId = b.memoryLearnerSessionId || saved.sessionId;
+      const reuse = parkedSessions.get(learnerScope);
+      let reusedId = null;
+      if (reuse) {
+        const status = await b.ensureChatModel(reuse);
+        if (reuseGeneration !== generation) throw new Error('学习会话已作废，丢弃在途复用');
+        if (status === 'not-found') {
+          parkedSessions.delete(learnerScope);
+        } else {
+          parkedSessions.delete(learnerScope);
+          reusedId = reuse;
+        }
+      }
       if (oldId) {
         parkedSessions.set(saved.scope, String(oldId));
-        // 停放期间不订阅事件流，复用时重新 follow
         if (!learnerWaiters.has(oldId) && !learnerCollectors.has(oldId)) {
           b.learnerSessions.delete(oldId);
           b.api.events.forget?.(String(oldId));
@@ -71,22 +82,8 @@ export function createMemoryLearnerSession(b) {
         parkedSessions.delete(oldestScope);
         retire(oldestId);
       }
-      const reuse = parkedSessions.get(learnerScope);
-      parkedSessions.delete(learnerScope);
-      if (reuse) {
-        const status = await b.ensureChatModel(reuse);
-        if (reuseGeneration !== generation) throw new Error('学习会话已作废，丢弃在途复用');
-        if (status === 'not-found') {
-          b.memoryLearnerSessionId = null;
-          writeSessionFile(preset, learnerScope);
-          throw new Error('session_not_found');
-        }
-        b.memoryLearnerSessionId = reuse;
-        writeSessionFile(preset, learnerScope);
-      } else {
-        b.memoryLearnerSessionId = null;
-        writeSessionFile(preset, learnerScope);
-      }
+      b.memoryLearnerSessionId = reusedId;
+      writeSessionFile(preset, learnerScope);
     }
     if (b.memoryLearnerSessionId) {
       b.learnerSessions.add(b.memoryLearnerSessionId);
@@ -97,12 +94,16 @@ export function createMemoryLearnerSession(b) {
       const candidateId = String(saved.sessionId);
       const status = await b.ensureChatModel(candidateId);
       if (reuseGeneration !== generation) throw new Error('学习会话已作废，丢弃在途复用');
-      if (status === 'not-found') throw new Error('session_not_found');
-      filePreset = preset;
-      b.memoryLearnerSessionId = candidateId;
-      b.learnerSessions.add(candidateId);
-      b.api.events.follow(candidateId);
-      return b.memoryLearnerSessionId;
+      if (status !== 'not-found') {
+        filePreset = preset;
+        b.memoryLearnerSessionId = candidateId;
+        b.learnerSessions.add(candidateId);
+        b.api.events.follow(candidateId);
+        return b.memoryLearnerSessionId;
+      }
+      // 服务端会话已不存在：清掉失效引用，继续落入下方直接新建会话
+      b.memoryLearnerSessionId = null;
+      writeSessionFile(preset, learnerScope);
     }
     const creationGeneration = generation;
     const dir = path.join(b.STATE_DIR, 'memory-agent');

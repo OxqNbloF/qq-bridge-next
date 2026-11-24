@@ -98,6 +98,9 @@ export async function validateOutboundReferences(b, key, intent, items) {
     if (reply && !/^-?[1-9]\d*$/.test(reply)) throw outboundError('replyToMessageId 必须是非零整数（消息 id 可能为负数）');
     if (at && kind === 'private') throw outboundError('私聊不需要 @');
     const resolvedAt = at ? await resolveMemberTarget(b, key, at, { fieldName: 'atUserId' }) : '';
+    if (resolvedAt && kind === 'group' && typeof b.assertGroupMember === 'function') {
+      await b.assertGroupMember(Number(id), resolvedAt);
+    }
     if (reply && intent.resolveReply) {
       const resolved = await b.resolveReplyTargetV2(b.getSocialV2State(key), kind, Number(id), reply);
       if (!resolved) throw outboundError('无法解析被引用消息，请确认 message id 正确且属于当前会话（可用 qq_get_message_detail 查看）');

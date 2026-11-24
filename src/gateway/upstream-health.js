@@ -37,7 +37,9 @@ export function createUpstreamHealth({ cfg, log, fetch: doFetch, timers }) {
   /** 供 /api/console/status 与控制台使用的只读快照。 */
   function snowlumaHealthSnapshot() {
     const now = Date.now();
-    const refAt = snowlumaHealth.lastPacketAt || (snowlumaHealth.connected ? snowlumaHealth.connectedAt : 0);
+    const refAt = snowlumaHealth.connected
+      ? Math.max(snowlumaHealth.lastPacketAt, snowlumaHealth.connectedAt)
+      : snowlumaHealth.lastPacketAt;
     const agoMs = refAt ? now - refAt : null;
     // 只有已连接状态下无事件才报「已连接但静默」，断开时不误报
     const silent = snowlumaHealth.connected !== false && refAt > 0 && agoMs > SNOWLUMA_SILENCE_WARN_MS;

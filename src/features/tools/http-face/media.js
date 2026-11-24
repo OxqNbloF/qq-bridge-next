@@ -538,7 +538,7 @@ export function createToolMediaRoutes(b) {
       // 读取不会顺便刷新，要刷新请用 POST /api/console/stickers/sync
       try {
         const synced = await b.syncStickerLibrary(false);
-        const list = formatStickerList(synced?.entries ?? b.stickerEntries, query, count);
+        const list = formatStickerList(synced?.entries ?? b.stickerEntries, query, count, '', { includeAllScopes: true });
         rq.sendJson({ ok: true, ...list, syncedAt: synced?.syncedAt ?? b.stickerSyncedAt, fromCache: synced?.fromCache ?? false, writable: b.stickerStoreWritable });
       } catch (error) {
         rq.sendJson({ ok: false, error: `获取表情失败：${error?.message ?? error}` }, 500);

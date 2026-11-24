@@ -68,6 +68,7 @@ export function createSnowlumaWs(b) {
       // 用实际连接地址（自愈后可能与 config 里的初值不同，别打印过期的那个）
       const connectedUrl = bot.url ?? b.cfg.snowluma.wsUrl;
       b.snowlumaHealth.connected = true;
+      b.snowlumaHealth.connectedAt = Date.now();
       b.log(`SnowLuma 已连接：${connectedUrl}`);
       // 连上只代表 WebSocket 通，不代表 QQ 消息收得到
       void b.pollSnowlumaStatus();

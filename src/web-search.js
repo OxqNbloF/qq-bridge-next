@@ -210,6 +210,7 @@ function postJsonOnce(url, address, { headers, body, timeoutMs, connectTimeoutMs
         },
         // 证书按真实域名检查（IP 字面量不得设 SNI），实际连的是固定 IP
         ...(net.isIP(bareHost) ? {} : { servername: bareHost }),
+        agent: false,
         rejectUnauthorized: true,
         timeout: timeoutMs
       }, (res) => {
@@ -249,6 +250,10 @@ function postJsonOnce(url, address, { headers, body, timeoutMs, connectTimeoutMs
           connected = true;
           if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
         };
+        if (!socket.connecting && !socket.secureConnecting) {
+          markConnected();
+          return;
+        }
         socket.once('secureConnect', markConnected);
         socket.once('connect', () => { if (socket.encrypted === false) markConnected(); });
         if (connectTimeoutMs > 0 && connectTimeoutMs < timeoutMs) {
@@ -460,7 +465,8 @@ export async function webSearch(query, options = {}) {
   if (!q) throw new Error('查询词为空');
   const config = { ...loadSearchConfig(options.root ?? process.cwd()), ...(options.config ?? {}) };
   const wanted = options.provider ?? config.provider;
-  const cacheKey = `${wanted}|${q}|${config.maxResults}`;
+  const hasDsCred = Boolean(config.apiKey || (config.apiKeyEnv && process.env[config.apiKeyEnv]));
+  const cacheKey = `${wanted}|${hasDsCred ? '1' : '0'}|${q}|${config.maxResults}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
 
@@ -500,7 +506,10 @@ export async function webSearch(query, options = {}) {
   if (Array.isArray(value.results) && value.results.length === 0) {
     value = { ...value, note: [value.note, '没有搜到结果（可换个说法/加限定词；仍为空就不要再重复搜索）'].filter(Boolean).join('；') };
   }
-  cache.set(cacheKey, { at: Date.now(), value });
+  // 空结果或 auto 降级回退结果不长期缓存，避免配置好凭据或瞬时波动后继续命中旧降级结果
+  if (Array.isArray(value.results) && value.results.length > 0 && !value.fallbackFrom) {
+    cache.set(cacheKey, { at: Date.now(), value });
+  }
   if (cache.size > CACHE_MAX_ENTRIES) {
     for (const key of [...cache.keys()].slice(0, cache.size - CACHE_MAX_ENTRIES)) cache.delete(key);
   }

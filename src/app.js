@@ -540,12 +540,12 @@ async function main() {
     }))
     : null;
   if (messageArchive) log(`消息池 archive 已启用：${path.relative(ROOT, ctx.paths.archive)}（全量原文，只追加）`);
-  // 每天清理一次过期存档，只删已经压缩过记忆的旧文件。
+  // 每天清理一次过期存档；开启长期记忆时只删已压缩旧文件，未开长期记忆时按保留期正常清理。
   if (messageArchive) {
     app.archiveRetention = startArchiveRetention({
       archive: messageArchive,
       retentionDays: cfg.archive.retentionDays,
-      cursorFor: compressCursorFrom(ctx.stores),
+      cursorFor: cfg.memory.enabled ? compressCursorFrom(ctx.stores) : () => Infinity,
       log,
       timers: { setTimeout, setInterval, clearTimeout, clearInterval },
     });
@@ -813,7 +813,7 @@ async function main() {
     replyInfoCache,
     pruneGroupMemberNameCache, assertGroupMember, resolveGroupMemberName,
     pruneReplyInfoCache, resolveReplyInfo, resolveReplyTargetV2, isQuoteTargetSelf,
-  } = createInboundContext({ getBot: () => bot, log });
+  } = createInboundContext({ getBot: () => bot, getSelfId: () => selfUserId, log });
 
   // 记录 AI 反馈和工具调用，写入前先打码；代码在 feedback.js
   const { readFeedbackEntries, appendFeedbackEntry, readToolLog, appendToolLog, redactSensitive, sanitizeToolArgs } = Object.assign(app, createFeedbackStore(app));

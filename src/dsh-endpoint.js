@@ -63,8 +63,8 @@ export async function probeDshBaseUrl(baseUrl, { timeoutMs = PROBE_TIMEOUT_MS } 
   }
 }
 
-/** 列出候选地址：DSH_WEB_URL 优先，其次配置地址；已去重 */
-export async function listDshCandidateBaseUrls({ current } = {}) {
+/** 列出候选地址：DSH_WEB_URL 优先，其次配置地址，再扫本机 DSH 日志里的最新回环端口与默认端口；已去重 */
+export async function listDshCandidateBaseUrls({ current, dshHome } = {}) {
   const candidates = [];
   // 去重加入候选
   const push = (value) => {
@@ -73,6 +73,49 @@ export async function listDshCandidateBaseUrls({ current } = {}) {
   };
   push(process.env.DSH_WEB_URL);
   push(current);
+  // 扫描本机 DSH 日志最新 server-*.log 首尾 64KB 提取动态回环端口
+  try {
+    const fsMod = await import('node:fs');
+    const osMod = await import('node:os');
+    const pathMod = await import('node:path');
+    const home = dshHome || process.env.DSH_HOME || pathMod.join(osMod.homedir(), '.dsh');
+    const logDirs = [pathMod.join(home, 'logs'), pathMod.join(home, 'guard', 'logs')];
+    const logFiles = [];
+    for (const dir of logDirs) {
+      if (!fsMod.existsSync(dir)) continue;
+      for (const name of fsMod.readdirSync(dir)) {
+        if (!/^server-.*\.log$/i.test(name)) continue;
+        const full = pathMod.join(dir, name);
+        try {
+          const st = fsMod.statSync(full);
+          if (st.isFile()) logFiles.push({ full, mtimeMs: st.mtimeMs, size: st.size });
+        } catch {}
+      }
+    }
+    logFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const SLICE = 65536;
+    const URL_RE = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d{2,5}/gi;
+    for (const f of logFiles.slice(0, 3)) {
+      try {
+        let text = '';
+        if (f.size <= SLICE * 2) {
+          text = fsMod.readFileSync(f.full, 'utf8');
+        } else {
+          const fd = fsMod.openSync(f.full, 'r');
+          try {
+            const head = Buffer.allocUnsafe(SLICE);
+            const tail = Buffer.allocUnsafe(SLICE);
+            const hRead = fsMod.readSync(fd, head, 0, SLICE, 0);
+            const tRead = fsMod.readSync(fd, tail, 0, SLICE, Math.max(0, f.size - SLICE));
+            text = `${head.subarray(0, hRead).toString('utf8')}\n${tail.subarray(0, tRead).toString('utf8')}`;
+          } finally { fsMod.closeSync(fd); }
+        }
+        const matches = text.match(URL_RE) || [];
+        for (let i = matches.length - 1; i >= 0; i -= 1) push(matches[i]);
+      } catch {}
+    }
+  } catch {}
+  push('http://127.0.0.1:3080');
   return candidates.slice(0, MAX_CANDIDATES);
 }
 

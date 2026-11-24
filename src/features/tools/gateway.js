@@ -26,6 +26,10 @@ export function createToolGateway(b) {
     const target = sendRoute
       ? `${url.pathname === '/api/agent/send/private' ? 'private' : 'group'}:${String((url.pathname === '/api/agent/send/private' ? body.userId : body.groupId) ?? '').trim()}` : body.key ?? body.target ?? key;
     const candidates = [target, ...url.searchParams.getAll('key'), body.key, sendRoute ? body.target : undefined].filter((value) => value !== undefined);
+    if (candidates.some((value) => String(value ?? '').trim() !== canonicalV2Key(value))) {
+      sendJson({ ok: false, error: 'key 格式不规范（不允许前导零或多余字符）' }, 400);
+      return false;
+    }
     if (candidates.some((value) => canonicalV2Key(value) !== canonicalV2Key(key))) return reject('令牌不能跨会话使用');
     if (body.token !== undefined && body.token !== req.headers['x-agent-token']) return reject('请求体与请求头令牌不一致');
     if (rule[2] === 'respond') {

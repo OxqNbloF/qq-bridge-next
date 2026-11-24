@@ -31,8 +31,8 @@ export function readOneBotTokens(homeDir) {
     try {
       const j = JSON.parse(fs.readFileSync(path.join(dir, e.name), 'utf8'));
       const nets = j?.networks ?? {};
-      const http = Array.isArray(nets.httpServers) ? nets.httpServers[0] : null;
-      const ws = Array.isArray(nets.wsServers) ? nets.wsServers[0] : null;
+      const http = Array.isArray(nets.httpServers) ? (nets.httpServers.find((s) => s && s.enable !== false) ?? nets.httpServers[0]) : null;
+      const ws = Array.isArray(nets.wsServers) ? (nets.wsServers.find((s) => s && s.enable !== false) ?? nets.wsServers[0]) : null;
       out.push({
         uin: m[1],
         file: path.join(dir, e.name),
@@ -118,7 +118,7 @@ export async function discoverSnowLumaConnection({
   for (const home of homes) {
     for (const entry of readOneBotTokens(home)) {
       if (entry.http) add(entry.http.token, `onebot_${entry.uin}.json`, formatLocalEndpoint('http', entry.http.host, entry.http.port));
-      if (entry.ws?.token) wsInfo.set(entry.uin, { token: entry.ws.token, url: formatLocalEndpoint('ws', entry.ws.host, entry.ws.port) });
+      if (entry.ws) wsInfo.set(entry.uin, { token: entry.ws.token, url: formatLocalEndpoint('ws', entry.ws.host, entry.ws.port) });
     }
   }
   if (!explicit && candidates.length === 0) add('', 'no-token', base);

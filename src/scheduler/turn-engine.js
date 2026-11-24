@@ -74,9 +74,10 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
         timers.at(`retry:${request.conv}`, entry.readyAt, () => { void drain(); });
         return;
       }
-      if (result?.ok === false || result?.skipped || result?.command) {
-        entry.resolve(result);
-        finish(request.conv, request.turnId, result?.ok === false ? 'rejected' : 'completed');
+      if (!result || typeof result !== 'object' || result?.ok === false || result?.skipped || result?.command) {
+        const resolved = (!result || typeof result !== 'object') ? { ok: true, skipped: true } : result;
+        entry.resolve(resolved);
+        finish(request.conv, request.turnId, resolved?.ok === false ? 'rejected' : 'completed');
         return;
       }
       entry.phase = 'running';
@@ -103,12 +104,18 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
       const running = [...conversations.values()].filter((state) => state.active).length + externalRunning();
       let slots = Math.max(0, maxConcurrent - running);
       const candidates = [...conversations.entries()].filter(([conv, state]) => !state.active && state.queue.length && !paused.has(conv))
-        .map(([conv, state]) => ({ conv, state, entry: state.queue.sort(compareRequests)[0] }))
+        .map(([conv, state]) => {
+          state.queue.sort(compareRequests);
+          // 优先选取已到期的最高优项，消除高优延迟项阻塞已就绪低优项的队头阻塞
+          const readyIdx = state.queue.findIndex((item) => item.readyAt <= now());
+          const idx = readyIdx >= 0 ? readyIdx : 0;
+          return { conv, state, entry: state.queue[idx], idx };
+        })
         .sort((a, b) => compareRequests(a.entry, b.entry));
-      for (const { conv, state, entry } of candidates) {
+      for (const { conv, state, entry, idx } of candidates) {
         if (slots <= 0) break;
         if (!allowed(entry.request)) {
-          state.queue.shift();
+          state.queue.splice(idx, 1);
           remember(entry.request.turnId);
           signal('turn:skipped', entry, { reason: 'gate' });
           entry.resolve({ ok: true, skipped: true });
@@ -122,10 +129,11 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
             signal('turn:skipped', entry, { reason: 'rate' });
             entry.rateNoted = true;
           }
-          timers.at(`retry:${conv}`, now() + wait, () => { void drain(); });
+          const minDue = state.queue.reduce((m, item) => Math.min(m, Math.max(item.readyAt, now() + rateDelay(state.times, item.request.rate, now()))), now() + wait);
+          timers.at(`retry:${conv}`, minDue, () => { void drain(); });
           continue;
         }
-        state.queue.shift();
+        state.queue.splice(idx, 1);
         slots -= 1;
         void run(state, entry);
       }
@@ -233,7 +241,7 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
     timers.cancel(`retry:${conv}`);
     for (const entry of entries) {
       timers.cancel(`batch:${conv}:${entry.request.turnId}`);
-      remember(entry.request.turnId);
+      if (entry.delivery !== 'undelivered') remember(entry.request.turnId);
       signal('turn:skipped', entry, { reason });
       entry.resolve({ ok: true, skipped: true, turnId: entry.request.turnId });
     }
@@ -245,7 +253,6 @@ export function createTurnEngine({ execute, allowed = () => true, ready = () => 
     const cancelled = state.queue.filter((entry) => entry.readyAt > now() && matches(entry.request));
     for (const entry of cancelled) {
       timers.cancel(`batch:${conv}:${entry.request.turnId}`);
-      remember(entry.request.turnId);
       signal('turn:skipped', entry, { reason });
       entry.resolve({ ok: true, skipped: true });
     }

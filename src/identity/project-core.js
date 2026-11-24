@@ -2,12 +2,12 @@
 import crypto from 'node:crypto';
 
 export const IDENTITY_FIELDS = [
-  'qq', 'userId', 'user_id', 'subject_uid',
+  'qq', 'userId', 'user_id', 'subject_uid', 'sourceQqs', 'senderQq',
   'targetId', 'target_id', 'targetUserId', 'target_user_id',
   'senderId', 'sender_id', 'senderUserId', 'sender_user_id',
   'speakerIds',
 ];
-export const HIDDEN_IDENTITY_FIELDS = ['qq', 'userId', 'user_id', 'isOwner', 'subject_uid', 'qqs'];
+export const HIDDEN_IDENTITY_FIELDS = ['qq', 'userId', 'user_id', 'isOwner', 'ownerLabel', 'subject_uid', 'qqs', 'sourceQqs', 'senderQq'];
 export const MESSAGE_ID_FIELDS = [
   'id', 'seq', 'messageId', 'message_id', 'msgId', 'msg_id',
   'replyToMessageId', 'source_msg_ids', 'sourceMessageIds', 'forwardIds',
@@ -20,7 +20,8 @@ const DATA_IMAGE_URI_RE = /^(?:data:image\/[a-z0-9.+-]+;base64,|base64:\/\/)[A-Z
 
 const CONV_KEY_RE = /^(group|private):[1-9]\d{0,15}$/;
 const BARE_QQ_RE = /(?<!\d)[1-9]\d{0,15}(?!\d)/g;
-const QQ_PREFIX_RE = /(?:ownerQQ|QQ|qq|user_id|userId|uin|at|@)\s*[:：=]?\s*$/;
+const QQ_PREFIX_RE = /(?:(?<![A-Za-z0-9_])(?:ownerQQ|QQ|qq|user_id|userId|uin)\s*[:：=]?\s*$|@\s*[:：=]?\s*$|(?<![A-Za-z0-9_])at\s*[:=]\s*$)/;
+const PREFIXED_QQ_WIDTH_RE = /^[1-9]\d{4,11}$/;
 const IMAGE_MIME_RE = /^image\/[a-z0-9.+-]+$/i;
 export const MEMBER_REF_RE = /^member-[0-9a-f]{16}$/;
 export const memberRef = (id) => `member-${crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 16)}`;
@@ -74,7 +75,7 @@ export function projectModelTree(value, { collectRoots = [value], seedIds = [], 
     if (typeof node === 'string' && (CONV_KEY_RE.test(node) || MEMBER_REF_RE.test(node) || DATA_IMAGE_URI_RE.test(node))) return node;
     if (typeof node === 'string') {
       return node.replace(BARE_QQ_RE, (id, offset) => (
-        ids.has(id) || QQ_PREFIX_RE.test(node.slice(Math.max(0, offset - 32), offset)) ? labelOf(id) : id
+        ids.has(id) || (PREFIXED_QQ_WIDTH_RE.test(id) && QQ_PREFIX_RE.test(node.slice(Math.max(0, offset - 32), offset))) ? labelOf(id) : id
       ));
     }
     if (typeof node === 'number' && ids.has(String(node))) return labelOf(node);

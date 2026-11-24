@@ -7,10 +7,13 @@ function flushOnShutdown(withSaveState = true) {
   flushed = true;
   app.shutdownRequested = true; /* 在途补偿不再发起新回执，队列随状态落盘，重启后续补 */
   try { app.archiveRetention?.stop?.(); } catch {}
-  try { app.flushSocialV2State?.(); } catch {} /* 把还攒在手里、没存盘的消息先存下去 */
-  try { app.flushIdentity?.(); } catch {}
-  if (withSaveState) {
-    try { saveState(); } catch (error) { try { log('退出前保存状态失败:', error?.message ?? error); } catch {} }
+  // 端口绑定前因 EADDRINUSE 退出时禁止覆盖存活实例的磁盘状态
+  if (!app.skipFlushOnExit) {
+    try { app.flushSocialV2State?.(); } catch {} /* 把还攒在手里、没存盘的消息先存下去 */
+    try { app.flushIdentity?.(); } catch {}
+    if (withSaveState) {
+      try { saveState(); } catch (error) { try { log('退出前保存状态失败:', error?.message ?? error); } catch {} }
+    }
   }
   releaseLock();
 }

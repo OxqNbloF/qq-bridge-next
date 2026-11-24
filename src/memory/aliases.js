@@ -12,8 +12,11 @@ export function createAliasMemory(b) {
     const id = `alias:${conv}:${crypto.createHash('sha256').update(qq + '\n' + normalizeAliasText(text)).digest('hex').slice(0, 12)}`;
     const now = new Date().toISOString();
     const old = b.memoryPool.query({ kind: 'alias', convId: conv, clone: false }).find(item => item.id === id && (!item.expire_at || Date.parse(item.expire_at) > Date.now()));
+    const initEvidence = Array.isArray(extra.sourceMessageIds)
+      ? [...new Set([...(Array.isArray(old?.evidence) ? old.evidence : []), ...extra.sourceMessageIds.map(String).filter(Boolean)])].slice(-50)
+      : (old?.evidence ?? null);
     const item = { ...old, id, conv_id: conv, kind: 'alias', status: old?.status ?? 'candidate', content: text, subject_uid: qq,
-      source_msg_ids: old?.source_msg_ids ?? [], created_at: old?.created_at ?? now, updated_at: now, expire_at: old?.expire_at ?? new Date(Date.now() + 30 * 86400000).toISOString() };
+      source_msg_ids: old?.source_msg_ids ?? [], ...(initEvidence?.length ? { evidence: initEvidence } : {}), created_at: old?.created_at ?? now, updated_at: now, expire_at: old?.expire_at ?? new Date(Date.now() + 30 * 86400000).toISOString() };
     b.memoryPool.update(items => {
       const own = [...items.filter(entry => entry.kind === 'alias' && entry.conv_id === conv && entry.id !== id && (!entry.expire_at || Date.parse(entry.expire_at) > Date.now())), item].slice(-200);
       return [...items.filter(entry => entry.kind !== 'alias' || entry.conv_id !== conv), ...own];

@@ -37,7 +37,7 @@ while :; do
     exit 2
   fi
   ran_for=$(( $(date +%s) - started_at ))
-  if [ "$ran_for" -ge 60 ]; then
+  if [ "$code" -eq 0 ] || [ "$ran_for" -ge 60 ]; then
     delay=5
   fi
   echo "[$(date '+%F %T')] bridge exited (code $code, uptime ${ran_for}s), restarting in ${delay} seconds..."
@@ -45,7 +45,7 @@ while :; do
   sleep_pid=$!
   wait "$sleep_pid" 2>/dev/null || true
   sleep_pid=""
-  if [ "$ran_for" -lt 60 ]; then
+  if [ "$code" -ne 0 ] && [ "$ran_for" -lt 60 ]; then
     delay=$(( delay * 2 ))
     if [ "$delay" -gt 60 ]; then delay=60; fi
   fi

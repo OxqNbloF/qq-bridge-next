@@ -20,7 +20,15 @@ export function createRecallHandler(b) {
     let cleaned = false;
     if (b.replyInfoCache?.delete(`${canonical}:${messageId}`)) cleaned = true;
     const media = b.messageMediaStore?.get(canonical);
-    if (media && media.delete(messageId)) cleaned = true;
+    if (media) {
+      const targetRef = media.get(messageId);
+      if (media.delete(messageId)) cleaned = true;
+      if (targetRef !== undefined) {
+        for (const [k, v] of media) {
+          if (v === targetRef) { media.delete(k); cleaned = true; }
+        }
+      }
+    }
     // 清理一代社交缓冲（recentMessages / pendingSummaries / silentContext）
     const scrubV1List = (list) => {
       if (!Array.isArray(list)) return false;
@@ -64,9 +72,6 @@ export function createRecallHandler(b) {
     });
     for (const field of ['recentMessages', 'unread']) {
       st[field] = (st[field] || []).map((m) => (String(m?.messageId ?? '') === messageId ? placeholder(m) : m));
-    }
-    if (media) {
-      for (const m of originals) if (m.seq != null) media.delete(String(m.seq));
     }
     for (const m of originals) {
       for (const fid of m.forwardIds || []) b.seenForwardIds.get(canonical)?.delete(String(fid));

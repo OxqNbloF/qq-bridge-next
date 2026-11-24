@@ -1,4 +1,5 @@
 import { adaptLegacyConfig, syncConfigAliases } from '../../../infra/legacy-config.js';
+import { withConfigWriteLock } from '../../../infra/config.js';
 // 控制台人格管理与仿真提示词路由；鉴权在分发前完成
 import { ROUTE_NEXT } from '../../../infra/http/route-next.js';
 import fs from 'node:fs';
@@ -46,11 +47,13 @@ export function createConsoleRoleRoutes(b) {
       const body = await rq.readBody();
       const next = b.applyRoleInjectLimit(body.maxInjectChars);
       const configFile = path.join(b.ROOT, 'config.json');
-      const file = adaptLegacyConfig(readConfigObject(configFile));
-      file.role = { ...(file.role ?? {}), maxInjectChars: next };
-      atomicWriteJson(configFile, syncConfigAliases(file));
-      b.cfg.role = { ...(b.cfg.role ?? {}), maxInjectChars: next };
-      b.roleInjectMaxChars = next;
+      await withConfigWriteLock(async () => {
+        const file = adaptLegacyConfig(readConfigObject(configFile));
+        file.role = { ...(file.role ?? {}), maxInjectChars: next };
+        atomicWriteJson(configFile, syncConfigAliases(file));
+        b.cfg.role = { ...(b.cfg.role ?? {}), maxInjectChars: next };
+        b.roleInjectMaxChars = next;
+      });
       b.log(`控制台：人格注入上限已设为 ${next} 字符（下一条消息生效）`);
       rq.sendJson({ ok: true, maxInjectChars: next, limits: { injectMaxChars: next } });
       return;

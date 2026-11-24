@@ -6,6 +6,7 @@ export function createOutbox(b) {
   const QUEUE_MAX = 50;
   const QUEUE_HINT_COOLDOWN_MS = 30_000;
   const queueRetries = new Map(); // key -> 连续补投失败次数（退避用）
+  const queueCooldownUntil = new Map(); // key -> 冷却截止时间戳
   let retryTimer = null;
   let retryTimerDueAt = 0;
 
@@ -43,6 +44,7 @@ export function createOutbox(b) {
       queued.set(key, items);
     }
     queueRetries.delete(key); // 新消息入队重置退避计数
+    queueCooldownUntil.delete(key);
     scheduleFlush(3000);
   };
 
@@ -58,7 +60,17 @@ export function createOutbox(b) {
     try {
       const entries = [...queued.entries()];
       queued.clear();
+      const now = Date.now();
       for (const [key, items] of entries) {
+        const cooldownUntil = queueCooldownUntil.get(key) ?? 0;
+        if (cooldownUntil > now) {
+          const existing = queued.get(key) ?? [];
+          const merged = items.concat(existing);
+          queued.set(key, merged.length > QUEUE_MAX ? merged.slice(-QUEUE_MAX) : merged);
+          scheduleFlush(Math.max(1000, cooldownUntil - now));
+          continue;
+        }
+        queueCooldownUntil.delete(key);
         let sent = 0;
         let failed = 0;
         for (let i = 0; i < items.length; i++) {
@@ -72,12 +84,13 @@ export function createOutbox(b) {
             }
             const result = await b.deliverPrompt(key, item.promptText, { farewell: item.farewell, silent: item.silent, media: item.media ?? [], wakeReason: item.wakeReason, wakeReminder: item.wakeReminder, sourceQqs: item.sourceQqs });
             if (result?.queued === true) {
-              // 仍被底层排入等待队列，不再计数为已发；保留剩余项
+              // 仍被底层排入等待队列，不再计数为已发；保持原有顺序并排定续刷
               const rest = items.slice(i + 1);
               if (rest.length > 0) {
                 const existing = queued.get(key) ?? [];
-                const merged = existing.concat(rest);
+                const merged = rest.concat(existing);
                 queued.set(key, merged.length > QUEUE_MAX ? merged.slice(-QUEUE_MAX) : merged);
+                scheduleFlush(3000);
               }
               break;
             }
@@ -91,6 +104,7 @@ export function createOutbox(b) {
               break;
             }
             queueRetries.delete(key);
+            queueCooldownUntil.delete(key);
             sent += 1;
           } catch (error) {
             b.log(`补投异常 ${key}: ${error?.message ?? error}`);
@@ -109,10 +123,11 @@ export function createOutbox(b) {
           queueRetries.set(key, retries);
           if (retries > 5) {
             b.log(`补投持续失败，暂停快速重试，队列保留 (${key})，60 秒后恢复一次`);
+            queueCooldownUntil.set(key, Date.now() + 60000);
             scheduleFlush(60000);
-            queueRetries.delete(key);
           } else {
             const delay = Math.min(3000 * Math.pow(2, retries - 1), 60000);
+            queueCooldownUntil.set(key, Date.now() + delay);
             scheduleFlush(delay);
           }
         }

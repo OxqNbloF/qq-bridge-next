@@ -20,6 +20,7 @@ export function createConsoleMaintenanceRoutes(b) {
       }
       if (!key || !b.state.sessions[key]) { rq.sendJson({ ok: false, error: '会话不存在' }, 404); return; }
       b.sessionEpoch++;
+      b.bumpConversationEpoch?.(key);
       const oldSessionId = b.state.sessions[key];
       delete b.state.sessions[key];
       b.modelAppliedSessions.delete(oldSessionId);
@@ -117,6 +118,9 @@ export function createConsoleMaintenanceRoutes(b) {
       // 所有会话和令牌一起作废，两张表直接清空最省心
       b.invalidateMemoryLearnerSession(true);
       b.forgetConversationMemory(); // 全部会话的记忆池 / 索引 / 视图
+      for (const k of new Set([...Object.keys(b.state.sessions), ...b.socialV2.conversations.keys()])) {
+        b.bumpConversationEpoch?.(k);
+      }
       b.socialV2.conversations.clear();
       b.CONVERSATION_TOKENS.clear();
       b.KNOWN_AGENT_TOKENS.clear();

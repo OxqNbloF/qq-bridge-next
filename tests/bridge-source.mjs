@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const MOVED_DIRS = ['infra', 'gateway', 'inbound', 'pipeline', 'scheduler', 'outbound', 'modes', 'conversations', 'dsh', 'features', 'identity', 'store', 'policy'];
+const MOVED_DIRS = ['infra', 'gateway', 'inbound', 'pipeline', 'scheduler', 'outbound', 'modes', 'conversations', 'dsh', 'features', 'identity', 'store', 'policy', 'gate', 'memory'];
 
 // 把一个文件夹里的 .js 文件全找出来
 function walk(dir) {

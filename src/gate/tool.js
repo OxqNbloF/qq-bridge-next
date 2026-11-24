@@ -66,10 +66,13 @@ export function assertToolMemberAllowed(b, key, rule, originalSources) {
   if (!flags.length) return; // 会话工具和逐项过滤读取，不需要“任意来源成员”。
   const current = toolSources(b, key);
   const actors = new Set([...current.actors, ...(originalSources?.actors ?? [])]);
+  const triggerActors = new Set([...(current.triggerActors ?? []), ...(originalSources?.triggerActors ?? [])]);
+  const respondCheckSet = triggerActors.size > 0 ? triggerActors : actors;
   const incomplete = current.incomplete || originalSources?.incomplete;
   if (incomplete || !actors.size) return deny(incomplete ? 'model-sources-incomplete' : 'source-unknown');
   for (const qq of actors) {
     const gate = b.gateDecide({ kind, id: Number(id), qq });
-    if (!gate.allowed || flags.some(flag => gate.flags[flag] !== true)) deny(gate.reason || flags.join('+'));
+    const required = semantic === 'respond' && !respondCheckSet.has(qq) ? ['context', 'converse'] : flags;
+    if (!gate.allowed || required.some(flag => gate.flags[flag] !== true)) deny(gate.reason || required.join('+'));
   }
 }

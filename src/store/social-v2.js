@@ -164,10 +164,13 @@ export function createSocialV2Store(b) {
       })();
       let raw = null;
       try {
-        const text = fs.readFileSync(b.SOCIAL_V2_FILE, 'utf8');
+        const text = fs.readFileSync(b.SOCIAL_V2_FILE, 'utf8').replace(/^\uFEFF/, '');
         const parsed = JSON.parse(text);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
           throw new Error('顶层内容不是 JSON 对象');
+        }
+        if (parsed.conversations !== undefined && (!parsed.conversations || typeof parsed.conversations !== 'object' || Array.isArray(parsed.conversations))) {
+          throw new Error('conversations 字段不是有效对象');
         }
         raw = parsed;
       } catch (error) {
@@ -184,7 +187,7 @@ export function createSocialV2Store(b) {
         }
       }
       b.socialV2.paused = raw?.paused === true;
-      if (raw && typeof raw.conversations === 'object') {
+      if (raw && raw.conversations && typeof raw.conversations === 'object' && !Array.isArray(raw.conversations)) {
         const seenTokens = new Set();
         for (const [key, val] of Object.entries(raw.conversations)) {
           if (!val || typeof val !== 'object') continue;
@@ -463,7 +466,10 @@ export function createSocialV2Store(b) {
     const recentLimit = Number(b.cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(b.cfg.socialV2?.context?.unreadLimit) || 30;
     const actor = String(sender || userId || '未知');
-    const target = targetIsSelf ? '你' : (String(targetId || '未知'));
+    const targetName = targetId != null && !targetIsSelf && b.cfg.identity?.exposeQqInPrompt !== true
+      ? (b.identityDisplayName?.(String(targetId), groupId != null ? String(groupId) : undefined) || '群友')
+      : String(targetId || '未知');
+    const target = targetIsSelf ? '你' : targetName;
     const actionText = action ? String(action) : '拍了拍';
     const suffixText = suffix ? ` ${String(suffix)}` : '';
     const text = `[拍一拍] ${actor} ${actionText} ${target}${suffixText}`.slice(0, 200);

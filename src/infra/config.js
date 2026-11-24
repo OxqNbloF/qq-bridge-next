@@ -12,23 +12,40 @@ export function withConfigWriteLock(fn) {
   return run;
 }
 
+// 有界纯对象深合并：嵌套配置局部覆盖时保留同级默认值（如 wake/send/wait/proactive/feedback/context）
+export const isPlainConfigObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+export function deepMergePlain(defaults, override, depth = 0) {
+  if (!isPlainConfigObject(override) || depth > 8) return defaults;
+  const out = { ...defaults };
+  for (const [k, v] of Object.entries(override)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    if (v === undefined) continue;
+    if (isPlainConfigObject(out[k])) {
+      if (!isPlainConfigObject(v)) throw new TypeError(`配置字段 ${k} 必须是对象`);
+      out[k] = deepMergePlain(out[k], v, depth + 1);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 // 读取配置并合并默认值
 export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, log = () => {}, roleInjectMaxCharsDefault = 8000 }) {
   const p = configFile;
   const raw = readJsonSafe(p, null, true);
   const file = raw && typeof raw === 'object' && !Array.isArray(raw) ? adaptLegacyConfig(raw) : raw;
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
-  // 有界纯对象深合并：嵌套配置局部覆盖时保留同级默认值（如 wake/send/wait/proactive/feedback/context）
-  const isPlainObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
-  function deepMergePlain(defaults, override, depth = 0) {
-    if (!isPlainObj(override) || depth > 8) return defaults;
-    const out = { ...defaults };
-    for (const [k, v] of Object.entries(override)) {
-      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-      if (v === undefined) continue;
-      out[k] = isPlainObj(out[k]) && isPlainObj(v) ? deepMergePlain(out[k], v, depth + 1) : v;
+  for (const groupKey of ['dsh', 'snowluma', 'security', 'role', 'identity']) {
+    if (file[groupKey] !== undefined && !isPlainConfigObject(file[groupKey])) {
+      throw new TypeError(`配置 ${groupKey} 必须是对象`);
     }
-    return out;
+  }
+  if (file.consolePort !== undefined) {
+    const cp = Number(file.consolePort);
+    if (!Number.isInteger(cp) || cp < 1 || cp > 65535) {
+      throw new RangeError(`配置 consolePort 必须是 1~65535 的整数`);
+    }
   }
   const cfg = {
     dsh: {
@@ -65,7 +82,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
     ignore: { sendQQ: normalizeIdList(file.ignore?.sendQQ ?? file.ignore?.senders ?? []) },
     // 白名单都为空时是否放行所有
     allowAllWhenEmpty: file.allowAllWhenEmpty === true,
-    ackMessage: file.ackMessage ?? '🤔 收到，正在思考…',
+    ackMessage: file.ackMessage ?? '',
     sendDelayMs: file.sendDelayMs ?? 300,
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
     // 回合卡死多久无事件就中断该会话；0 关
@@ -84,17 +101,17 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       triggerProbability: 0.1,        // 普通消息触发进入活跃的概率
       contextWindow: 20,              // 回复时附带上最近多少条聊天记录
       // 活跃阶段
-      activeCheckMinMs: 10 * 1000,    // 活跃期检测间隔
+      activeCheckMinMs: 8 * 1000,     // 活跃期检测间隔
       activeCheckMaxMs: 30 * 1000,
-      activeReplyDelayMinMs: 2 * 1000, // 活跃期回复延迟
-      activeReplyDelayMaxMs: 8 * 1000,
+      activeReplyDelayMinMs: 1 * 1000, // 活跃期回复延迟
+      activeReplyDelayMaxMs: 5 * 1000,
       // 活跃超时主动退场
       activeDurationEnabled: true,     // 总开关：是否启用“活跃超过时长后主动收尾退场”
-      activeDurationMinMs: 15 * 60 * 1000, // 活跃最长时长下限
-      activeDurationMaxMs: 30 * 60 * 1000, // 活跃最长时长上限
+      activeDurationMinMs: 20 * 60 * 1000, // 活跃最长时长下限
+      activeDurationMaxMs: 50 * 60 * 1000, // 活跃最长时长上限
       // 冷场处理
       idleWindowMs: 6 * 60 * 1000,    // 活跃期多久没人说话算冷场
-      idleRetryProbability: 0.25,     // 冷场时试探一句的概率
+      idleRetryProbability: 0.4,      // 冷场时试探一句的概率
       idleRetryWaitMs: 2 * 60 * 1000, // 试探后等待回应的窗口
       // 观望期主动开话题
       proactiveEnabled: true,
@@ -103,7 +120,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       proactiveCheckMaxMs: 90 * 60 * 1000,
       proactiveProbability: 0.2,      // 每次判定的成功概率（小概率开口）
       // 选择性沉默
-      skipProbability: 0.15,          // 普通闲聊沉默概率
+      skipProbability: 0.05,          // 普通闲聊沉默概率
       surrenderProbability: 0,        // 已弃用，保留兼容旧配置
       // 摘要与展示
       maxReplyChars: 500,             // 单条 QQ 消息长度上限
@@ -112,9 +129,9 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       burstEnabled: true,             // 总开关：是否允许按空格拆成多条 QQ 消息
       burstIntervalMinMs: 1000,       // 条间随机间隔下限（毫秒）
       burstIntervalMaxMs: 3000,       // 条间随机间隔上限（毫秒）
-      longGapProbability: 0.1,        // 长间隔概率
-      longGapMinMs: 2500,             // 长间隔下限
-      longGapMaxMs: 5000,             // 长间隔上限
+      longGapProbability: 0.2,        // 长间隔概率
+      longGapMinMs: 5000,             // 长间隔下限
+      longGapMaxMs: 10000,            // 长间隔上限
     }, file.social),
     socialV2: deepMergePlain({
       enabled: true,
@@ -158,7 +175,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
         maxGapMs: 10000,
         gapBaseMs: 800,
         gapPerCharMs: 20,
-        recommendedHint: '普通闲聊建议一次 1~3 条，条间 1~3 秒；讲故事/回忆可以 5~10 秒间隔；不要连续刷屏。'
+        recommendedHint: '单条消息不要用空格断句，中文短句用逗号/顿号或直接连写；分条时每条都要读起来完整，不要把同一句话拆到两条里；普通闲聊建议一次 1~3 条，条间 1~3 秒；讲故事/回忆可以 5~10 秒间隔；不要连续刷屏。'
       },
       wait: {
         defaultMs: 30000,
@@ -227,23 +244,6 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
 
   // tools 与默认值深度合并，防丢新开关
   cfg.socialV2.tools = resolveSocialV2Tools(cfg.socialV2.tools);
-
-  // 语音默认关闭；AI 只能从语音库取文件
-  cfg.socialV2.voice = {
-    enabled: false,
-    dir: 'audio',
-    maxSeconds: 300,
-    maxBytes: 20 * 1024 * 1024,
-    maxPerMinute: 2,
-    maxPerHour: 10,
-    allowAbsolutePath: false,
-    // 音量须本地调好再发，网关无增益字段
-    defaultVolume: 1,
-    loudness: 'normal',
-    ffmpegPath: '',
-    autoReadback: true,
-    ...(cfg.socialV2?.voice ?? {})
-  };
 
   // 初始提示词上限收敛到安全区间
   {

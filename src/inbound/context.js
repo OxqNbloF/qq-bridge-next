@@ -2,7 +2,7 @@
 import { segmentsToText } from './normalize.js';
 
 // 创建收到消息时的前后文缓存
-export function createInboundContext({ getBot, log }) {
+export function createInboundContext({ getBot, getSelfId, log }) {
   // 群成员名片缓存，供 @ 识别用
   const groupMemberNameCache = new Map(); // `groupId:userId` -> { name, ts }
   const GROUP_MEMBER_NAME_TTL_MS = 24 * 60 * 60 * 1000;
@@ -97,7 +97,7 @@ export function createInboundContext({ getBot, log }) {
     }
   }
   // 读出引用消息的发送者与原文
-  async function resolveReplyInfo(kind, convId, messageId, selfId = null) {
+  async function resolveReplyInfo(kind, convId, messageId, selfId = getSelfId?.() || getBot?.()?.selfId || null) {
     pruneReplyInfoCache();
     const cacheKey = `${kind}:${String(convId)}:${String(messageId)}`;
     const hit = replyInfoCache.get(cacheKey);
@@ -137,8 +137,9 @@ export function createInboundContext({ getBot, log }) {
           replyInfoCache.set(cacheKey, { info: null, ts: Date.now() });
           return null;
         }
-        if (String(rawUser) !== String(convId) && !(selfId != null && String(rawUser) === String(selfId))) {
-          replyInfoCache.set(cacheKey, { info: null, ts: Date.now() });
+        if (String(rawUser) !== String(convId) && !(selfId != null && String(selfId) !== '' && String(rawUser) === String(selfId))) {
+          // 刚启动尚未拿到 selfId 时不写负缓存，避免误伤后续引用机器人自身消息的解析
+          if (selfId != null && String(selfId) !== '') replyInfoCache.set(cacheKey, { info: null, ts: Date.now() });
           return null;
         }
       }
@@ -163,7 +164,7 @@ export function createInboundContext({ getBot, log }) {
   }
 
   // 认出引用的是谁：支持真实 message_id 或本地 seq
-  async function resolveReplyTargetV2(st, kind, convId, ref, selfId = getBot?.()?.selfId ?? null) {
+  async function resolveReplyTargetV2(st, kind, convId, ref, selfId = getSelfId?.() || getBot?.()?.selfId || null) {
     const refStr = String(ref ?? '').trim();
     if (!refStr) return null;
     const found = Array.isArray(st?.recentMessages) ? st.recentMessages.find((m) => m && String(m.seq) === refStr) : null;

@@ -153,7 +153,8 @@ export function createMemoryCompressor(b) {
     }
   }
 
-  function forgetMemorySource(key, messageId) {
+  function forgetMemorySource(rawKey, messageId) {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
     b.invalidateMemoryLearnerSession(true);
     epochs.set(key, (epochs.get(key) ?? 0) + 1);
     const errors = [];
@@ -164,12 +165,34 @@ export function createMemoryCompressor(b) {
         b.log(`[memory] 归档已脱敏，${label}清理未完成：${error?.message ?? error}`);
       }
     };
+    const msgIdStr = String(messageId);
     const removed = cleanup('记忆池', () => redactMemoryPool(b.memoryPool, key, messageId)) ?? [];
     const state = b.getSocialV2State(key);
     b.forgetLightMemory(key);
     if (state) {
       redactLightMemory(state, messageId);
-      for (const field of ['recentMessages', 'unread']) state[field] = state[field].filter(item => String(item.messageId) !== String(messageId));
+      for (const field of ['recentMessages', 'unread']) state[field] = state[field].filter(item => String(item.messageId) !== msgIdStr);
+    }
+    // 清理引用缓存、媒体缓存（含 message_seq 别名键）、一代缓冲与离线队列中的关联消息
+    b.replyInfoCache?.delete(`${key}:${msgIdStr}`);
+    const mediaMap = b.messageMediaStore?.get(key);
+    if (mediaMap) {
+      const ref = mediaMap.get(msgIdStr);
+      mediaMap.delete(msgIdStr);
+      if (ref !== undefined) {
+        for (const [k, v] of mediaMap) if (v === ref) mediaMap.delete(k);
+      }
+    }
+    for (const list of [
+      b.social?.recentMessages?.get?.(key),
+      b.social?.pendingSummaries?.get?.(key)?.items,
+      b.social?.silentContext?.get?.(key),
+    ]) {
+      if (Array.isArray(list)) {
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          if (list[i] && String(list[i].messageId ?? '') === msgIdStr) list.splice(i, 1);
+        }
+      }
     }
     cleanup('会话状态', () => { if (b.saveSocialV2State() === false) throw new Error('状态未保存'); });
     cleanup('身份状态', () => b.redactIdentitySource(key, messageId, removed));

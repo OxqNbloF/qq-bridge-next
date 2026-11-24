@@ -40,6 +40,7 @@ function segmentText(seg) {
     case 'text': return String(d.text ?? '');
     case 'at': return d.qq === 'all' ? '@全体成员' : `@${d.qq ?? ''}`;
     case 'face': return `[表情${d.id ?? ''}]`;
+    case 'mface': return d.summary ? `[表情:${String(d.summary).replace(/^\[|\]$/g, '')}]` : '[表情]';
     case 'image': return '[图片]';
     case 'record': return '[语音]';
     case 'video': return '[视频]';
@@ -47,6 +48,7 @@ function segmentText(seg) {
     case 'reply': return '[引用]';
     case 'forward': return '[转发]';
     case 'json': return '[卡片消息]';
+    case 'markdown': return String(d.content ?? d.text ?? '[卡片消息]');
     default: return `[${seg.type ?? '未知'}]`;
   }
 }
@@ -160,6 +162,21 @@ function segmentMedia(seg) {
   if (seg.type === 'face') {
     const faceId = String(d.id ?? d.face_id ?? '');
     if (faceId) return { kind: 'face', faceId };
+  }
+  if (seg.type === 'mface') {
+    const url = String(d.url ?? d.src ?? '');
+    const file = String(d.file ?? d.file_id ?? d.emoji_id ?? '');
+    const emojiId = String(d.emoji_id ?? '');
+    if (url || file || emojiId) {
+      return {
+        kind: 'sticker',
+        file: file || undefined,
+        url: url || undefined,
+        emojiId: emojiId || undefined,
+        subType: '1',
+        summary: d.summary ? String(d.summary) : undefined,
+      };
+    }
   }
   return null;
 }

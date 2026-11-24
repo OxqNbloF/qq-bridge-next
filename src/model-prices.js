@@ -106,9 +106,17 @@ export function resolvePriceTable(override) {
       const base = DEFAULT_PRICE_TABLE.models[name];
       if (!entry || typeof entry !== 'object') continue;
       const given = entry.off ?? {};
-      const off = { ...(base?.off ?? DEFAULT_PRICE_TABLE.models[DEFAULT_PRICE_TABLE.fallbackModel].off), ...given };
-      // 条目自己没写 cacheWrite 才跟随 cacheMiss
-      if (!Number.isFinite(Number(given.cacheWrite))) off.cacheWrite = off.cacheMiss;
+      const defaults = base?.off ?? DEFAULT_PRICE_TABLE.models[DEFAULT_PRICE_TABLE.fallbackModel].off;
+      const validRate = (v, fallback) => {
+        const n = Number(v);
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+      };
+      const off = {
+        cacheHit: validRate(given.cacheHit, defaults.cacheHit),
+        cacheMiss: validRate(given.cacheMiss, defaults.cacheMiss),
+        cacheWrite: Number.isFinite(Number(given.cacheWrite)) && Number(given.cacheWrite) >= 0 ? Number(given.cacheWrite) : validRate(given.cacheMiss, defaults.cacheMiss),
+        output: validRate(given.output, defaults.output),
+      };
       merged.models[name] = { label: entry.label ?? base?.label ?? name, off };
     }
   }

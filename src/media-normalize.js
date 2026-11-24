@@ -275,7 +275,12 @@ function readIfExists(file) {
 export async function normalizeImageForModel(buf, mimeType, opts = {}) {
   const bytes = Buffer.isBuffer(buf) ? buf.length : 0;
   if (!bytes) return { ok: false, error: '图片字节为空' };
-  if (opts.enabled === false) return { ok: true, buffer: buf, mimeType, note: '' };
+  if (opts.enabled === false) {
+    if (bytes > HARD_MAX_MODEL_BYTES) {
+      return { ok: false, error: `图片体积超限（${bytes} > ${HARD_MAX_MODEL_BYTES} 字节）`, skipped: true };
+    }
+    return { ok: true, buffer: buf, mimeType, note: '' };
+  }
 
   const info = sniffImage(buf);
   const plan = planNormalization(info, bytes, opts);

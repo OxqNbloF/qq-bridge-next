@@ -11,6 +11,8 @@ import { z } from 'zod';
 import { serializeModelData } from './qq-model-view.js';
 import { resolveSocialV2Tools } from './policy/tool-defaults.js';
 import { filterAndProjectGroupHistory as filterAndProjectGroupHistoryCore, groupAllowed } from './gate/mcp-history.js';
+import { migrateDocument } from './store/schema.js';
+import { validateMemberPolicyDoc } from './store/member-policy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -101,7 +103,9 @@ function filterAndProjectGroupHistory(groupId, data) {
       (text) => {
         const parsed = JSON.parse(text);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid member-policy');
-        return { ok: true, policy: parsed };
+        const migrated = migrateDocument('member-policy', parsed).doc;
+        const validated = validateMemberPolicyDoc(migrated);
+        return { ok: true, policy: validated };
       },
       (error) => {
         const broken = error?.code !== 'ENOENT' && !/Unexpected fixture file/.test(String(error?.message ?? ''));
@@ -424,8 +428,15 @@ function normalizeWakeArguments(config) {
       let canonicalArgs;
       try { canonicalArgs = foldArgumentAliases(args, aliases, required); }
       catch (error) { return { content: [{ type: 'text', text: `参数错误：${error.message}` }], isError: true }; }
-      if (Object.prototype.hasOwnProperty.call(schema, 'key')) {
-        const denial = selfKeyGuard(canonicalArgs?.key);
+      const targetKey = Object.prototype.hasOwnProperty.call(schema, 'key')
+        ? canonicalArgs?.key
+        : Object.prototype.hasOwnProperty.call(schema, 'groupId')
+          ? `group:${String(canonicalArgs?.groupId ?? '').trim()}`
+          : Object.prototype.hasOwnProperty.call(schema, 'userId')
+            ? `private:${String(canonicalArgs?.userId ?? '').trim()}`
+            : null;
+      if (targetKey !== null) {
+        const denial = selfKeyGuard(targetKey);
         if (denial) {
           return { content: [{ type: 'text', text: denial }], isError: true };
         }

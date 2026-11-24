@@ -313,7 +313,7 @@ export function createMessageArchive({
     let cleanup = { ok: true, errors: [] };
     if (found) {
       try {
-        const result = onRedact(convId, target);
+        const result = onRedact(conv.id, target);
         if (result?.ok === false) cleanup = result;
       } catch (error) {
         cleanup = { ok: false, errors: [String(error?.message ?? error)] };

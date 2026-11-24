@@ -512,8 +512,10 @@ export class NodeApiClient extends AbstractApiClient {
           // 交换失败通常意味着那个 launch token 已经过期（DSH 重启过，日志里的是上一个
           // 进程的）。解除「改用 token」的偏好，否则客户端会一直抱着一个死 token 不放 ——
           // 这正是「一次 401 之后所有 RPC 永久失败」的成因。
-          this._preferToken = false;
-          if (authEpoch === this._authEpoch) this.invalidateAuth();
+          if (authEpoch === this._authEpoch) {
+            this._preferToken = false;
+            this.invalidateAuth();
+          }
           return this._doFetchWithAuth(input, init, true);
         }
         throw error;
@@ -616,6 +618,13 @@ export class NodeApiClient extends AbstractApiClient {
     const url = new URL('/api/remote.mux', this.baseUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url, { headers: { cookie } });
+    const connectTimer = setTimeout(() => {
+      if (!socketOpen && !ended) {
+        try { socket.close(); } catch {}
+        endStream();
+      }
+    }, 15_000);
+    connectTimer.unref?.();
     const inbox = [];
     let wake;
     let socketOpen = false;
@@ -641,6 +650,7 @@ export class NodeApiClient extends AbstractApiClient {
     const endStream = () => {
       if (ended) return;
       ended = true;
+      clearTimeout(connectTimer);
       clearResubscribeTimers();
       if (this._muxSendOpen === sendOpen) this._muxSendOpen = null;
       // 连接断了就丢掉旧凭证，重连时重新登录

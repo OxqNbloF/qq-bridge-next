@@ -9,32 +9,42 @@ export function toolSources(b, rawKey) {
   const st = b.socialV2?.conversations.get(key);
   const selfQq = validQq(b.selfUserId) ? String(b.selfUserId) : '';
   const actors = new Set();
+  const triggerActors = new Set();
+  const contextActors = new Set();
   let incomplete = !!st?.modelSourcesIncomplete;
-  const add = qq => {
+  const addTo = (set, qq) => {
     if (!validQq(qq)) { incomplete = true; return; }
     if (selfQq && String(qq) === selfQq) return;
-    actors.add(String(qq));
+    const s = String(qq);
+    actors.add(s);
+    set.add(s);
   };
-  const addList = list => {
+  const addListTo = (set, list) => {
     if (list === undefined) return;
     if (!Array.isArray(list)) { incomplete = true; return; }
-    for (const qq of list) add(qq);
+    for (const qq of list) addTo(set, qq);
   };
-  addList(st?.modelSourceQqs);
-  addList(b.turnEngine?.activeRequest(key)?.payload?.sourceQqs);
+  addListTo(contextActors, st?.modelSourceQqs);
+  addListTo(triggerActors, b.turnEngine?.activeRequest(key)?.payload?.sourceQqs);
+  for (const message of st?.unread ?? []) {
+    if (!message || message.isSelf || message.from === 'bot') continue;
+    const qq = message.userId ?? message.user_id ?? message.sender?.qq ?? message.sender?.user_id;
+    addTo(triggerActors, qq);
+    addListTo(triggerActors, message.sourceQqs);
+    if (message.quote?.senderQq !== undefined) addTo(contextActors, message.quote.senderQq);
+  }
   for (const message of [
     ...(st?.recentMessages ?? []),
-    ...(st?.unread ?? []),
     ...(b.social?.recentMessages?.get?.(key) ?? []),
     ...(b.social?.pendingSummaries?.get?.(key)?.items ?? []),
   ]) {
     if (!message || message.isSelf || message.from === 'bot') continue;
     const qq = message.userId ?? message.user_id ?? message.sender?.qq ?? message.sender?.user_id;
-    add(qq);
-    addList(message.sourceQqs);
-    if (message.quote?.senderQq !== undefined) add(message.quote.senderQq);
+    addTo(contextActors, qq);
+    addListTo(contextActors, message.sourceQqs);
+    if (message.quote?.senderQq !== undefined) addTo(contextActors, message.quote.senderQq);
   }
-  return { actors: [...actors], incomplete };
+  return { actors: [...actors], triggerActors: [...triggerActors], contextActors: [...contextActors], incomplete };
 }
 
 // 做一组发送前的权限检查
@@ -72,14 +82,17 @@ export function createSendGuard(b) {
         } else {
           const current = toolSources(b, key);
           const actors = new Set([...current.actors, ...(originalSources?.actors ?? [])]);
+          const triggerActors = new Set([...(current.triggerActors ?? []), ...(originalSources?.triggerActors ?? [])]);
+          const respondCheckSet = triggerActors.size > 0 ? triggerActors : actors;
           const incomplete = current.incomplete || originalSources?.incomplete;
           if (incomplete || !actors.size) {
             throw new Error(`发送已取消：成员策略不允许回应（${incomplete ? 'model-sources-incomplete' : 'source-unknown'}）`);
           }
           for (const qq of actors) {
             const decision = b.gateDecide({ kind, id: Number(rawId), qq });
-            if (!decision.allowed || !decision.flags.context || !decision.flags.converse || !decision.flags.respond) {
-              throw new Error(`发送已取消：成员策略不允许回应（${decision.allowed ? 'respond=false' : decision.reason}）`);
+            const needRespond = respondCheckSet.has(qq);
+            if (!decision.allowed || !decision.flags.context || !decision.flags.converse || (needRespond && !decision.flags.respond)) {
+              throw new Error(`发送已取消：成员策略不允许回应（${decision.allowed ? (needRespond && !decision.flags.respond ? 'respond=false' : 'context/converse=false') : decision.reason}）`);
             }
           }
         }

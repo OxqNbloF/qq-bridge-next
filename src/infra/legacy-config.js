@@ -36,12 +36,5 @@ export function migrateLegacyConfig(input) {
 
 // 保存时统一写新键；旧文件只在读取或显式迁移边界兼容。
 export function syncConfigAliases(input) {
-  const next = migrateLegacyConfig(input).config;
-  for (const [legacy, parent, key] of CONFIG_ALIASES) {
-    if (input[legacy] !== undefined) {
-      if (!next[parent] || typeof next[parent] !== 'object' || Array.isArray(next[parent])) next[parent] = {};
-      next[parent][key] = structuredClone(input[legacy]);
-    }
-  }
-  return next;
+  return migrateLegacyConfig(input).config;
 }

@@ -50,7 +50,7 @@ export function createConsoleServer(b) {
       return !!match && b.modeAllowed(key, match[1], Number(match[2]), b.cfg, b.currentMode, { listed: true });
     };
 
-    const agentMemberView = (value, agentCall) => agentCall ? b.projectForModel(value, 'tool') : value;
+    const agentMemberView = (value, agentCall, opts) => agentCall ? b.projectForModel(value, 'tool', opts) : value;
 
     // 路由作用域：先查这几个局部量，其余沿原型落到 b
     const routeScope = Object.create(b, Object.getOwnPropertyDescriptors({
@@ -109,6 +109,7 @@ export function createConsoleServer(b) {
           }
           try { modelMemberGuard?.(); }
           catch (error) { return rawSendJson({ ok: false, error: error.message }, 403); }
+          const rawValueBeforeFilter = value;
           value = projectToolMemberResult(b, modelSourceKey, rule, value);
           const st = b.socialV2.conversations.get(modelSourceKey);
           const payloadForSources = rule?.[2] === 'content' && value && typeof value === 'object'
@@ -117,8 +118,16 @@ export function createConsoleServer(b) {
           // 在身份脱敏前记录详情/转发返回的来源，同时仅登记工具实际可读的可见窗口消息。
           const visibleWindow = [...(st?.recentMessages ?? []), ...(st?.unread ?? [])].filter((m) => modelMessageVisible(b, modelSourceKey, m));
           rememberModelSources(b, modelSourceKey, [payloadForSources, ...visibleWindow]);
+          const policyRules = modelSourceKey.startsWith('group:')
+            ? Object.keys(b.memberPolicySnapshot?.()?.policy?.groups?.[modelSourceKey]?.rules ?? {})
+            : [];
+          return rawSendJson(agentMemberView(sanitizeToolResult(value), true, {
+            groupKey: modelSourceKey,
+            collectRoots: rawValueBeforeFilter === value ? [value] : [rawValueBeforeFilter, value],
+            extraSeedIds: policyRules,
+          }), ...args);
         }
-        return rawSendJson(toolPolicy ? agentMemberView(sanitizeToolResult(value), true) : value, ...args);
+        return rawSendJson(toolPolicy ? agentMemberView(sanitizeToolResult(value), true, { groupKey: modelSourceKey }) : value, ...args);
       };
       const read = createReadBody(req, { setTimeout: b.setTimeout, clearTimeout: b.clearTimeout });
       let bodyPromise;
@@ -186,6 +195,7 @@ export function createConsoleServer(b) {
     server.on('error', (error) => {
       b.log(`控制台服务错误: ${error?.message ?? error}`);
       if (error?.code === 'EADDRINUSE') {
+        b.skipFlushOnExit = true;
         b.console.error(`[bridge] 控制台端口 ${port} 已被占用（可能已有实例在运行），退出。`);
         b.process.exit(2);
       }

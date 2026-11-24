@@ -1,6 +1,8 @@
 // SnowLuma 换账号后，token 和地址会变，这里负责自动换新的
 // 不修的话，桥接看着活着，其实消息一条都收不到、发不出
 
+import { withConfigWriteLock } from '../infra/config.js';
+
 /**
  * @param {object} o
  * @param {object} o.cfg
@@ -48,23 +50,42 @@ export function createTokenHeal({ cfg, bot, configFile, log, persistSnowLumaEndp
     cfg.snowluma.wsUrl = wsUrl;
     if (followEndpoint && r.baseUrl) cfg.snowluma.httpUrl = r.baseUrl;
     try {
-      const w = persistSnowLumaEndpoint(configFile, {
+      const w = await withConfigWriteLock(() => persistSnowLumaEndpoint(configFile, {
         ...(acceptHttpToken ? { accessToken: httpToken } : {}),
         ...(followEndpoint ? { wsUrl, httpUrl: r.baseUrl } : {})
-      });
+      }));
       if (w.updated) log(`   已写回 config.json：${Object.keys(w.changed).join(' / ')}`);
       else log('   config.json 端点已是最新，无需改写');
     } catch (error) {
       log(`   ⚠️ 写回 config.json 失败：${error?.message ?? error}`);
     }
-    // 更新了就让 SDK 立刻用新参数重连（先等旧连接关掉再连，防旧 close 回调冲掉新 socket，并接住异步拒绝）
+    // 更新了就让 SDK 立刻用新参数重连（先等旧底层 socket 真正关掉再连，防旧 close 回调冲掉新 socket）
     if (wsChanged) {
-      const waitClosed = typeof bot.once === 'function'
+      const prevSocket = bot.socket;
+      const waitClosed = (prevSocket && prevSocket.readyState !== 3) || typeof bot.once === 'function'
         ? new Promise((resolve) => {
             let done = false;
-            const finish = () => { if (!done) { done = true; resolve(); } };
-            bot.once('close', finish);
-            setTimeout(finish, 300).unref?.();
+            const finish = () => {
+              if (done) return;
+              done = true;
+              clearTimeout(timer);
+              try { bot.off?.('close', finish); } catch {}
+              try { prevSocket?.removeEventListener?.('close', finish); } catch {}
+              try { prevSocket?.off?.('close', finish); } catch {}
+              resolve();
+            };
+            const timer = setTimeout(finish, 5000);
+            timer.unref?.();
+            if (prevSocket && prevSocket.readyState !== 3) {
+              if (typeof prevSocket.once === 'function') prevSocket.once('close', finish);
+              else if (typeof prevSocket.addEventListener === 'function') prevSocket.addEventListener('close', finish, { once: true });
+              else if (typeof bot.once === 'function') bot.once('close', finish);
+              else finish();
+            } else if (typeof bot.once === 'function') {
+              bot.once('close', finish);
+            } else {
+              finish();
+            }
           })
         : Promise.resolve();
       try { bot.close(1000, 'token-refresh'); } catch {}
@@ -83,7 +104,7 @@ export function createTokenHeal({ cfg, bot, configFile, log, persistSnowLumaEndp
   /** 只写文件、不动物件（连接已成功时用）。 */
   async function syncTokenToFile() {
     try {
-      const r = persistToken(configFile, cfg.snowluma.accessToken ?? '');
+      const r = await withConfigWriteLock(() => persistToken(configFile, cfg.snowluma.accessToken ?? ''));
       // 日志里不打印 token 的任何部分，截图贴出去会泄露
       if (r.updated) log('🔄 已把当前 token 写回 config.json');
     } catch {}

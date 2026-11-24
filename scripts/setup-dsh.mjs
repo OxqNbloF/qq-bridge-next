@@ -23,10 +23,18 @@ import { BUNDLE_DIR, PRESETS, buildPatches, patchFileFor } from './build-agent-p
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-const PROFILE = process.argv[2] || 'web';
+const RAW_ARG = process.argv[2];
+if (RAW_ARG === '-h' || RAW_ARG === '--help') {
+  console.log('用法：node scripts/setup-dsh.mjs [profile]\n默认 profile 为 web；可通过 DSH_HOME 指定 DSH 目录。');
+  process.exit(0);
+}
+if (process.argv.length > 3) {
+  fatal(`unexpected extra arguments: ${process.argv.slice(3).join(' ')}`);
+}
+const PROFILE = RAW_ARG || 'web';
 
-// 配置名只能是目录名，不能写成路径
-if (PROFILE === '.' || PROFILE === '..' || PROFILE === 'node_modules'
+// 配置名只能是目录名，不能写成路径或选项开关
+if (PROFILE.startsWith('-') || PROFILE === '.' || PROFILE === '..' || PROFILE === 'node_modules'
     || /[\\/\x00-\x1f<>:"|?*]/.test(PROFILE) || /[. ]$/.test(PROFILE)) {
   fatal(`invalid profile name: ${JSON.stringify(PROFILE)}`);
 }

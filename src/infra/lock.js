@@ -1,6 +1,31 @@
-// 保证只跑一个副本：锁文件里写着进程号
+// 保证只跑一个副本：锁文件里写着进程元数据（向后兼容旧纯数字 PID）
 import fs from 'node:fs';
 import path from 'node:path';
+
+export function parseLockContent(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const pid = Number(parsed?.pid);
+      if (Number.isInteger(pid) && pid > 0) {
+        return {
+          pid,
+          kind: parsed.kind === 'redact' ? 'redact' : 'bridge',
+          root: typeof parsed.root === 'string' ? parsed.root : '',
+          port: Number.isInteger(Number(parsed.port)) ? Number(parsed.port) : 0,
+          startedAt: Number.isFinite(Number(parsed.startedAt)) ? Number(parsed.startedAt) : 0,
+        };
+      }
+    } catch { return null; }
+    return null;
+  }
+  const pid = Number(text);
+  return Number.isInteger(pid) && pid > 0 ? { pid, kind: 'bridge', root: '', port: 0, startedAt: 0 } : null;
+}
+
+const STARTUP_GRACE_MS = 30_000;
 
 /**
  * 做一个只许跑一个的锁
@@ -14,12 +39,17 @@ import path from 'node:path';
  */
 export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, execFileSync, error: printError }) {
   const stateDir = path.dirname(lockFile);
+  const rootDir = path.dirname(stateDir);
+
+  function readConfiguredPort() {
+    const cfg = readJsonSafe(configFile, {});
+    return Number(cfg?.consolePort) || 3100;
+  }
 
   /** PID 会被回收，用控制台端口占用判断桥接是否在跑 */
   function consolePortInUse() {
     try {
-      const cfg = readJsonSafe(configFile, {});
-      const port = Number(cfg?.consolePort) || 3100;
+      const port = readConfiguredPort();
       const cmd = proc.platform === 'darwin'
         ? `lsof -nP -iTCP:${port} -sTCP:LISTEN 2>/dev/null || netstat -anp tcp 2>/dev/null | grep LISTEN || true`
         : 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true';
@@ -31,13 +61,31 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
     }
   }
 
+  /** 核验存活 PID 是否就是本仓库 bridge.js（冷启动端口尚未监听时避免误删存活锁） */
+  function isOwnBridgePid(pid) {
+    try {
+      const out = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+      const cmd = String(out ?? '').trim();
+      return cmd.includes('bridge.js') && (!rootDir || cmd.includes(rootDir));
+    } catch {
+      return false;
+    }
+  }
+
   // 拿锁；已经有一份在跑就退出
   function acquireLock() {
     fs.mkdirSync(stateDir, { recursive: true });
-    // 用 wx 一次写入 PID，防空文件被当成过期锁抢走
+    const payload = JSON.stringify({
+      pid: proc.pid,
+      kind: 'bridge',
+      root: rootDir,
+      port: readConfiguredPort(),
+      startedAt: Date.now(),
+    });
+    // 用 wx 一次写入锁元数据，防空文件被当成过期锁抢走
     const tryCreate = () => {
       try {
-        fs.writeFileSync(lockFile, String(proc.pid), { flag: 'wx', mode: 0o600 });
+        fs.writeFileSync(lockFile, payload, { flag: 'wx', mode: 0o600 });
         return true;
       } catch (error) {
         if (error?.code === 'EEXIST') return false;
@@ -51,32 +99,36 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
     try {
       const content = fs.readFileSync(lockFile, 'utf8').trim();
       observedContent = content;
-      if (!content) {
+      const meta = parseLockContent(content);
+      if (!meta) {
         stale = true;
       } else {
-        const pid = Number(content);
-        if (!Number.isInteger(pid) || pid <= 0) {
-          stale = true;
-        } else {
-          try {
-            proc.kill(pid, 0);
-            // PID 存活不代表是桥接，再查端口
-            if (!consolePortInUse()) stale = true;
-          } catch (error) {
-            if (error.code === 'ESRCH') {
-              stale = true;
-            } else if (error.code === 'EPERM') {
-              // EPERM 不能证明桥接在跑，端口空闲才按过期处理
-              if (consolePortInUse()) {
-                printError(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
-                proc.exit(2);
-              }
-              printError(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
-              stale = true;
-            } else {
-              printError(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${lockFile}）。若确认其已死，删除该文件后重试。`);
+        const pid = meta.pid;
+        try {
+          proc.kill(pid, 0);
+          // 隐私擦除脚本（kind === 'redact'）不监听端口，只要进程存活严禁抢锁
+          if (meta.kind === 'redact') {
+            printError(`[bridge] 检测到隐私删除任务正在运行（PID ${pid}，锁文件 ${lockFile}），请等待其完成后再启动。`);
+            proc.exit(2);
+          }
+          // 处于冷启动宽限期或命令行已确认为本仓库 bridge.js 时，即使端口未监听也不判过期
+          const mtimeMs = (() => { try { return fs.statSync(lockFile).mtimeMs; } catch { return 0; } })();
+          const startedAt = meta.startedAt || mtimeMs;
+          const inGrace = startedAt > 0 && (Date.now() - startedAt) < STARTUP_GRACE_MS;
+          if (!inGrace && !isOwnBridgePid(pid) && !consolePortInUse()) stale = true;
+        } catch (error) {
+          if (error.code === 'ESRCH') {
+            stale = true;
+          } else if (error.code === 'EPERM') {
+            if (meta.kind === 'redact' || consolePortInUse()) {
+              printError(`[bridge] 控制台端口已被占用或隐私任务存活，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
               proc.exit(2);
             }
+            printError(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
+            stale = true;
+          } else {
+            printError(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${lockFile}）。若确认其已死，删除该文件后重试。`);
+            proc.exit(2);
           }
         }
       }
@@ -107,8 +159,9 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
   // 释放锁
   function releaseLock() {
     try {
-      if (fs.existsSync(lockFile) && Number(fs.readFileSync(lockFile, 'utf8').trim()) === proc.pid) {
-        fs.unlinkSync(lockFile);
+      if (fs.existsSync(lockFile)) {
+        const meta = parseLockContent(fs.readFileSync(lockFile, 'utf8'));
+        if (meta?.pid === proc.pid) fs.unlinkSync(lockFile);
       }
     } catch {}
   }

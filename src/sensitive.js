@@ -9,11 +9,11 @@ export function normalizeSensitiveText(value) {
 }
 
 /** 生成文本的等价形式集合，逐条判定 */
-export function sensitiveTextForms(value) {
+export function sensitiveTextForms(value, { includeCompact = true } = {}) {
   const canonical = normalizeSensitiveText(value);
   // 去掉空白和 ._- 得到紧凑形式
   const compact = (text) => text.replace(/[\s._-]+/g, '');
-  const forms = new Set([canonical, compact(canonical)]);
+  const forms = new Set(includeCompact ? [canonical, compact(canonical)] : [canonical]);
   // 只在规范形式上解码严格往返的 base64 片段，防误判及减少在紧凑英文串上的无效 Buffer 分配
   for (const match of canonical.matchAll(/[A-Za-z0-9+/_-]{12,}={0,2}/g)) {
     const raw = match[0].replace(/-/g, '+').replace(/_/g, '/');
@@ -26,18 +26,22 @@ export function sensitiveTextForms(value) {
     if (!Buffer.from(decoded, 'utf8').equals(buffer)) continue;           // 非合法 UTF-8
     const text = normalizeSensitiveText(decoded);
     forms.add(text);
-    forms.add(compact(text));
+    if (includeCompact) forms.add(compact(text));
   }
   return [...forms];
 }
 
-const BASE_SENSITIVE_RE = /((?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s"'<>|]+|\\\\[^\\\s"'<>|]+\\[^\s"'<>|]+|(?<![A-Za-z0-9])(?:\/home\/|\/Users\/|\/etc\/|\/var\/|\/root\/)[^\s"'<>|]*|(?:token|密码|密钥|口令|password|passwd|secret|api[_-]?key|authorization|bearer|access[_-]?key|credential)["']?(?:\s*(?:[:=：]|是|为)\s*["']?[^\s，。；、"']{3,}|\s+[A-Za-z0-9_\-./]{3,}))/i;
+const PATH_SENSITIVE_RE = /((?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s"'<>|]+|\\\\[^\\\s"'<>|]+\\[^\s"'<>|]+|(?<![A-Za-z0-9_])(?:\/private)?(?:\/home\/|\/Users\/|\/etc\/|\/var\/|\/root\/|\/proc\/)[^\s"'<>|]*|(?<![A-Za-z0-9_])~\/[^\s"'<>|]+)/i;
+const CREDENTIAL_SENSITIVE_RE = /((?:token|密码|密钥|口令|password|passwd|secret|api[_-]?key|authorization|bearer|access[_-]?key|credential)["']?(?:\s*[:=：]\s*["']?[^\s，。；、"']{3,}|\s*(?:是|为)\s*["']?[A-Za-z0-9_\-+=/]{6,}|\s+[A-Za-z0-9_\-./]{3,}))/i;
+const BASE_SENSITIVE_RE = new RegExp(`(${PATH_SENSITIVE_RE.source}|${CREDENTIAL_SENSITIVE_RE.source})`, 'i');
 
-/** 结构化判定：保留 RegExp 形状，test 先归一化 */
+/** 结构化判定：保留 RegExp 形状，路径只在保留空格的规范/解码形态上匹配（防 "选 A: / B" 误杀） */
 export const SENSITIVE_RE = new class StructuredSensitiveRegExp extends RegExp {
-  // 任一等价形式命中即判为敏感
   test(value) {
-    return sensitiveTextForms(value).some((form) => BASE_SENSITIVE_RE.test(form));
+    const canonicalForms = sensitiveTextForms(value, { includeCompact: false });
+    if (canonicalForms.some((form) => PATH_SENSITIVE_RE.test(form))) return true;
+    const allForms = sensitiveTextForms(value, { includeCompact: true });
+    return allForms.some((form) => CREDENTIAL_SENSITIVE_RE.test(form));
   }
 }(BASE_SENSITIVE_RE.source, BASE_SENSITIVE_RE.flags);
 

@@ -45,7 +45,7 @@ export function createWakePromptV2(b) {
           ...history.wakeConfig,
           triggers: {
             ...history.wakeConfig.triggers,
-            speakerIds: history.wakeConfig.triggers.speakerIds.map((qq) => b.identityDisplayName?.(String(qq)) || '群友'),
+            speakerIds: history.wakeConfig.triggers.speakerIds.map((qq) => b.identityDisplayName?.(String(qq), key.startsWith('group:') ? key.slice(6) : undefined) || '群友'),
           },
         },
       };
@@ -83,11 +83,11 @@ export function createWakePromptV2(b) {
   }
 
   async function executeWakePromptV2(key, reason, opts = {}) {
-    if (b.cfg.socialV2?.enabled === false) return;
-    if (b.modeForKey(key) !== 'reserved2' || b.socialV2.paused) return;
+    if (b.cfg.socialV2?.enabled === false) return { ok: true, skipped: true };
+    if (b.modeForKey(key) !== 'reserved2' || b.socialV2.paused) return { ok: true, skipped: true };
     if (!b.isSessionAllowedInCurrentMode(key)) {
       b.log(`[reserved2] 跳过唤醒 ${key}（${reason}）：会话已不在当前模式允许范围内`);
-      return;
+      return { ok: true, skipped: true };
     }
     const st = b.getSocialV2State(key);
     const runtime = b.schedulerRuntime?.(key, st) ?? st;

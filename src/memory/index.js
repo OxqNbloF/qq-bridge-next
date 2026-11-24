@@ -91,7 +91,9 @@ export function createMemoryIndex({ dir, DatabaseSync, log = () => {}, maxOpenDb
     h.update(String(items.length));
     for (let i = 0; i < items.length; i += 1) {
       const it = items[i];
-      h.update('\0').update(String(it.id ?? '')).update(':').update(String(it.updated_at ?? '')).update(':').update(String(it.content?.length ?? 0));
+      h.update('\0').update(String(it.id ?? '')).update(':').update(String(it.updated_at ?? ''))
+        .update(':').update(String(it.subject_uid ?? '')).update(':').update(String(it.status ?? ''))
+        .update(':').update(String(it.content ?? ''));
     }
     return h.digest('hex');
   };

@@ -448,10 +448,10 @@ async function cmdSend() {
           dryRun: false,
           verify: !has('no-verify'),
           readback: has('transcript'),
-          // 音量交给桥接处理（与前端面板、图形界面同一条路径）
-          volume: has('volume') ? Number(val('volume')) : 1,
+          // 音量未显式传参时留空，交给桥接沿用 config.json 的 defaultVolume / loudness
+          ...(has('volume') ? { volume: Number(val('volume')) } : {}),
           normalize: has('normalize'),
-          loudness: has('loudness') ? String(val('loudness')) : 'normal',
+          ...(has('loudness') ? { loudness: String(val('loudness')) } : {}),
           source: 'cli'
         }),
         timeoutMs: 240000

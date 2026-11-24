@@ -10,8 +10,8 @@ export function createForwardMediaRegistry() {
   /** 把媒体项归一成引用串；不合法返回 '' */
   function forwardMediaKey(item) {
     if (!item || typeof item !== 'object') return '';
-    const kind = item.kind === 'face' ? 'face' : 'image';
-    const values = ['file', 'url', 'faceId'].map((name) => (item[name] == null ? '' : String(item[name])));
+    const kind = item.kind === 'face' ? 'face' : item.kind === 'sticker' ? 'sticker' : 'image';
+    const values = ['file', 'url', 'faceId', 'emojiId'].map((name) => (item[name] == null ? '' : String(item[name])));
     if (!values.some(Boolean)) return '';
     if (values.some((v) => v.length > 8192)) return '';
     return JSON.stringify([kind, ...values]);
@@ -32,8 +32,8 @@ export function createForwardMediaRegistry() {
       for (const item of message?.media ?? []) {
         const ref = forwardMediaKey(item);
         if (!ref) continue;
-        const media = { kind: item.kind === 'face' ? 'face' : 'image' };
-        for (const name of ['file', 'url', 'faceId']) if (item[name] != null) media[name] = String(item[name]);
+        const media = { kind: item.kind === 'face' ? 'face' : item.kind === 'sticker' ? 'sticker' : 'image' };
+        for (const name of ['file', 'url', 'faceId', 'emojiId', 'subType', 'summary']) if (item[name] != null) media[name] = String(item[name]);
         refs.set(ref, { media, until: now + FORWARD_MEDIA_TTL_MS });
       }
     }

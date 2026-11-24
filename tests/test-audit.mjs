@@ -97,6 +97,8 @@ const tests = [
   'test-p2-reliability-fixes.mjs',
   // 阶段 4（P3）工具清单单一来源、去重、配置模板对齐与工程化回归
   'test-p3-architecture-fixes.mjs',
+  // 第二轮深度审阅修复回归（隐私快照、门禁旁听、outbox、web-search、lock、recall、账本）
+  'test-review-r2-fixes.mjs',
 ];
 
 // 要真实环境、不进主回归的测试，必须写明理由

@@ -188,6 +188,7 @@ export function createSchedulerV2(b) {
   // 按 sleepUntil 设置有限睡眠定时器
   function setupSleepTimerV2(key) {
     if (b.cfg.socialV2?.enabled === false) return;
+    if (b.modeForKey(key) !== 'reserved2') return;
     if (!b.isSessionAllowedInCurrentMode(key)) return;
     const st = b.getSocialV2State(key);
     const runtime = b.schedulerRuntime?.(key, st) ?? st;

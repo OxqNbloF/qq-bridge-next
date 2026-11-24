@@ -372,6 +372,8 @@ function scanHistory() {
     if (rest.slice(0, j) !== 'blob') continue;
     const p = rest.slice(j + 1);
     if (!p || BINARY_EXT.has(path.extname(p).toLowerCase())) continue;
+    const normPath = p.replaceAll('\\', '/');
+    if (allowRe.some((re) => re.test(normPath)) || /^scripts\/test-[^/]+\.mjs$/.test(normPath)) continue;
     if (!blobs.has(oid)) blobs.set(oid, p);
   }
   if (!blobs.size) return;

@@ -188,6 +188,8 @@ export function createConversationPolicy(b) {
     if (!preserveQueue) {
       b.cancelScheduledTurns?.(key, 'session-retired');
       b.drainPromptQueue(key, '会话策略已变化');
+      b.queued?.delete(key);
+      b.queuedHintAt?.delete(key);
       b.sessionPromises?.delete(key);
       b.sessionCreationPolicies?.delete(key);
     }
@@ -213,8 +215,10 @@ export function createConversationPolicy(b) {
         st.modelSourcesIncomplete = false;
       }
     }
-    b.disarmPendingWakeLease(key);
-    b.pendingWakeKeys.delete(key);
+    if (!preserveQueue) {
+      b.disarmPendingWakeLease(key);
+      b.pendingWakeKeys.delete(key);
+    }
     if (!sessionId) {
       if (!deferSave) { b.saveState(); b.saveSocialV2State(); }
       return;
@@ -229,6 +233,8 @@ export function createConversationPolicy(b) {
     b.v2TurnStartAt.delete(sessionId);
     b.turnLeaseNoted.delete(sessionId);
     b.toolCallNames.delete(sessionId);
+    b.toolCallAt?.delete(sessionId);
+    b.lastEventAt?.delete(sessionId);
     b.social.silentTurns.delete(sessionId);
     b.social.exitingSessions.delete(sessionId);
     // 作废的会话要退订，不然每次重连都会重新拉一遍历史，越积越慢
@@ -255,5 +261,12 @@ export function createConversationPolicy(b) {
     if (retired > 0) { b.saveState(); b.saveSocialV2State(); }
   }
 
-  return { modeAdapterForKey: (key) => getModeAdapter(modeForKey(key)), resolveConversationMode, conversationEpoch, refreshMode, refreshPresetList, modeForKey, modeAllowed, resolvePresetName, modePreset, isSessionAllowedInCurrentMode, sessionPolicy, isCurrentSession, stopRetiredSessionWork, forgetConversationCaches, retireSession, reconcileSessionPolicies };
+  const bumpConversationEpoch = (rawKey) => {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
+    if (!key) return 0;
+    const next = (conversationEpochs.get(key) ?? 0) + 1;
+    conversationEpochs.set(key, next);
+    return next;
+  };
+  return { modeAdapterForKey: (key) => getModeAdapter(modeForKey(key)), resolveConversationMode, conversationEpoch, bumpConversationEpoch, refreshMode, refreshPresetList, modeForKey, modeAllowed, resolvePresetName, modePreset, isSessionAllowedInCurrentMode, sessionPolicy, isCurrentSession, stopRetiredSessionWork, forgetConversationCaches, retireSession, reconcileSessionPolicies };
 }

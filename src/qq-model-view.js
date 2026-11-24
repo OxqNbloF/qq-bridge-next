@@ -89,6 +89,10 @@ export function compactModelMessage(message, opts = {}) {
   if (typeof message === 'string') return sanitizeUntrustedText(message);
   if (!isRecord(message)) return message;
   const result = { ...message };
+  // 内部溯源/门禁控制字段不送给模型
+  delete result.sourceQqs;
+  delete result.noContext;
+  delete result.no_context;
   // 先净化群友可控字段，必须在去重之前
   for (const key of ['sender', 'text', 'plain', 'tail']) {
     if (typeof result[key] === 'string') result[key] = sanitizeUntrustedText(result[key]);

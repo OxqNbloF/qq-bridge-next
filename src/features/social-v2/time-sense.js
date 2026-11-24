@@ -106,7 +106,13 @@ export function createTimeSenseV2(b) {
     // 增量跟踪序列化长度，避免每条消息都对整个 packet 重复 JSON.stringify（O(M²)）
     let approxChars = JSON.stringify(packet).length;
     const tryAdd = (field, msg) => {
-      const compact = b.compactModelMessage(msg, { now });
+      const compactRaw = b.compactModelMessage(msg, { now });
+      const projected = typeof b.projectForModel === 'function'
+        ? b.projectForModel(compactRaw, 'prompt', { groupKey: key })
+        : compactRaw;
+      const compact = typeof b.redactSensitive === 'function'
+        ? b.redactSensitive(projected)
+        : projected;
       const itemChars = JSON.stringify(compact).length + (packet[field].length > 0 ? 1 : 0);
       // 预留少量数字字段位宽增长余量（includedUnreadCount / readThroughSeq / partial）
       if (approxChars + itemChars + 16 > maxChars) {

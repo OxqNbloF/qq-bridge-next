@@ -23,7 +23,8 @@ export function createMemoryAPI(b) {
     b.appendMemoryV2(st, category, content, extra, key);
     return { key, category, content };
   }
-  function retrieve(key, category, query = '') {
+  function retrieve(rawKey, category, query = '') {
+    const key = canonicalV2Key(rawKey) ?? String(rawKey ?? '').trim();
     if (category === 'term') return b.terms.query(key, query);
     const kinds = { activeTopic: 'ongoing', pendingThought: 'ongoing', memberImpression: 'impression' };
     return b.memoryPool.query({ kind: kinds[category] ?? category }).filter(item => (!item.expire_at || Date.parse(item.expire_at) > Date.now()) && item.conv_id === key
@@ -57,7 +58,12 @@ export function createMemoryAPI(b) {
     record: envelope => envelope.flags.memory ? b.archiveIncoming(`${envelope.conv.kind}:${envelope.conv.id}`, envelope.raw, { textContent: envelope.text, plainContent: envelope.plain, mediaList: envelope.media, noContext: !envelope.flags.context, sourceQqs: envelope.sourceQqs }) : undefined,
     append, retrieve, remove, assertWritable,
     clear: (key, category) => category ? remove(key, category) : ['activeTopic', 'pendingThought', 'memberImpression'].forEach(kind => remove(key, kind)),
-    buildContext: (key, policy) => b.getMemoryContext(key, b.getSocialV2State(key), policy).slice(0, policy?.maxChars ?? 1500),
+    buildContext: (key, policy) => {
+      const text = b.getMemoryContext(key, b.getSocialV2State(key), policy);
+      const limit = policy?.maxChars ?? 1500;
+      const chars = Array.from(String(text ?? ''));
+      return chars.length <= limit ? String(text ?? '') : chars.slice(0, limit).join('');
+    },
     forget: key => b.forgetConversationMemory(key),
     resetContext: (key, options) => resetMemoryContext(b, key, options),
     migrate: () => b.terms.migrate(),

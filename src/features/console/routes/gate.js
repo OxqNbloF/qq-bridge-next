@@ -61,6 +61,18 @@ export function createConsoleGateRoutes(b) {
       rq.sendJson({ ok: false, error: '成员策略尚未加载，无法读写' }, 503);
       return false;
     };
+    const retireIfContextRevoked = (group) => {
+      if (typeof b.retireSession !== 'function' || b.cfg?.architecture?.gateV2 !== true) return;
+      const st = b.socialV2?.conversations?.get?.(group);
+      const seen = st?.modelSourceQqs;
+      if (!Array.isArray(seen) || !seen.length) return;
+      const groupId = Number(group.slice(6));
+      const revoked = seen.some((qq) => {
+        const d = b.gateDecide({ kind: 'group', id: groupId, qq: String(qq) });
+        return !d.allowed || d.flags?.context !== true;
+      });
+      if (revoked) b.retireSession(group);
+    };
     const response = (group, policy) => ({
       group,
       mode: policy?.mode ?? 'all',
@@ -143,6 +155,7 @@ export function createConsoleGateRoutes(b) {
       }
       if (b.memberPolicySnapshot().policyBroken) { rq.sendJson({ ok: false, error: '策略文件损坏，当前为只读状态' }, 503); return; }
       b.setGroupPolicy(group, checked, 'console');
+      retireIfContextRevoked(group);
       rq.sendJson({ ok: true, ...response(group, b.memberPolicySnapshot().policy.groups[group]) });
       return;
     }
@@ -195,6 +208,7 @@ export function createConsoleGateRoutes(b) {
         return;
       }
       b.setMemberRule(group, qq, patchFields, 'console');
+      retireIfContextRevoked(group);
       rq.sendJson({ ok: true, ...response(group, b.memberPolicySnapshot().policy.groups[group]) });
       return;
     }
@@ -227,6 +241,7 @@ export function createConsoleGateRoutes(b) {
       if (body.dryRun !== false) { rq.sendJson({ ok: false, error: 'dryRun 必须明确为 true（预检）或 false（确认导入）' }, 400); return; }
       if (b.memberPolicySnapshot().policyBroken) { rq.sendJson({ ok: false, error: '策略文件损坏，当前为只读状态' }, 503); return; }
       b.setGroupPolicy(group, checked, 'console');
+      retireIfContextRevoked(group);
       rq.sendJson({ ok: true, ...response(group, b.memberPolicySnapshot().policy.groups[group]) });
       return;
     }

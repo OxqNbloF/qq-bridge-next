@@ -32,10 +32,19 @@ export function createDshDeliver(b) {
       return { ok: true, queued: true };
     }
     let sessionId;
+    const startSessionEpoch = b.sessionEpoch;
+    const startConvEpoch = b.conversationEpoch?.(key);
     try {
       sessionId = await b.ensureSession(key);
     } catch (error) {
       if (String(error?.message ?? error).includes('会话创建期间已重置')) {
+        if (b.sessionEpoch !== startSessionEpoch || !b.isSessionAllowedInCurrentMode(key)) {
+          return opts.wakeReason || opts.wakeReminder ? skipWake() : { ok: true, skipped: true };
+        }
+        if (b.conversationEpoch?.(key) !== startConvEpoch && !b.queued?.has(key) && !b.state.sessions[key]) {
+          // 主动 /reset 或 retireSession(!preserveQueue) 已清会话，不再复活旧消息
+          return opts.wakeReason || opts.wakeReminder ? skipWake() : { ok: true, skipped: true };
+        }
         if (opts.schedulerTurnId) return { retry: true };
         b.enqueueForRetry(key, promptText, opts);
         return { ok: true, retried: true };
@@ -67,11 +76,11 @@ export function createDshDeliver(b) {
       }
     }
     const mode = b.modeForKey(key);
-    if (key.startsWith('group:') && !promptText.includes('【群成员】')) {
+    if (!opts.wakeReminder && key.startsWith('group:') && !promptText.includes('【群成员】')) {
       const roster = b.renderIdentityRoster(key, { exposeQq: b.cfg.identity?.exposeQqInPrompt === true });
       if (roster) promptText += `\n\n【群成员】\n${roster}`;
     }
-    if (!opts.skipMemory) {
+    if (!opts.skipMemory && !opts.wakeReminder) {
       const memory = b.buildModeMemory(key);
       if (memory) promptText += `\n\n${memory}`;
     }
