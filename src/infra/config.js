@@ -60,10 +60,20 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       authPrefix: 'Bearer',
       // 是否允许把 launch token 发往非回环地址（默认否）
       allowRemote: false,
+      inlineDispatch: false,
       autoDiscoverPort: true,
       ...(file.dsh ?? {})
     },
-    snowluma: { wsUrl: 'ws://127.0.0.1:3001', accessToken: '', ...(file.snowluma ?? {}) },
+    snowluma: {
+      wsUrl: 'ws://127.0.0.1:3001',
+      httpUrl: 'http://127.0.0.1:3000',
+      accessToken: '',
+      followDiscoveredEndpoint: true,
+      silenceWarnMs: 600000,
+      launcherPath: '',
+      homeDir: '',
+      ...(file.snowluma ?? {})
+    },
     // 非空则所有会话固定用该目录
     sessionCwd: file.sessionCwd ?? '',
     // per-conversation：每会话独立目录；shared：共用
@@ -95,6 +105,17 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       interceptNotify: true,
       ...(file.security ?? {})
     },
+    webSearch: deepMergePlain({
+      provider: 'auto',
+      apiKey: '',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      baseURL: '',
+      model: 'deepseek-v4-flash',
+      maxUses: 5,
+      maxTokens: 4096,
+      maxResults: 8,
+      timeoutMs: 35000,
+    }, file.webSearch),
     social: deepMergePlain({
       enabled: true,
       // 观望阶段
@@ -135,6 +156,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
     }, file.social),
     socialV2: deepMergePlain({
       enabled: true,
+      flushIntervalMs: 1000,
       autoReplyCheckMs: 30000,
       agentPreset: 'qq-chat-v2',
       provideRecommendations: true,
@@ -143,6 +165,8 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
         defaultMode: 'diving',
         preSleepWaitEnabled: true,      // 沉睡前强制观察窗口开关
         preSleepWaitMs: 300000,          // 沉睡前至少观察 5 分钟
+        staleChatMinutes: 10,
+        staleSilentMinutes: 120,
         recommendedDefaultInfinite: true, // 下次唤醒默认是否无限期
         sleepMinMs: 60000,
         sleepMaxMs: 0,
@@ -237,7 +261,13 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       media: {
         maxBytes: 8 * 1024 * 1024,
         maxPixels: 64_000_000,
-        maxCount: 5
+        maxCount: 5,
+        normalize: true,
+        maxModelBytes: 1048576,
+        maxLongEdge: 1280,
+        gifFrames: 6,
+        gifTile: 240,
+        normalizeTimeoutMs: 25000,
       }
     }, file.socialV2)
   };

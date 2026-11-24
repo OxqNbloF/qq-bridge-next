@@ -22,17 +22,35 @@ export function rejectBadHost({ req, sendJson, boundPort }) {
   return false;
 }
 
+export const CONSOLE_SESSION_COOKIE = 'qq_console_session';
+
+function readCookie(cookieHeader, name) {
+  if (typeof cookieHeader !== 'string' || !cookieHeader) return '';
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    if (part.slice(0, idx).trim() === name) {
+      try { return decodeURIComponent(part.slice(idx + 1).trim()); }
+      catch { return part.slice(idx + 1).trim(); }
+    }
+  }
+  return '';
+}
+
 // 检查控制台访问令牌对不对
 export function rejectBadConsoleToken({ req, res, url, sendJson, consoleToken }) {
-  // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
-  // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
-  // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
-  const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
+  // 控制台鉴权：支持 x-console-token、?token= 或同源 HttpOnly Cookie，全部定长比较
+  const suppliedToken = String(
+    req.headers['x-console-token']
+    ?? url.searchParams.get('token')
+    ?? readCookie(req.headers.cookie, CONSOLE_SESSION_COOKIE)
+    ?? ''
+  );
   // 空控制台令牌必须失败关闭（tokenEq 在任一侧为空时返回 false）
   if (!tokenEq(suppliedToken, consoleToken)) {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
-      res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
+      res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t){const u=new URL(location.href);u.searchParams.set(\'token\',t.trim());location.href=u.pathname+u.search+u.hash;}</script>');
     } else {
       sendJson({ ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
     }

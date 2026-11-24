@@ -1,4 +1,5 @@
 import { createConsoleSystemRoutes } from './features/console/routes/system.js';
+import { createConsoleModuleRoutes } from './features/console/routes/modules.js';
 import { resolveApiPath } from './policy/api-paths.js';
 import { createToolGateway, TOOL_ROUTES } from './features/tools/gateway.js';
 import { rememberModelSources } from './memory/model-sources.js';
@@ -60,6 +61,7 @@ export function createConsoleServer(b) {
       get agentMemberView() { return agentMemberView; },
     }));
     const consoleSystemRoutes = createConsoleSystemRoutes(routeScope);
+    const consoleModuleRoutes = createConsoleModuleRoutes(routeScope);
     const consoleRoleRoutes = createConsoleRoleRoutes(routeScope);
     const consoleTermsRoutes = createConsoleTermsRoutes(routeScope);
     const consoleSessionRoutes = createConsoleSessionRoutes(routeScope);
@@ -156,6 +158,8 @@ export function createConsoleServer(b) {
         }
         if (rejectReadonlyStore({ req, url, sendJson, stickerStoreWritable: b.stickerStoreWritable })) return;
         if (await consoleSystemRoutes({ readBody, req, res, sendJson, url }) !== ROUTE_NEXT) return;
+        // 工作台全模块参数读写与配置备份恢复（console token only）
+        if (await consoleModuleRoutes({ readBody, req, res, sendJson, url }) !== ROUTE_NEXT) return;
         // 控制台页面 / 状态 / preset 清单 / 模式 / 角色
         if (await consoleCoreRoutes({ SECURITY_HEADERS, readBody, req, res, sendJson, url }) !== ROUTE_NEXT) return;
         // 门禁成员策略管理（console token only）

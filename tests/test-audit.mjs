@@ -99,6 +99,8 @@ const tests = [
   'test-p3-architecture-fixes.mjs',
   // 第二轮深度审阅修复回归（隐私快照、门禁旁听、outbox、web-search、lock、recall、账本）
   'test-review-r2-fixes.mjs',
+  // 全模块工作台参数注册表、热更新与静态资产路径边界回归
+  'test-console-modules.mjs',
 ];
 
 // 要真实环境、不进主回归的测试，必须写明理由

@@ -15,12 +15,7 @@ const h = await bridgeHarness({
 h.setReady(true);
 h.setMode("chat");
 const directory = `${h.temp}/src/features/console/web`;
-fs.mkdirSync(directory, { recursive: true });
-for (const file of ["studio.html", "console.html"])
-  fs.copyFileSync(
-    new URL(`../src/features/console/web/${file}`, import.meta.url),
-    `${directory}/${file}`,
-  );
+fs.cpSync(new URL("../src/features/console/web", import.meta.url), directory, { recursive: true });
 const server = h.startConsoleServer();
 if (!server.listening)
   await new Promise((resolve) => server.once("listening", resolve));

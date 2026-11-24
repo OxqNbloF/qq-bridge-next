@@ -8,5 +8,6 @@ export function resolveApiPath(path) {
       .replace(/^\/api\/console\/(status$|send\/|images\/|authorize\/)/, '/api/agent/$1');
     return { namespace: 'console', path: dispatch };
   }
-  return { namespace: path === '/' || path === '/favicon.ico' ? 'web' : 'removed', path };
+  if (path === '/' || path === '/favicon.ico' || path.startsWith('/assets/')) return { namespace: 'web', path };
+  return { namespace: 'removed', path };
 }

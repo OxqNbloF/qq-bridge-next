@@ -6,28 +6,79 @@ import { fileURLToPath } from 'node:url';
 import { unwrap } from '../../../dsh-client.js';
 import { normalizeModeInput, VALID_MODES } from '../../../policy/mode.js';
 import { readJsonSafe, atomicWriteJson } from '../../../store/fs-atomic.js';
+import { CONSOLE_SESSION_COOKIE } from '../../../infra/http/auth-console.js';
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
+const WORKBENCH_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:";
+const STATIC_ASSETS = Object.freeze({
+  '/assets/workbench.css': { file: 'assets/workbench.css', type: 'text/css; charset=utf-8' },
+  '/assets/api.js': { file: 'assets/api.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/schema-form.js': { file: 'assets/schema-form.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/app.js': { file: 'assets/app.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/overview.js': { file: 'assets/panels/overview.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/modules.js': { file: 'assets/panels/modules.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/sessions.js': { file: 'assets/panels/sessions.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/gate.js': { file: 'assets/panels/gate.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/persona.js': { file: 'assets/panels/persona.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/media-tools.js': { file: 'assets/panels/media-tools.js', type: 'application/javascript; charset=utf-8' },
+  '/assets/panels/system.js': { file: 'assets/panels/system.js', type: 'application/javascript; charset=utf-8' },
+});
+
+function readWebAsset(rootDir, relPath) {
+  try { return fs.readFileSync(path.join(rootDir, 'src', 'features', 'console', 'web', relPath), 'utf8'); }
+  catch { return fs.readFileSync(path.join(WEB_DIR, relPath), 'utf8'); }
+}
 
 // 创建控制台的这些基础接口
 export function createConsoleCoreRoutes(b) {
   return async function consoleCoreRoutes(rq) {
     if (rq.req.method === 'GET' && rq.url.pathname === '/') {
-      const page = rq.url.searchParams.get('classic') === '1' ? 'console.html' : 'studio.html';
+      const queryToken = rq.url.searchParams.get('token');
+      if (queryToken) {
+        const cleanUrl = new URL(rq.url.href);
+        cleanUrl.searchParams.delete('token');
+        const location = cleanUrl.pathname + (cleanUrl.search || '');
+        rq.res.writeHead(302, {
+          ...rq.SECURITY_HEADERS,
+          'Set-Cookie': `${CONSOLE_SESSION_COOKIE}=${encodeURIComponent(queryToken)}; HttpOnly; SameSite=Strict; Path=/`,
+          Location: location,
+        });
+        rq.res.end();
+        return;
+      }
       let html;
       try {
-        html = fs.readFileSync(path.join(b.ROOT, 'src', 'features', 'console', 'web', page), 'utf8');
+        html = readWebAsset(b.ROOT, 'index.html');
       } catch {
-        try {
-          html = fs.readFileSync(path.join(WEB_DIR, page), 'utf8');
-        } catch {
-          rq.res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', ...rq.SECURITY_HEADERS });
-          rq.res.end('控制台页面缺失：请检查 src/features/console/web/');
-          return;
-        }
+        rq.res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', ...rq.SECURITY_HEADERS });
+        rq.res.end('工作台页面缺失：请检查 src/features/console/web/index.html');
+        return;
       }
-      rq.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...rq.SECURITY_HEADERS });
+      rq.res.writeHead(200, {
+        ...rq.SECURITY_HEADERS,
+        'Content-Security-Policy': WORKBENCH_CSP,
+        'content-type': 'text/html; charset=utf-8',
+      });
       rq.res.end(html);
+      return;
+    }
+    if (rq.req.method === 'GET' && rq.url.pathname.startsWith('/assets/')) {
+      const entry = Object.prototype.hasOwnProperty.call(STATIC_ASSETS, rq.url.pathname)
+        ? STATIC_ASSETS[rq.url.pathname]
+        : null;
+      if (!entry) {
+        rq.sendJson({ ok: false, error: 'not found' }, 404);
+        return;
+      }
+      let content;
+      try { content = readWebAsset(b.ROOT, entry.file); }
+      catch { rq.sendJson({ ok: false, error: '静态资源缺失' }, 404); return; }
+      rq.res.writeHead(200, {
+        ...rq.SECURITY_HEADERS,
+        'Content-Security-Policy': WORKBENCH_CSP,
+        'content-type': entry.type,
+      });
+      rq.res.end(content);
       return;
     }
     if (rq.req.method === 'GET' && rq.url.pathname === '/api/agent/status') {

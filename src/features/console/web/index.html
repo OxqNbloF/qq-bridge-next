@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>QQ Bridge · 全模块工作台</title>
+    <link rel="stylesheet" href="/assets/workbench.css" />
+  </head>
+  <body>
+    <a href="#main" class="skip">跳转到内容</a>
+    <div class="shell">
+      <aside class="rail">
+        <a class="brand" href="/" aria-label="Bridge 首页">
+          <span class="brand-mark">QB</span>
+          <span>bridge<small>WORKBENCH</small></span>
+        </a>
+        <div class="rail-caption">WORKSPACE</div>
+        <nav class="nav" aria-label="主导航">
+          <button type="button" data-view="desk" aria-current="page">工作台总览</button>
+          <button type="button" data-view="parameters">全模块参数 <span class="nav-pill" id="navModCount">12</span></button>
+          <button type="button" data-view="sessions">会话与模式</button>
+          <button type="button" data-view="gate">门禁与策略</button>
+          <button type="button" data-view="persona">角色与记忆</button>
+          <button type="button" data-view="media">媒体、工具与用量</button>
+          <button type="button" data-view="settings">系统与维护</button>
+        </nav>
+        <div class="rail-bottom">
+          <div class="deploy">
+            <strong><span class="dot" id="railDot"></span>本机桥接实例</strong>
+            <small id="railSub">正在连接…</small>
+          </div>
+          <div class="rail-meta">12 模块全参数可调 · 本机令牌保护</div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div class="crumb">工作台 <span>/</span> <b id="breadcrumb">工作台总览</b></div>
+          <div class="top-actions">
+            <input id="globalParamSearch" class="search-input" type="search" placeholder="搜索任意模块或参数名…" aria-label="全局参数搜索" />
+            <span class="badge warn hidden" id="pendingRestartBadge" title="有配置改动已落盘，重启 Bridge 后生效">待重启 <b id="pendingRestartCount">0</b></span>
+            <span class="badge" id="connectionBadge"><span class="dot"></span>正在连接</span>
+            <button type="button" id="refreshBtn" class="btn-sm">刷新</button>
+          </div>
+        </header>
+
+        <main id="main" class="content" tabindex="-1">
+          <section class="view" data-page="desk" id="page-desk"></section>
+          <section class="view hidden" data-page="parameters" id="page-parameters"></section>
+          <section class="view hidden" data-page="sessions" id="page-sessions"></section>
+          <section class="view hidden" data-page="gate" id="page-gate"></section>
+          <section class="view hidden" data-page="persona" id="page-persona"></section>
+          <section class="view hidden" data-page="media" id="page-media"></section>
+          <section class="view hidden" data-page="settings" id="page-settings"></section>
+          <footer class="footer">
+            <span>QQ-BRIDGE-NEXT · MODULAR WORKBENCH</span>
+            <span>全模块参数热更新与安全备份</span>
+          </footer>
+        </main>
+      </div>
+    </div>
+    <div id="notice" role="status" aria-live="polite"></div>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>
