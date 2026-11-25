@@ -74,6 +74,13 @@ export function createRecallHandler(b) {
       st[field] = (st[field] || []).map((m) => (String(m?.messageId ?? '') === messageId ? placeholder(m) : m));
     }
     for (const m of originals) {
+      if (media && m.seq != null) {
+        const seqKey = String(m.seq);
+        const seqVal = media.get(seqKey);
+        if (seqVal !== undefined && (seqVal === m.media || (Array.isArray(seqVal) && seqVal.length === 0))) {
+          media.delete(seqKey);
+        }
+      }
       for (const fid of m.forwardIds || []) b.seenForwardIds.get(canonical)?.delete(String(fid));
     }
     b.saveSocialV2State();

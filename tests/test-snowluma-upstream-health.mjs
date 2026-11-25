@@ -12,7 +12,6 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 // 上游健康代码和 /api/agent/status 路由都搬出了 bridge.js
 // 所以把 bridge.js 和搬出的模块拼起来读
 const bridge = readBridgeSource();
-const consoleHtml = fs.readFileSync(path.join(ROOT, 'src', 'features', 'console', 'web', 'console.html'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const example = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
 
@@ -147,9 +146,9 @@ test('/api/agent/status 暴露 snowluma 健康快照，且只给操作者', () =
 });
 
 test('控制台有对应的告警条与卡片', () => {
-  assert.match(consoleHtml, /id="snowlumaWarn"/, '控制台应有 SnowLuma 告警条');
-  assert.match(consoleHtml, /renderSnowlumaHealth\(/, '告警条必须被接线到 /api/agent/status 的渲染路径');
-  assert.match(consoleHtml, /\[Hook\]/, '告警文案必须把排查方向指向 SnowLuma 的 [Hook] 日志');
+  const overviewJs = fs.readFileSync(path.join(ROOT, 'src', 'features', 'console', 'web', 'assets', 'panels', 'overview.js'), 'utf8');
+  assert.match(overviewJs, /st\.snowluma/, '工作台总览面板应读取 /api/agent/status 的 snowluma 健康快照');
+  assert.match(overviewJs, /sl\.hint|sl\.confirmed/, '工作台总览面板应渲染 SnowLuma 异常提示');
 });
 
 test('端点自愈可关，且默认保持「跟随」（向后兼容）', () => {

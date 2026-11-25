@@ -6,7 +6,7 @@ import { getModeAdapter } from '../modes/registry.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { unwrap } from '../dsh-client.js';
-import { normalizeOwnerQQ } from '../policy/access.js';
+import { canonicalV2Key, normalizeOwnerQQ } from '../policy/access.js';
 import { conversationGate } from '../gate/decide.js';
 import { normalizeModeInput, settingFromDshNamespace } from '../policy/mode.js';
 import { readJsonSafe } from '../store/fs-atomic.js';
@@ -188,8 +188,6 @@ export function createConversationPolicy(b) {
     if (!preserveQueue) {
       b.cancelScheduledTurns?.(key, 'session-retired');
       b.drainPromptQueue(key, '会话策略已变化');
-      b.queued?.delete(key);
-      b.queuedHintAt?.delete(key);
       b.sessionPromises?.delete(key);
       b.sessionCreationPolicies?.delete(key);
     }

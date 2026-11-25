@@ -149,16 +149,12 @@ export function planStop({ port, root = DEFAULT_ROOT, lockPid = null, processes 
     const detail = !lockProcess
       ? `PID ${lockPid} 已不存在`
       : `PID ${lockPid} 是 ${lockProcess.name || '未知进程'}，不是本项目的 bridge.js`;
-    // 只对无法判定绝对目录的相对路径 start.sh 保守中止；绝对路径属于其他目录的守护直接忽略
-    const ambiguousGuard = processes.find((p) => {
-      if (!isGuardProcess(p)) return false;
-      const script = commandTokens(p.commandLine).find((token) => /(^|[\\/])start\.sh$/.test(token));
-      return !script || !path.isAbsolute(script);
-    });
+    // 仍有 start.sh 守护循环在跑时保守中止，防止锁清理后与守护窗口拉出双实例
+    const ambiguousGuard = processes.find((p) => isGuardProcess(p));
     if (ambiguousGuard) {
       return {
         action: 'abort',
-        reason: `锁文件已过期（${detail}），但仍检测到无法判定目录的 start.sh 守护循环 PID ${ambiguousGuard.pid}；请等它把实例拉起来后重试，或手动关闭旧窗口`,
+        reason: `锁文件已过期（${detail}），但仍检测到 start.sh 守护循环 PID ${ambiguousGuard.pid}；请等它把实例拉起来后重试，或手动关闭旧窗口`,
         port, lockPid, listenerPid
       };
     }

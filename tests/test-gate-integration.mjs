@@ -43,13 +43,13 @@ test('reserved2：memory 管归档，converse 管最近记录，respond 管未�
     assert.deepEqual(st.unread.map((m) => m.seq), [1, 2, 3], '水位连续，不会被堵');
 
     const before = JSON.stringify(h.buildWakeSnapshotV2('group:456'));
-    assert.ok(!before.includes('msg-104'), 'F-14：未读快照也是历史读取面，context=false 不渲染');
-    assert.ok(before.includes('msg-102'), 'memory=false/context=true 仍然可读');
+    assert.ok(!before.includes('msg-104') && !before.includes('msg-u104'), 'F-14：未读快照也是历史读取面，context=false 不渲染');
+    assert.ok(before.includes('msg-102') || before.includes('msg-u102'), 'memory=false/context=true 仍然可读');
     st.unread = [];
     st.lastReadThroughSeq = st.lastUnreadSeq;
     const after = JSON.stringify(h.buildWakeSnapshotV2('group:456'));
-    assert.ok(after.includes('msg-999') && after.includes('msg-101'), '普通成员和观察者的历史可见');
-    assert.ok(!after.includes('msg-104'), 'context=false 的历史不渲染');
+    assert.ok((after.includes('msg-999') || after.includes('msg-u999')) && (after.includes('msg-101') || after.includes('msg-u101')), '普通成员和观察者的历史可见');
+    assert.ok(!after.includes('msg-104') && !after.includes('msg-u104'), 'context=false 的历史不渲染');
 
     // 归档侧：104 留在底账，但压缩时不交给模型，游标照常推进
     const rows = h.messageArchive.range('group:456');

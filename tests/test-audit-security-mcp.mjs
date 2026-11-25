@@ -3,6 +3,8 @@ import { adaptLegacyConfig } from '../src/infra/legacy-config.js';
 import assert from 'node:assert/strict';
 import { resolveSocialV2Tools } from '../src/policy/tool-defaults.js';
 import { filterAndProjectGroupHistory as filterAndProjectGroupHistoryCore, groupAllowed } from '../src/gate/mcp-history.js';
+import { migrateDocument } from '../src/store/schema.js';
+import { validateMemberPolicyDoc } from '../src/store/member-policy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -156,6 +158,8 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null, fix
     resolveSocialV2Tools,
     filterAndProjectGroupHistoryCore,
     groupAllowed,
+    migrateDocument,
+    validateMemberPolicyDoc,
     URL,
     URLSearchParams,
     fetch: fetchImpl,

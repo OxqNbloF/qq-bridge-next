@@ -16,7 +16,7 @@ function usesSource(item, key, messageId) {
   }
   if (ids.length) return false;
   if (item.conv_id !== key && item.conv_id !== 'global') return false;
-  return (LIGHT_MEMORY_KINDS.includes(item.kind) || ['term', 'slang', 'alias'].includes(item.kind)) && (item.data?.source ?? item.source) !== 'manual';
+  return (LIGHT_MEMORY_KINDS.includes(item.kind) || ['term', 'slang'].includes(item.kind)) && (item.data?.source ?? item.source) !== 'manual';
 }
 
 function evidenceUsesSource(value, key, messageId) {

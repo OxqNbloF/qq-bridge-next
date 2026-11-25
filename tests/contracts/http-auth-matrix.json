@@ -113,7 +113,7 @@
   },
   "operator-query-token": {
    "GET /favicon.ico": "204",
-   "GET /": "200",
+   "GET /": "302",
    "GET /api/console/status": "200",
    "GET /api/agent/status": "403 智能体调用必须携带 x-agent-call: 1",
    "GET /api/console/sessions": "200",
@@ -670,7 +670,7 @@
   },
   "operator-query-token": {
    "GET /favicon.ico": "204",
-   "GET /": "200",
+   "GET /": "302",
    "GET /api/console/status": "200",
    "GET /api/agent/status": "403 智能体调用必须携带 x-agent-call: 1",
    "GET /api/console/sessions": "200",
@@ -1227,7 +1227,7 @@
   },
   "operator-query-token": {
    "GET /favicon.ico": "204",
-   "GET /": "200",
+   "GET /": "302",
    "GET /api/console/status": "200",
    "GET /api/agent/status": "403 智能体调用必须携带 x-agent-call: 1",
    "GET /api/console/sessions": "200",
@@ -1784,7 +1784,7 @@
   },
   "operator-query-token": {
    "GET /favicon.ico": "204",
-   "GET /": "200",
+   "GET /": "302",
    "GET /api/console/status": "200",
    "GET /api/agent/status": "403 智能体调用必须携带 x-agent-call: 1",
    "GET /api/console/sessions": "200",
@@ -2341,7 +2341,7 @@
   },
   "operator-query-token": {
    "GET /favicon.ico": "204",
-   "GET /": "200",
+   "GET /": "302",
    "GET /api/console/status": "200",
    "GET /api/agent/status": "403 智能体调用必须携带 x-agent-call: 1",
    "GET /api/console/sessions": "200",
@@ -2898,7 +2898,7 @@
   },
   "operator-query-token": {
    "GET /favicon.ico": "204",
-   "GET /": "200",
+   "GET /": "302",
    "GET /api/console/status": "200",
    "GET /api/agent/status": "403 智能体调用必须携带 x-agent-call: 1",
    "GET /api/console/sessions": "200",

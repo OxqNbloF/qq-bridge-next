@@ -506,8 +506,8 @@ export async function webSearch(query, options = {}) {
   if (Array.isArray(value.results) && value.results.length === 0) {
     value = { ...value, note: [value.note, '没有搜到结果（可换个说法/加限定词；仍为空就不要再重复搜索）'].filter(Boolean).join('；') };
   }
-  // 空结果或 auto 降级回退结果不长期缓存，避免配置好凭据或瞬时波动后继续命中旧降级结果
-  if (Array.isArray(value.results) && value.results.length > 0 && !value.fallbackFrom) {
+  // auto 降级回退结果不长期缓存，避免配置好凭据或瞬时波动后继续命中旧降级结果
+  if (!value.fallbackFrom) {
     cache.set(cacheKey, { at: Date.now(), value });
   }
   if (cache.size > CACHE_MAX_ENTRIES) {

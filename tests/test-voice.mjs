@@ -143,7 +143,7 @@ console.log('## 配置项（AI 发语音默认关闭，等语音库准备好再�
     'tools 默认 sendVoice: false（policy/tool-defaults.js，infra/config.js 经 resolveSocialV2Tools 合并）');
   // 默认配置在 src/infra/config.js
   const configSrc = fs.readFileSync(path.join(ROOT, 'src', 'infra', 'config.js'), 'utf8');
-  ok(/cfg\.socialV2\.voice = \{\s*\n\s*enabled: false,/.test(configSrc), 'infra/config.js 里 voice 默认 enabled: false');
+  ok(/(?:cfg\.socialV2\.voice =|voice:)\s*\{\s*\n\s*enabled: false,/.test(configSrc), 'infra/config.js 里 voice 默认 enabled: false');
 }
 
 console.log('## MCP 工具与 bridge 路由');
@@ -216,15 +216,16 @@ console.log('## preset 人设已描述语音能力（否则 AI 不知道自己�
 
 console.log('## 控制台契约');
 {
-  const html = fs.readFileSync(path.join(ROOT, 'src', 'features', 'console', 'web', 'console.html'), 'utf8');
+  const registry = fs.readFileSync(path.join(ROOT, 'src', 'features', 'console', 'module-registry.js'), 'utf8');
+  const indexHtml = fs.readFileSync(path.join(ROOT, 'src', 'features', 'console', 'web', 'index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(ROOT, 'src', 'features', 'console', 'web', 'assets', 'app.js'), 'utf8');
   const bridgeSrc = readBridgeSource();
-  ok(html.includes('data-v2-tool="sendVoice"'), '控制台有 sendVoice 工具开关');
+  ok(registry.includes('sendVoice'), '工作台模块注册表有 sendVoice 工具开关');
   ok(bridgeSrc.includes("'sendVoice']"), 'config API 的 toolFlags 含 sendVoice');
-  // 去重并排序
   const uniq = (a) => [...new Set(a)].sort();
-  const views = uniq([...html.matchAll(/data-view="([a-z0-9-]+)"/g)].map((m) => m[1]));
-  const pages = uniq([...html.matchAll(/data-page="([a-z0-9-]+)"/g)].map((m) => m[1]));
-  ok(JSON.stringify(views) === JSON.stringify(pages), `data-view 与 data-page 一一对应（${views.length} 个视图）`);
+  const navViews = uniq([...indexHtml.matchAll(/data-view="([a-z0-9-]+)"/g)].map((m) => m[1]));
+  const routes = uniq([...appJs.matchAll(/^\s{2}('?[a-z0-9-]+'?)\s*:\s*mount/gm)].map((m) => m[1].replace(/'/g, '')));
+  ok(navViews.length >= 6 && JSON.stringify(navViews) === JSON.stringify(routes), `导航 data-view 与工作台路由表一一对应（${navViews.length} 个视图）`);
 }
 
 console.log('## 回归：AI 语音通道不许穿出语音库（P1，曾可复现）');

@@ -43,8 +43,8 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
   }
   if (file.consolePort !== undefined) {
     const cp = Number(file.consolePort);
-    if (!Number.isInteger(cp) || cp < 1 || cp > 65535) {
-      throw new RangeError(`配置 consolePort 必须是 1~65535 的整数`);
+    if (!Number.isInteger(cp) || cp < 0 || cp > 65535) {
+      throw new RangeError(`配置 consolePort 必须是 0~65535 的整数`);
     }
   }
   const cfg = {

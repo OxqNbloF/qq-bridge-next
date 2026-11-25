@@ -186,17 +186,17 @@ export function findSticker(entries, ref) {
 }
 
 /** QQ 元数据共享；会话写的认知只在该会话可读 */
-export function stickerForScope(entry, currentKey = '', { includeAllScopes = false } = {}) {
+export function stickerForScope(entry, currentKey = undefined, { includeAllScopes = false } = {}) {
   const sticker = normalizeStickerEntry(entry);
   if (!sticker) return sticker;
-  if (includeAllScopes) return sticker;
-  // 使用语境无 scope，不能随备注一起公开；未传 currentKey 时仅放行 global 备注
+  if (includeAllScopes || currentKey === undefined) return sticker;
+  // 使用语境无 scope，不能随备注一起公开；显式传空串或非本会话 key 时仅放行 global 备注
   if (noteScopeVisible(sticker.noteScope, currentKey)) return { ...sticker, lastContext: '' };
   return { ...sticker, localNote: '', tags: [], usage: '', lastContext: '', noteScope: 'global' };
 }
 
 // 先净化再搜索，防用命中数探测私有备注
-export function formatStickerList(entries, query = '', limit = 48, currentKey = '', opts = {}) {
+export function formatStickerList(entries, query = '', limit = 48, currentKey = undefined, opts = {}) {
   const list = (Array.isArray(entries) ? entries : []).map((e) => stickerForScope(e, currentKey, opts)).filter(Boolean);
   const q = String(query ?? '').trim().toLowerCase();
   const filtered = q

@@ -130,7 +130,12 @@ export function createConsoleSocialRoutes(b) {
           }
         }
         if (Array.isArray(body.mustReplyKeywords)) merged.mustReplyKeywords = body.mustReplyKeywords.map(String);
-        file.social = merged;
+        if (file.modes && typeof file.modes === 'object' && file.modes.reserved !== undefined) {
+          file.modes.reserved = merged;
+          delete file.social;
+        } else {
+          file.social = merged;
+        }
         atomicWriteJson(configFile, syncConfigAliases(file));
         b.cfg.social = { ...b.cfg.social, ...merged };
         b.log('控制台：社交配置已更新');

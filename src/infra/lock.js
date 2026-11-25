@@ -75,17 +75,10 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
   // 拿锁；已经有一份在跑就退出
   function acquireLock() {
     fs.mkdirSync(stateDir, { recursive: true });
-    const payload = JSON.stringify({
-      pid: proc.pid,
-      kind: 'bridge',
-      root: rootDir,
-      port: readConfiguredPort(),
-      startedAt: Date.now(),
-    });
-    // 用 wx 一次写入锁元数据，防空文件被当成过期锁抢走
+    // 用 wx 一次把 PID 写进去，防空文件被当成过期锁抢走（保留纯数字 PID 兼容历史读锁工具）
     const tryCreate = () => {
       try {
-        fs.writeFileSync(lockFile, payload, { flag: 'wx', mode: 0o600 });
+        fs.writeFileSync(lockFile, String(proc.pid), { flag: 'wx', mode: 0o600 });
         return true;
       } catch (error) {
         if (error?.code === 'EEXIST') return false;
@@ -96,45 +89,49 @@ export function createInstanceLock({ lockFile, configFile, readJsonSafe, proc, e
     // 锁已存在：PID 不存活或内容为空视为过期，删后重试一次
     let stale = false;
     let observedContent = null;
+    let meta = null;
     try {
       const content = fs.readFileSync(lockFile, 'utf8').trim();
       observedContent = content;
-      const meta = parseLockContent(content);
-      if (!meta) {
-        stale = true;
-      } else {
-        const pid = meta.pid;
-        try {
-          proc.kill(pid, 0);
-          // 隐私擦除脚本（kind === 'redact'）不监听端口，只要进程存活严禁抢锁
-          if (meta.kind === 'redact') {
-            printError(`[bridge] 检测到隐私删除任务正在运行（PID ${pid}，锁文件 ${lockFile}），请等待其完成后再启动。`);
-            proc.exit(2);
-          }
-          // 处于冷启动宽限期或命令行已确认为本仓库 bridge.js 时，即使端口未监听也不判过期
-          const mtimeMs = (() => { try { return fs.statSync(lockFile).mtimeMs; } catch { return 0; } })();
-          const startedAt = meta.startedAt || mtimeMs;
-          const inGrace = startedAt > 0 && (Date.now() - startedAt) < STARTUP_GRACE_MS;
-          if (!inGrace && !isOwnBridgePid(pid) && !consolePortInUse()) stale = true;
-        } catch (error) {
-          if (error.code === 'ESRCH') {
-            stale = true;
-          } else if (error.code === 'EPERM') {
-            if (meta.kind === 'redact' || consolePortInUse()) {
-              printError(`[bridge] 控制台端口已被占用或隐私任务存活，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
-              proc.exit(2);
-            }
-            printError(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
-            stale = true;
-          } else {
-            printError(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${lockFile}）。若确认其已死，删除该文件后重试。`);
-            proc.exit(2);
-          }
-        }
-      }
+      meta = parseLockContent(content);
     } catch (readError) {
       printError(`[bridge] 无法读取锁文件 ${lockFile}：${readError?.message ?? readError}`);
       proc.exit(1);
+    }
+    if (!meta) {
+      stale = true;
+    } else {
+      const pid = meta.pid;
+      let killError = null;
+      try {
+        proc.kill(pid, 0);
+      } catch (error) {
+        killError = error;
+      }
+      if (!killError) {
+        // 隐私擦除脚本（kind === 'redact'）不监听端口，只要进程存活严禁抢锁
+        if (meta.kind === 'redact') {
+          printError(`[bridge] 检测到隐私删除任务正在运行（PID ${pid}，锁文件 ${lockFile}），请等待其完成后再启动。`);
+          proc.exit(2);
+        }
+        // 优先探测控制台端口，端口未监听时再结合 JSON 锁启动宽限期与命令行判定是否过期
+        if (!consolePortInUse()) {
+          const inGrace = meta.startedAt > 0 && (Date.now() - meta.startedAt) < STARTUP_GRACE_MS;
+          if (!inGrace && !isOwnBridgePid(pid)) stale = true;
+        }
+      } else if (killError.code === 'ESRCH') {
+        stale = true;
+      } else if (killError.code === 'EPERM') {
+        if (meta.kind === 'redact' || consolePortInUse()) {
+          printError(`[bridge] 控制台端口已被占用或隐私任务存活，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
+          proc.exit(2);
+        }
+        printError(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
+        stale = true;
+      } else {
+        printError(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${lockFile}）。若确认其已死，删除该文件后重试。`);
+        proc.exit(2);
+      }
     }
     if (stale) {
       printError(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);

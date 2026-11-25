@@ -48,10 +48,7 @@ export function createOutbound(b) {
             if (epoch === b.conversationEpoch?.(key)) b.lastSendFailed.delete(key);
             if (item.transport !== 'http' || item.segments || item.action) b.archiveOutgoing(key, item.archiveText ?? item.text, result, item.archiveOptions);
             b.log('[outbound]', JSON.stringify({ ...audit, text: b.redactSensitiveText(b.redactKnownTokensOnly(item.text ?? item.archiveText ?? '')), result: 'sent' }));
-          } catch (error) {
-            failures.push(error);
-            break;
-          }
+          } catch (error) { failures.push(error); }
           if (item.afterDelay && index < items.length - 1) await b.sleep(item.afterDelay);
         }
         if (failures.length) throw Object.assign(new Error(`QQ 发送失败 ${failures.length}/${items.length} 条：${failures[0]?.message ?? '未知错误'}`), { sent, statusCode: failures[0]?.statusCode });

@@ -16,11 +16,11 @@ export const MESSAGE_ID_FIELDS = [
 const IDENTITY_FIELD_SET = new Set(IDENTITY_FIELDS);
 const HIDDEN_IDENTITY_FIELD_SET = new Set(HIDDEN_IDENTITY_FIELDS);
 const MESSAGE_ID_FIELD_SET = new Set(MESSAGE_ID_FIELDS);
-const DATA_IMAGE_URI_RE = /^(?:data:image\/[a-z0-9.+-]+;base64,|base64:\/\/)[A-Za-z0-9+/=_-]+$/i;
+const DATA_IMAGE_URI_RE = /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=_-]+$/i;
 
 const CONV_KEY_RE = /^(group|private):[1-9]\d{0,15}$/;
 const BARE_QQ_RE = /(?<!\d)[1-9]\d{0,15}(?!\d)/g;
-const QQ_PREFIX_RE = /(?:(?<![A-Za-z0-9_])(?:ownerQQ|QQ|qq|user_id|userId|uin)\s*[:：=]?\s*$|@\s*[:：=]?\s*$|(?<![A-Za-z0-9_])at\s*[:=]\s*$)/;
+const QQ_PREFIX_RE = /(?:(?:ownerQQ|QQ|qq|user_id|userId|uin)\s*[:：=]?\s*$|@\s*[:：=]?\s*$|(?<![A-Za-z0-9_])at\s*[:=]\s*$)/;
 const PREFIXED_QQ_WIDTH_RE = /^[1-9]\d{4,11}$/;
 const IMAGE_MIME_RE = /^image\/[a-z0-9.+-]+$/i;
 export const MEMBER_REF_RE = /^member-[0-9a-f]{16}$/;

@@ -171,10 +171,11 @@ console.log('## qq-bridge 语音系统：MCP 工具与开关映射');
 
 console.log('## qq-bridge 语音系统：控制台与 preset');
 {
-  const html = read('src/features/console/web/console.html');
-  ok(html.includes('data-v2-tool="sendVoice"'), '控制台有 sendVoice 工具开关');
-  ok(html.includes('id="voiceList"') && html.includes('id="voiceSendBtn"'), '控制台有语音库调试面板');
-  ok(/api\/console\/voice\/list/.test(html) && /api\/console\/voice\/send/.test(html), '面板调用操作者端点');
+  const registry = read('src/features/console/module-registry.js');
+  const panel = read('src/features/console/web/assets/panels/media-tools.js');
+  ok(registry.includes('sendVoice'), '工作台模块注册表有 sendVoice 工具开关');
+  ok(panel.includes('id="voiceQuickForm"') && panel.includes('id="vqFile"'), '工作台媒体面板有语音库调试面板');
+  ok(/api\/console\/voice\/list/.test(panel) && /api\/console\/voice\/send/.test(panel), '面板调用操作者端点');
   const preset = read(path.join('dsh', 'agent-presets', 'qq-chat-v2', 'agent.cordis.yml'));
   ok(preset.includes('qq_send_voice') && preset.includes('qq_list_voices'), 'qq-chat-v2 人设描述语音能力');
   ok(/语音\*\*默认是关闭的\*\*/.test(preset), '人设说明默认关闭');

@@ -38,7 +38,7 @@ export function createSchedulerExecutor(b) {
     emit: (event) => {
       if (event.code === 'lease-expired' || event.type === 'turn:error' || (event.type === 'turn:skipped' && !turnEngine.stats(event.conv).queueDepth)) {
         b.pendingWakeKeys.delete(event.conv);
-        b.disarmPendingWakeLease(event.conv);
+        b.disarmPendingWakeLease?.(event.conv);
       }
       b.log(`[scheduler] ${event.type} ${event.conv} turn=${event.turnId}${event.reason || event.code ? ` ${event.reason || event.code}` : ''}`);
     },
@@ -73,9 +73,7 @@ export function createSchedulerExecutor(b) {
       strategy: decision?.strategy ?? (kind === 'manual' ? 'manual' : windowMs ? 'batched' : timer ? 'timer' : 'immediate'), reason: decision?.reason ?? wakeReason ?? 'prompt' },
       payload: { promptText, opts, wakeReason, sourceQqs: opts?.sourceQqs ?? (st?.unread ?? []).map(message => message.userId).filter(Boolean) }, priority: Math.max(decision?.priority ?? 0, wakePriority(wakeReason)), windowMs,
       batchKey: windowMs ? 'messages' : null,
-      rate: wakeReason
-        ? { perMinute: Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0, perHour: Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0 }
-        : null,
+      rate: { perMinute: Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0, perHour: Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0 },
     };
   }
   function submit(request) {

@@ -4,7 +4,7 @@ import { loadConfig, deepMergePlain, isPlainConfigObject } from '../../infra/con
 import { migrateLegacyConfig } from '../../infra/legacy-config.js';
 import { normalizeOwnerQQ, normalizeIdList } from '../../policy/access.js';
 import { REASONING_EFFORT_OPTIONS, REASONING_EFFORT_NONE, normalizeReasoningEffort } from '../../policy/mode.js';
-import { SOCIAL_V2_TOOLS } from '../../policy/tool-defaults.js';
+import { SOCIAL_V2_TOOL_FLAGS, SOCIAL_V2_TOOL_PROMPT_MAP } from '../../policy/tool-defaults.js';
 
 const TOOL_LABEL_MAP = {
   getPrompt: '读取提示词 (qq_get_prompt)',
@@ -49,16 +49,19 @@ const f = (path, label, type, extra = {}) => ({
   ...extra,
 });
 
-const TOOL_FIELDS = SOCIAL_V2_TOOLS.map((t) => f(
-  `modes.reserved2.tools.${t.flag}`,
-  TOOL_LABEL_MAP[t.flag] || `${t.flag} (${t.mcp})`,
-  'boolean',
-  {
-    section: '工具权限开关（共 29 项）',
-    applyMode: 'hot',
-    description: `MCP 工具：${t.mcp}（关闭后即刻拒绝调用；重启 DSH 后同步刷新工具清单）`,
-  }
-));
+const TOOL_FIELDS = SOCIAL_V2_TOOL_FLAGS.map((flag) => {
+  const mcp = SOCIAL_V2_TOOL_PROMPT_MAP[flag] || flag;
+  return f(
+    `modes.reserved2.tools.${flag}`,
+    TOOL_LABEL_MAP[flag] || `${flag} (${mcp})`,
+    'boolean',
+    {
+      section: '工具权限开关（共 29 项）',
+      applyMode: 'hot',
+      description: `MCP 工具：${mcp}（关闭后即刻拒绝调用；重启 DSH 后同步刷新工具清单）`,
+    }
+  );
+});
 
 /** 全部 12 大功能模块定义 */
 export const MODULE_DEFINITIONS = Object.freeze([
@@ -583,11 +586,12 @@ export function validateModulePatch({ moduleId, values = {}, resetDefaults = fal
     throw Object.assign(new Error(`配置校验失败：${error?.message ?? error}`), { statusCode: 400 });
   }
 
-  return { mod, nextFile, validatedCfg, changedPaths, hotPaths, requiresRestart };
+  return { mod, moduleId: mod.id, nextFile, validatedCfg, changedPaths, hotPaths, requiresRestart };
 }
 
 /** 将已校验的配置热更新到运行态 b.cfg 并触发模块级钩子 */
-export function applyHotModuleChanges(b, { moduleId, validatedCfg, hotPaths }) {
+export function applyHotModuleChanges(b, { moduleId, mod, validatedCfg, hotPaths }) {
+  const targetModuleId = moduleId ?? mod?.id;
   if (!hotPaths.length) return;
   const setRun = (dotPath) => {
     const runPath = runningPathFor(dotPath);
@@ -596,18 +600,18 @@ export function applyHotModuleChanges(b, { moduleId, validatedCfg, hotPaths }) {
   };
   for (const p of hotPaths) setRun(p);
 
-  if (moduleId === 'gate' || hotPaths.includes('allowAllWhenEmpty')) {
+  if (targetModuleId === 'gate' || hotPaths.includes('allowAllWhenEmpty')) {
     b.reconcileSessionPolicies?.();
   }
-  if (moduleId === 'dsh' && hotPaths.some((p) => ['dsh.provider', 'dsh.model', 'dsh.reasoningEffort'].includes(p))) {
+  if (targetModuleId === 'dsh' && hotPaths.some((p) => ['dsh.provider', 'dsh.model', 'dsh.reasoningEffort'].includes(p))) {
     b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
   }
-  if (moduleId === 'role' && hotPaths.includes('role.maxInjectChars') && typeof b.applyRoleInjectLimit === 'function') {
+  if (targetModuleId === 'role' && hotPaths.includes('role.maxInjectChars') && typeof b.applyRoleInjectLimit === 'function') {
     b.roleInjectMaxChars = b.applyRoleInjectLimit(validatedCfg.role?.maxInjectChars);
   }
-  if (moduleId === 'reserved2' || moduleId === 'media' || moduleId === 'sticker-voice') {
+  if (targetModuleId === 'reserved2' || targetModuleId === 'media' || targetModuleId === 'sticker-voice') {
     b.cfg.socialV2 = deepMergePlain(b.cfg.socialV2 ?? {}, validatedCfg.socialV2 ?? {});
-    if (moduleId === 'reserved2' && hotPaths.some((p) => p.startsWith('modes.reserved2.wake.'))) {
+    if (targetModuleId === 'reserved2' && hotPaths.some((p) => p.startsWith('modes.reserved2.wake.'))) {
       for (const [k, st] of b.socialV2?.conversations?.entries?.() ?? []) {
         if (st && st.wakeConfig?.isDefault) {
           st.wakeConfig = b.defaultWakeConfigV2();
@@ -616,7 +620,7 @@ export function applyHotModuleChanges(b, { moduleId, validatedCfg, hotPaths }) {
       }
     }
   }
-  if (moduleId === 'search-pricing-security') {
+  if (targetModuleId === 'search-pricing-security') {
     b.clearSearchCache?.();
   }
 }

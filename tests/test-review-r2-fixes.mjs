@@ -23,7 +23,7 @@ import { syncConfigAliases } from '../src/infra/legacy-config.js';
 import { planStop } from '../scripts/stop-bridge-instance.mjs';
 import { deepMergePlain, loadConfig } from '../src/infra/config.js';
 import { createTokenLedger } from '../src/token-ledger.js';
-import { resolvePriceTable } from '../src/model-prices.js';
+import { DEFAULT_PRICE_TABLE, resolvePriceTable } from '../src/model-prices.js';
 import { normalizeImageForModel } from '../src/media-normalize.js';
 import { formatForwardResponse } from '../src/forward.js';
 
@@ -156,6 +156,8 @@ test('P0-4: outbox 在底层返回 queued=true 时保持剩余消息顺序并排
 
 test('P0-5: turnEngine 对 execute 返回 undefined 兜底 skipped 不锁死租约', async () => {
   const engine = createTurnEngine({
+    setTimeout,
+    clearTimeout,
     ready: () => true,
     allowed: () => true,
     execute: async () => undefined,
@@ -266,7 +268,7 @@ test('P1-4 & P1-8 & P1-10 & P2-9: 转发 mface、账本滞回基数、syncConfig
   assert.equal(stopPlan.killPid, 900);
 
   assert.throws(() => deepMergePlain({ wake: { maxWakePerMinute: 1 } }, { wake: null }), TypeError);
-  assert.throws(() => loadConfig({ configFile: 'x', readJsonSafe: () => ({ consolePort: 0 }) }), RangeError);
+  assert.throws(() => loadConfig({ configFile: 'x', readJsonSafe: () => ({ consolePort: -1 }) }), RangeError);
 
   const pt = resolvePriceTable({ models: { 'deepseek-flash': { off: { cacheHit: 'bad', cacheMiss: -5, output: 1 } } } });
   assert.equal(Number.isFinite(pt.models['deepseek-flash'].off.cacheHit), true);
@@ -275,12 +277,27 @@ test('P1-4 & P1-8 & P1-10 & P2-9: 转发 mface、账本滞回基数、syncConfig
   // token-ledger 即使 baselines 数量超过 0.25 * maxLines 也不得复发每事件全量重写
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-bridge-ledger-r2-'));
   try {
-    const ledger = createTokenLedger({ file: path.join(tmpDir, 'ledger.jsonl'), maxLines: 10 });
+    let nowMs = Date.parse('2026-03-02T20:00:00+08:00');
+    const ledger = createTokenLedger({
+      file: path.join(tmpDir, 'ledger.jsonl'),
+      priceTable: DEFAULT_PRICE_TABLE,
+      resolveKey: () => 'group:1',
+      maxLines: 10,
+      now: () => ++nowMs,
+    });
     for (let i = 0; i < 6; i += 1) {
-      ledger.ingestBaseline({ sessionId: `s${i}`, key: 'group:1', seq: 1, model: 'deepseek-flash', buckets: { cacheHit: 10, cacheMiss: 10, cacheWrite: 0, output: 10 } });
+      ledger.ingestBaseline({
+        sessionId: `s${i}`,
+        projection: { asOfSeq: 1, values: { tokenUsage: { inputTokens: 100, outputTokens: 10 } } },
+        at: nowMs,
+      });
     }
     const statBefore = fs.statSync(path.join(tmpDir, 'ledger.jsonl')).ino;
-    ledger.ingestTurn({ sessionId: 's0', key: 'group:1', seq: 2, turn: 1, step: 1, model: 'deepseek-flash', buckets: { cacheHit: 1, cacheMiss: 1, cacheWrite: 0, output: 1 } });
+    ledger.ingestEvent({
+      sessionId: 's0',
+      event: { seq: 2, time: nowMs, type: 'assistant/message', data: { turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 2 } } },
+      at: nowMs,
+    });
     const statAfter = fs.statSync(path.join(tmpDir, 'ledger.jsonl')).ino;
     assert.equal(statAfter, statBefore, '未超滞回水位时不应触发全量原子重写');
   } finally {

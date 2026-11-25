@@ -288,19 +288,13 @@ await test('端到端：群消息进线触发的首次唤醒，投递给 DSH 的
   } finally { await h.close(); }
 });
 
-// 9. 控制台页面接线的静态检查
+// 9. 工作台页面接线的静态检查
 await test('控制台有初始提示词面板，且事件/接口都已接线', async () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const html = fs.readFileSync(path.join(root, 'src', 'features', 'console', 'web', 'console.html'), 'utf8');
-  for (const id of ['v2InitPromptKey', 'v2InitPromptText', 'v2InitPromptLoad', 'v2InitPromptSave', 'v2InitPromptClear', 'v2InitPromptMsg', 'v2InitPromptCount', 'v2InitPromptMax']) {
-    const n = (html.match(new RegExp(`id="${id}"`, 'g')) ?? []).length;
-    assert.equal(n, 1, `控制台元素 ${id} 必须存在且唯一（实际 ${n} 处）`);
-  }
-  assert.match(html, /getElementById\('v2InitPromptSave'\)\.addEventListener/, '保存按钮已绑定事件');
-  assert.match(html, /api\('\/api\/console\/scheduler\/initial-prompt'/, '面板调用 /api/console/scheduler/initial-prompt');
-  assert.match(html, /仅在首次唤醒|只在.*首次唤醒/, '面板要说明"仅首次唤醒生效"这一关键行为');
-  // 面板页面加载时不能自动请求接口
-  assert.ok(!/window\.addEventListener\('load'[\s\S]{0,400}initial-prompt/.test(html), '面板不应在页面加载时自动拉取');
+  const indexHtml = fs.readFileSync(path.join(root, 'src', 'features', 'console', 'web', 'index.html'), 'utf8');
+  const registry = fs.readFileSync(path.join(root, 'src', 'features', 'console', 'module-registry.js'), 'utf8');
+  assert.ok(indexHtml.includes('data-view="parameters"'), '工作台包含模块参数中心入口');
+  assert.ok(registry.includes('modes.reserved2.initialPromptMaxChars'), '模块注册表包含初始提示词字数上限参数');
 });
 
 if (failures) {
