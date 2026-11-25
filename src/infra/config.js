@@ -36,7 +36,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
   const raw = readJsonSafe(p, null, true);
   const file = raw && typeof raw === 'object' && !Array.isArray(raw) ? adaptLegacyConfig(raw) : raw;
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
-  for (const groupKey of ['dsh', 'snowluma', 'security', 'role', 'identity']) {
+  for (const groupKey of ['backend', 'dsh', 'snowluma', 'security', 'role', 'identity']) {
     if (file[groupKey] !== undefined && !isPlainConfigObject(file[groupKey])) {
       throw new TypeError(`配置 ${groupKey} 必须是对象`);
     }
@@ -48,6 +48,18 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
     }
   }
   const cfg = {
+    backend: deepMergePlain({
+      type: 'dsh',
+      agy: {
+        command: 'agy',
+        args: [],
+        model: '',
+        timeoutMs: 300000,
+        allowedTools: [],
+        disallowedTools: [],
+        injectPresetPrompt: true,
+      },
+    }, file.backend),
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
       provider: 'deepseek-official',
@@ -283,9 +295,16 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       : 2000;
   }
 
+  // 校验后端类型
+  const backendType = String(cfg.backend?.type ?? 'dsh').trim().toLowerCase() || 'dsh';
+  if (!['dsh', 'agy'].includes(backendType)) {
+    throw new Error(`配置 backend.type 非法：${JSON.stringify(cfg.backend?.type)}（只能是 "dsh" 或 "agy"）`);
+  }
+  cfg.backend.type = backendType;
+
   // 自动找到的 token 只是保底；同时记下用户有没有自己填
   cfg.dsh.authTokenExplicit = Boolean(cfg.dsh.authToken);
-  if (!cfg.dsh.authToken) cfg.dsh.authToken = discoverDshLaunchToken();
+  if (backendType === 'dsh' && !cfg.dsh.authToken) cfg.dsh.authToken = discoverDshLaunchToken();
 
   // 规范化非法思考强度并告警
   try {

@@ -7,8 +7,10 @@ export function createDshWatch(b) {
   // 所以连不上时先去把真正在跑的地址找回来
   const DSH_REDISCOVER_COOLDOWN_MS = 30 * 1000;
   let dshRediscoverAfter = 0;
+  const backendLabel = () => b.api?.backendLabel || 'DSH';
   // 连不上时去找 DSH 真正在跑的地址
   const rediscoverDshBase = async () => {
+    if (b.api?.supportsPortDiscovery === false) return false;
     if (b.cfg.dsh?.autoDiscoverPort === false) return false;
     if (Date.now() < dshRediscoverAfter) return false;
     dshRediscoverAfter = Date.now() + DSH_REDISCOVER_COOLDOWN_MS;
@@ -53,7 +55,7 @@ export function createDshWatch(b) {
         if (!b.dshReady) {
           b.dshReady = true;
           b.lastMode = b.currentMode;
-          b.log(`DSH 已就绪（模式: ${b.currentMode}）`);
+          b.log(`${backendLabel()} 已就绪（模式: ${b.currentMode}）`);
           if (b.currentMode === 'reserved2' || b.cfg.modes?.engine?.reserved2 === true) {
             // 等确定是二代仿真模式再恢复睡眠定时器
             // 不然在别的模式下设的定时器会被忽略
@@ -96,7 +98,7 @@ export function createDshWatch(b) {
         void Promise.resolve(b.replayDeferredDeliveries()).catch((error) => b.log('补发暂存快照异常:', error?.message ?? error));
       } else if (b.dshReady) {
         b.dshReady = false;
-        b.log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
+        b.log(`⚠️ ${backendLabel()} 不可用（重启中？），QQ 消息将入队等待`);
       }
     } finally {
       checking = false;

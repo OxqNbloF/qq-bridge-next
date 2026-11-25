@@ -1,0 +1,121 @@
+#!/usr/bin/env node
+// setup-agy.mjs — 为 Antigravity CLI (agy) 注册 qq-bridge-next 的安全 MCP 服务与权限规则
+//
+// 它做两件事：
+// 1. 在 ~/.gemini/config/mcp_config.json 注册 snowluma / snowluma-host / web-search-safe 三个 stdio MCP 服务
+// 2. 在 ~/.gemini/antigravity-cli/settings.json 的 permissions.allow 加入这三个 MCP 服务的预放行规则（无头模式必需）
+//
+// 用法：
+//   node scripts/setup-agy.mjs [--dry-run]
+// 可通过 AGY_GEMINI_HOME 覆盖默认的 ~/.gemini 目录（方便测试或隔离环境）。
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..');
+const GEMINI_HOME = process.env.AGY_GEMINI_HOME || path.join(os.homedir(), '.gemini');
+const MCP_CONFIG_PATH = path.join(GEMINI_HOME, 'config', 'mcp_config.json');
+const SETTINGS_PATH = path.join(GEMINI_HOME, 'antigravity-cli', 'settings.json');
+
+const args = new Set(process.argv.slice(2));
+if (args.has('-h') || args.has('--help')) {
+  console.log('用法：node scripts/setup-agy.mjs [--dry-run]\n默认写入 ~/.gemini 下的 mcp_config.json 与 antigravity-cli/settings.json（可用 AGY_GEMINI_HOME 覆盖）。');
+  process.exit(0);
+}
+const DRY_RUN = args.has('--dry-run');
+
+function log(msg) {
+  console.log(`[setup-agy] ${msg}`);
+}
+
+function readJsonOrEmpty(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const text = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${filePath} 不是有效的 JSON 对象`);
+  }
+  return parsed;
+}
+
+function backupIfExists(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dest = `${filePath}.bak-${stamp}`;
+  fs.copyFileSync(filePath, dest);
+  return dest;
+}
+
+function writeJsonSafe(filePath, obj) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const bak = backupIfExists(filePath);
+  if (bak) log(`已备份 ${filePath} -> ${bak}`);
+  fs.writeFileSync(filePath, `${JSON.stringify(obj, null, 2)}\n`, 'utf8');
+}
+
+export function buildAgyMcpEntries(repoRoot = REPO_ROOT, nodeBin = process.execPath) {
+  return {
+    snowluma: {
+      command: nodeBin,
+      args: [path.join(repoRoot, 'src', 'mcp-snowluma-safe.js')],
+    },
+    'snowluma-host': {
+      command: nodeBin,
+      args: [path.join(repoRoot, 'src', 'mcp-host-server.js')],
+    },
+    'web-search-safe': {
+      command: nodeBin,
+      args: [path.join(repoRoot, 'src', 'mcp-web-search-safe.js')],
+    },
+  };
+}
+
+export const AGY_SAFE_MCP_ALLOW_RULES = Object.freeze([
+  'mcp(snowluma)',
+  'mcp(snowluma-host)',
+  'mcp(web-search-safe)',
+]);
+
+function main() {
+  const mcpDoc = readJsonOrEmpty(MCP_CONFIG_PATH);
+  const nextMcp = {
+    ...mcpDoc,
+    mcpServers: {
+      ...(mcpDoc.mcpServers && typeof mcpDoc.mcpServers === 'object' ? mcpDoc.mcpServers : {}),
+      ...buildAgyMcpEntries(REPO_ROOT),
+    },
+  };
+
+  const settingsDoc = readJsonOrEmpty(SETTINGS_PATH);
+  const existingPerms = settingsDoc.permissions && typeof settingsDoc.permissions === 'object'
+    ? settingsDoc.permissions
+    : {};
+  const existingAllow = Array.isArray(existingPerms.allow) ? existingPerms.allow.map(String) : [];
+  const mergedAllow = [...new Set([...existingAllow, ...AGY_SAFE_MCP_ALLOW_RULES])];
+  const nextSettings = {
+    ...settingsDoc,
+    permissions: {
+      ...existingPerms,
+      allow: mergedAllow,
+    },
+  };
+
+  if (DRY_RUN) {
+    log('DRY RUN — 将写入以下配置（未实际落盘）：');
+    log(`1) ${MCP_CONFIG_PATH}:\n${JSON.stringify(nextMcp, null, 2)}`);
+    log(`2) ${SETTINGS_PATH}:\n${JSON.stringify(nextSettings, null, 2)}`);
+    return;
+  }
+
+  writeJsonSafe(MCP_CONFIG_PATH, nextMcp);
+  log(`已更新 MCP 配置：${MCP_CONFIG_PATH}`);
+  writeJsonSafe(SETTINGS_PATH, nextSettings);
+  log(`已更新权限白名单：${SETTINGS_PATH}`);
+  log('完成！现在可以在 config.json 中将 backend.type 设为 "agy"，然后运行 ./start.sh 启动。');
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

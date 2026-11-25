@@ -7,7 +7,11 @@ export function createDshModel(b) {
   // 本模块持有的内存状态，其它模块经 b 读取
   const modelAppliedSessions = new Map(); // sessionId -> 已应用的 modelSelectionEpoch
   // 名义模型取配置值；实际模型以会话事件为准
-  const nominalModel = () => b.cfg.dsh?.model || 'deepseek-flash';
+  const nominalModel = () => (
+    b.cfg.backend?.type === 'agy'
+      ? (b.cfg.backend?.agy?.model || 'default')
+      : (b.cfg.dsh?.model || 'deepseek-flash')
+  );
   // 直接调接口：旧版客户端没有这个方法
   const modelCatalogErrorLogged = new Set();
   // 拉模型目录，失败回落 session/models
@@ -25,10 +29,13 @@ export function createDshModel(b) {
   async function ensureChatModel(sessionId) {
     const selectionEpoch = b.modelSelectionEpoch;
     if (modelAppliedSessions.get(sessionId) === selectionEpoch) return 'applied';
-    const provider = String(b.cfg.dsh?.provider || 'deepseek-official');
+    const isAgy = b.cfg.backend?.type === 'agy';
+    const provider = isAgy ? 'agy' : String(b.cfg.dsh?.provider || 'deepseek-official');
     const key = b.reverse?.get(sessionId);
     const override = key && b.resolveConversationMode?.(key).source === 'conversation' ? b.listConversationOverrides().conversations[key] : null;
-    const model = String(override?.model || b.cfg.dsh?.model || 'deepseek-flash');
+    const model = isAgy
+      ? String(override?.model || b.cfg.backend?.agy?.model || 'default')
+      : String(override?.model || b.cfg.dsh?.model || 'deepseek-flash');
     const configuredEffort = String(override?.reasoningEffort || b.cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
     const effort = configuredEffort === REASONING_EFFORT_NONE ? '' : configuredEffort;
     let lastError = null;

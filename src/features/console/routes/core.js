@@ -100,6 +100,7 @@ export function createConsoleCoreRoutes(b) {
         role: rs.role ?? null,
         roleMode: rs.mode ?? 'active',
         dshReady: b.dshReady,
+        backendType: b.cfg.backend?.type ?? 'dsh',
         ownerQQ: b.cfg.ownerQQ ?? null,
         allowGroups: b.cfg.allow?.groups ?? [],
         allowPrivate: b.cfg.allow?.private ?? [],

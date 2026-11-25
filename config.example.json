@@ -10,6 +10,18 @@
       "maxConcurrent": 4
     }
   },
+  "backend": {
+    "type": "dsh",
+    "agy": {
+      "command": "agy",
+      "args": [],
+      "model": "",
+      "timeoutMs": 300000,
+      "allowedTools": [],
+      "disallowedTools": [],
+      "injectPresetPrompt": true
+    }
+  },
   "dsh": {
     "baseUrl": "http://127.0.0.1:3080",
     "provider": "deepseek-official",

@@ -19,7 +19,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
-import { NodeApiClient, discoverDshLaunchToken } from './dsh-client.js';
+import { discoverDshLaunchToken } from './dsh-client.js';
+import { createBackendClient } from './backends/index.js';
 import { discoverDshBaseUrl } from './dsh-endpoint.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { compactModelMessage, describeAge, sanitizeUntrustedText } from './qq-model-view.js';
@@ -621,16 +622,9 @@ async function main() {
     log('ℹ️  socialV2.voice.allowAbsolutePath=true 已不再放宽 AI 通道：AI 发的语音始终只允许来自语音库（库外文件请用语音工具/CLI 发送）');
   }
 
-  // DSH 相关设置
-  const api = new NodeApiClient(cfg.dsh.baseUrl, undefined, {
-    token: cfg.dsh.authToken,
-    // true 表示配置里明确填的，false 表示从日志里猜的。
-    tokenExplicit: cfg.dsh.authTokenExplicit === true,
-    header: cfg.dsh.authHeader,
-    prefix: cfg.dsh.authPrefix,
-    // 默认只把启动令牌发给本机地址，远程 DSH 要显式允许。
-    allowRemote: cfg.dsh.allowRemote === true
-  });
+  // Agent 运行时后端（支持 dsh / agy）
+  const api = createBackendClient(cfg, { rootDir: ROOT, stateDir: STATE_DIR, log });
+  log(`Agent 后端：${api.backendLabel || api.backendType || 'DSH'}（${api.resolveBase()}）`);
   // 模型列表和会话模型的设置；代码在 dsh/model.js
   const { nominalModel, fetchModelCatalog, ensureChatModel, modelCatalogErrorLogged } = Object.assign(app, createDshModel(app));
 

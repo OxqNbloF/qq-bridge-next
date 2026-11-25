@@ -115,7 +115,9 @@ cp config.example.json config.json
 
 其余配置及默认值见 [`config.example.json`](config.example.json)。语音、消息归档和长期记忆默认关闭；模式引擎与新调度灰度开关也默认关闭，初次使用不必开启。
 
-### 3. 安装 DSH 聊天预设与工具
+### 3. 安装后端预设与工具
+
+#### 方案 A：使用 DSH 后端（默认，`backend.type: "dsh"`）
 
 ```bash
 node scripts/setup-dsh.mjs
@@ -124,6 +126,28 @@ node scripts/setup-dsh.mjs
 此命令会修改本机 DSH 配置，注册聊天预设、MCP 服务及插件。默认使用 `~/.dsh` 下的 `web` 配置；其他环境可通过 `DSH_HOME` 指定目录，并以命令参数指定配置名。
 
 **安装完成后重启 DSH。** 安全聊天预设缺失时，桥接会拒绝创建相应会话，不会退回具备本地工具权限的默认预设。
+
+#### 方案 B：使用 Antigravity CLI 后端（`backend.type: "agy"`）
+
+先确认本机已安装并登录 `agy` CLI（运行 `agy --version` 可正常返回），然后执行：
+
+```bash
+node scripts/setup-agy.mjs
+```
+
+此命令会备份并更新 `~/.gemini/config/mcp_config.json`（注册三个安全 MCP 服务）以及 `~/.gemini/antigravity-cli/settings.json`（在 `permissions.allow` 中预放行这三个 MCP 服务）。然后在 `config.json` 中切换后端：
+
+```json
+"backend": {
+  "type": "agy",
+  "agy": {
+    "command": "agy",
+    "model": ""
+  }
+}
+```
+
+非 `closed-agent` 模式下，`agy` 后端会自动加载 `dsh/agent-presets/` 下的安全系统提示词、通过 `--disallowedTools` 禁用本地文件/命令工具，并注入 `QQ_BRIDGE_SELF_KEY` 隔离会话。
 
 ### 4. 启动并验证收发
 
