@@ -624,7 +624,7 @@ async function main() {
 
   // Agent 运行时后端（支持 dsh / agy）
   const api = createBackendClient(cfg, { rootDir: ROOT, stateDir: STATE_DIR, log });
-  log(`Agent 后端：${api.backendLabel || api.backendType || 'DSH'}（${api.resolveBase()}）`);
+  log(`Agent 后端：${api.backendLabel || api.backendType || 'DSH'}（${api.resolveBase?.() ?? cfg.dsh.baseUrl}）`);
   // 模型列表和会话模型的设置；代码在 dsh/model.js
   const { nominalModel, fetchModelCatalog, ensureChatModel, modelCatalogErrorLogged } = Object.assign(app, createDshModel(app));
 

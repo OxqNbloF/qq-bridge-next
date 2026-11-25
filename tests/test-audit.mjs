@@ -101,6 +101,8 @@ const tests = [
   'test-review-r2-fixes.mjs',
   // 全模块工作台参数注册表、热更新与静态资产路径边界回归
   'test-console-modules.mjs',
+  // 多后端工厂与 Antigravity CLI (agy) 后端离线回归
+  'test-agy-backend.mjs',
 ];
 
 // 要真实环境、不进主回归的测试，必须写明理由
