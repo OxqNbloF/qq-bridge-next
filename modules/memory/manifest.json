@@ -1,0 +1,42 @@
+{
+  "name": "memory",
+  "scope": "chat",
+  "summary": "按需查询与维护群聊轻量记忆、群友印象、黑话与称呼",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 15000,
+  "network": false,
+  "actions": {
+    "query": {
+      "desc": "查询记忆或词汇（category: activeTopic|pendingThought|memberImpression|term|alias|event|preference|commitment|summary）",
+      "params": {
+        "category": { "type": "string", "required": true },
+        "q": { "type": "string", "required": false },
+        "target": { "type": "string", "required": false }
+      }
+    },
+    "append": {
+      "desc": "记录新的话题、印象、黑话或称呼候选",
+      "params": {
+        "category": { "type": "string", "required": true },
+        "content": { "type": "string", "required": true },
+        "target": { "type": "string", "required": false },
+        "extra": { "type": "object", "required": false }
+      }
+    },
+    "remove": {
+      "desc": "删除过时记忆或词汇",
+      "params": {
+        "category": { "type": "string", "required": true },
+        "content": { "type": "string", "required": false },
+        "target": { "type": "string", "required": false }
+      }
+    },
+    "clear": {
+      "desc": "清空指定类别轻量记忆",
+      "params": {
+        "category": { "type": "string", "required": false }
+      }
+    }
+  }
+}

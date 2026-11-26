@@ -59,28 +59,43 @@ export function createDshDeliver(b) {
     let wakeState;
     let wakeToken;
     let wakeSnapshot;
+    const compactMode = b.cfg.broker?.enabled === true && b.cfg.broker?.compactPrompt === true;
     if (opts.wakeReason) {
       if (wakeBlocked()) return skipWake();
       // 建会话后再构造：令牌可能轮换，队列可能有新消息
       wakeState = b.getSocialV2State(key);
       wakeToken = wakeState.agentToken;
-      promptText = b.buildWakePromptV2(key, opts.wakeReason, { includeMemory: false });
       wakeSnapshot = b.buildWakeSnapshotV2(key);
       const request = b.turnEngine.activeRequest(key);
       if (request && request.turnId === opts.schedulerTurnId) request.payload.sourceQqs = [...new Set([
         ...(request.payload.sourceQqs ?? []),
         ...wakeState.unread.filter(message => !wakeSnapshot || message.seq <= wakeSnapshot.readThroughSeq).map(message => message.userId).filter(Boolean),
       ])];
-      if (wakeSnapshot) {
-        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已内联，无需重查；partial=true 时传 afterSeq=readThroughSeq 续读；收尾传 throughSeq=readThroughSeq（本地 seq，非 messageId）。`;
+      if (compactMode) {
+        const roleState = b.readRoleState();
+        const rolePick = b.roleForWake(key);
+        const roleUpdatedHint = roleState.role && rolePick.full
+          ? `【当前角色：${roleState.role}】\n${rolePick.text}`
+          : '';
+        promptText = b.buildCompactDeltaPrompt({
+          reason: opts.wakeReason,
+          snapshot: wakeSnapshot,
+          roleName: roleState.role || '',
+          roleUpdatedHint,
+        });
+      } else {
+        promptText = b.buildWakePromptV2(key, opts.wakeReason, { includeMemory: false });
+        if (wakeSnapshot) {
+          promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已内联，无需重查；partial=true 时传 afterSeq=readThroughSeq 续读；收尾传 throughSeq=readThroughSeq（本地 seq，非 messageId）。`;
+        }
       }
     }
     const mode = b.modeForKey(key);
-    if (!opts.wakeReminder && key.startsWith('group:') && !promptText.includes('【群成员】')) {
+    if (!compactMode && !opts.wakeReminder && key.startsWith('group:') && !promptText.includes('【群成员】')) {
       const roster = b.renderIdentityRoster(key, { exposeQq: b.cfg.identity?.exposeQqInPrompt === true });
       if (roster) promptText += `\n\n【群成员】\n${roster}`;
     }
-    if (!opts.skipMemory && !opts.wakeReminder) {
+    if (!compactMode && !opts.skipMemory && !opts.wakeReminder) {
       const memory = b.buildModeMemory(key);
       if (memory) promptText += `\n\n${memory}`;
     }

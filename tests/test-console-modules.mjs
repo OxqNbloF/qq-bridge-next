@@ -5,12 +5,13 @@ import { MODULE_DEFINITIONS, buildModuleCatalog, validateModulePatch, applyHotMo
 import { resolveApiPath } from '../src/policy/api-paths.js';
 import { SOCIAL_V2_TOOL_FLAGS } from '../src/policy/tool-defaults.js';
 
-test('全部 13 模块参数注册表无重复路径且覆盖全部 29 项工具开关与关键模块', () => {
-  assert.equal(MODULE_DEFINITIONS.length, 13);
+test('全部 14 模块参数注册表无重复路径且覆盖全部 29 项工具开关与关键模块', () => {
+  assert.equal(MODULE_DEFINITIONS.length, 14);
   const paths = MODULE_DEFINITIONS.flatMap((m) => m.fields.map((f) => f.path));
   assert.equal(new Set(paths).size, paths.length, '模块参数路径不得重复');
   for (const required of [
-    'ackMessage', 'dsh.model', 'backend.type', 'backend.agy.permissions.allow', 'snowluma.silenceWarnMs', 'ignore.sendQQ',
+    'ackMessage', 'dsh.model', 'backend.type', 'backend.agy.permissions.allow', 'backend.gemini.model',
+    'broker.enabled', 'broker.enabledModules', 'snowluma.silenceWarnMs', 'ignore.sendQQ',
     'architecture.schedulerV2.maxConcurrent', 'modes.reserved.triggerProbability',
     'modes.reserved2.wake.staleChatMinutes', 'modes.reserved2.media.maxLongEdge',
     'role.injectEveryNWakes', 'memory.archive.retentionDays', 'identity.exposeQqInPrompt',
@@ -99,9 +100,11 @@ test('applyHotModuleChanges 同步热更新运行态并触发对应模块钩子'
   let clearedSearch = 0;
   let agyUpdated = 0;
   let agyPermsChanged = 0;
+  let brokerUpdated = 0;
   const b = {
     cfg: {
       backend: { type: 'agy', agy: { command: 'agy', args: [], model: '', timeoutMs: 300000, injectPresetPrompt: true, permissions: { allow: ['mcp(snowluma/*)'], deny: [] } } },
+      broker: { enabled: false, compactPrompt: false, enabledModules: ['msg'], compactThresholdTokens: 48000, scriptTimeoutMs: 20000, sandbox: { useBwrap: false } },
       dsh: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
       allow: { groups: [], private: [] },
       deny: { groups: [], private: [] },
@@ -114,6 +117,7 @@ test('applyHotModuleChanges 同步热更新运行态并触发对应模块钩子'
     api: {
       updateConfig: () => { agyUpdated += 1; },
       onPermissionsChanged: () => { agyPermsChanged += 1; },
+      updateBrokerConfig: () => { brokerUpdated += 1; },
     },
   };
   const dshPatch = validateModulePatch({ moduleId: 'dsh', values: { 'dsh.model': 'deepseek-pro' }, currentFile: {} });
@@ -142,6 +146,12 @@ test('applyHotModuleChanges 同步热更新运行态并触发对应模块钩子'
   applyHotModuleChanges(b, searchPatch);
   assert.equal(b.cfg.webSearch.timeoutMs, 20000);
   assert.equal(clearedSearch, 1);
+
+  const brokerPatch = validateModulePatch({ moduleId: 'modular-broker', values: { 'broker.enabled': true, 'broker.enabledModules': ['msg'] }, currentFile: {} });
+  applyHotModuleChanges(b, brokerPatch);
+  assert.equal(b.cfg.broker.enabled, true);
+  assert.deepEqual(b.cfg.broker.enabledModules, ['msg']);
+  assert.equal(brokerUpdated, 1);
 });
 
 test('api-paths 允许 /assets/* 归属 web 命名空间且未知旧路径仍返回 removed', () => {

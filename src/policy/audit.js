@@ -9,7 +9,7 @@ export function isSilentMarker(text) {
 }
 
 // 回合内调过这些工具就跳过自动转发，防重复发送
-export const SEND_TOOL_RE = /^mcp__snowluma__qq_(send_group_message|send_private_message|reply|send_burst|send_message)$/;
+export const SEND_TOOL_RE = /^(?:mcp__snowluma__qq_(?:send_group_message|send_private_message|reply|send_burst|send_message)|mcp__qq-broker__qq_send|qq_send)$/;
 // 工具名是否为发送类工具
 export function isSendToolName(name) {
   return SEND_TOOL_RE.test(String(name ?? ''));

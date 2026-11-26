@@ -285,6 +285,10 @@ export class AgyApiClient {
     this.allowedTools = Array.isArray(options.allowedTools) ? options.allowedTools.map(String).filter(Boolean) : [];
     this.disallowedTools = Array.isArray(options.disallowedTools) ? options.disallowedTools.map(String).filter(Boolean) : [];
     this.injectPresetPrompt = options.injectPresetPrompt !== false;
+    this.brokerEnabled = options.brokerEnabled === true;
+    this.compactPrompt = options.compactPrompt === true;
+    this.sessionSocketProvider = typeof options.sessionSocketProvider === 'function' ? options.sessionSocketProvider : null;
+    this.compactSystemPromptProvider = typeof options.compactSystemPromptProvider === 'function' ? options.compactSystemPromptProvider : null;
     this.permissions = {
       allow: Array.isArray(options.permissions?.allow)
         ? options.permissions.allow.map((x) => String(x ?? '').trim()).filter(Boolean)
@@ -389,6 +393,13 @@ export class AgyApiClient {
     }
   }
 
+  /** 热更新 Broker 配置 */
+  updateBrokerConfig(nextBroker = {}) {
+    if (!nextBroker || typeof nextBroker !== 'object') return;
+    if (nextBroker.enabled !== undefined) this.brokerEnabled = nextBroker.enabled === true;
+    if (nextBroker.compactPrompt !== undefined) this.compactPrompt = nextBroker.compactPrompt === true;
+  }
+
   /** 权限变更时作废所有旧 agyConversationId 并标记下次提示注入最新权限摘要 */
   onPermissionsChanged() {
     this._permissionsEpoch += 1;
@@ -400,6 +411,16 @@ export class AgyApiClient {
     }
     this._persistSessions();
     this.log(`[agy] 工具权限已更新（allow=${this.permissions.allow.length} 条，deny=${this.permissions.deny.length} 条），已重置 ${resetCount} 个会话续聊上下文`);
+  }
+
+  /** 上下文自动压缩：清空 agyConversationId 并注入滚动摘要 */
+  resetConversationForCompaction(sessionId, summary = '') {
+    const s = this._sessions.get(String(sessionId ?? ''));
+    if (!s) return false;
+    s.agyConversationId = '';
+    if (summary) s.rollingSummary = String(summary);
+    this._persistSessions();
+    return true;
   }
 
   _loadPersistedSessions() {
@@ -417,6 +438,7 @@ export class AgyApiClient {
         systemPrompt: this._loadPresetPrompt(meta.agentPreset),
         model: String(meta.model || this.defaultModel || ''),
         agyConversationId: meta.agyConversationId ? String(meta.agyConversationId) : '',
+        rollingSummary: meta.rollingSummary ? String(meta.rollingSummary) : '',
         permissionRefreshNotice: meta.permissionRefreshNotice === true,
         turnCounter: Number(meta.turnCounter) || 0,
         eventSeq: Number(meta.eventSeq) || 0,
@@ -440,6 +462,7 @@ export class AgyApiClient {
         selfKey: s.selfKey,
         model: s.model,
         agyConversationId: s.agyConversationId,
+        rollingSummary: s.rollingSummary || '',
         permissionRefreshNotice: Boolean(s.permissionRefreshNotice),
         turnCounter: s.turnCounter,
         eventSeq: s.eventSeq,
@@ -585,6 +608,7 @@ export class AgyApiClient {
         systemPrompt: this._loadPresetPrompt(preset),
         model: this.defaultModel || '',
         agyConversationId: '',
+        rollingSummary: '',
         permissionRefreshNotice: false,
         turnCounter: 0,
         eventSeq: 0,
@@ -674,10 +698,14 @@ export class AgyApiClient {
   }
 
   _buildCliArgs(session, promptText, caps = this._getCapabilities()) {
-    const useSystemFlag = Boolean(session.systemPrompt && !session.agyConversationId && this.injectPresetPrompt && caps.systemPrompt);
-    const useInlineSystem = Boolean(session.systemPrompt && !session.agyConversationId && this.injectPresetPrompt && !caps.systemPrompt);
+    const sysInstruction = this.compactPrompt && session.restricted && this.compactSystemPromptProvider
+      ? this.compactSystemPromptProvider(session.selfKey)
+      : session.systemPrompt;
+    const allowSys = Boolean(sysInstruction && !session.agyConversationId && (this.injectPresetPrompt || (this.compactPrompt && session.restricted)));
+    const useSystemFlag = allowSys && caps.systemPrompt;
+    const useInlineSystem = allowSys && !caps.systemPrompt;
     const effectivePrompt = useInlineSystem
-      ? `<system>\n${session.systemPrompt}\n</system>\n\n---\n\n${promptText}`
+      ? `<system>\n${sysInstruction}\n</system>\n\n---\n\n${promptText}`
       : promptText;
 
     const args = [...this.extraArgs, '-p', effectivePrompt, '--output-format', 'stream-json'];
@@ -689,14 +717,18 @@ export class AgyApiClient {
       args.push('--model', model);
     }
     if (useSystemFlag) {
-      args.push('--system-prompt', session.systemPrompt);
+      args.push('--system-prompt', sysInstruction);
     }
 
     if (session.restricted) {
       if (caps.settings) {
+        const allowList = [...this.permissions.allow];
+        if (this.brokerEnabled && !allowList.includes('mcp(qq-broker/*)')) {
+          allowList.push('mcp(qq-broker/*)');
+        }
         args.push('--settings', JSON.stringify({
           permissions: {
-            allow: [...this.permissions.allow],
+            allow: allowList,
             deny: [...this.permissions.deny],
           },
         }));
@@ -727,8 +759,17 @@ export class AgyApiClient {
     session.cancelled = false;
 
     let promptText = materializePromptContent(content, session.cwd, turn);
+    if (session.rollingSummary && !session.agyConversationId) {
+      promptText = `【上段对话摘要】${session.rollingSummary}\n\n${promptText}`;
+      session.rollingSummary = '';
+      this._persistSessions();
+    }
     if (session.restricted && (!session.agyConversationId || session.permissionRefreshNotice)) {
-      const allowSummary = this.permissions.allow.length ? this.permissions.allow.join(', ') : '无（全部拒绝）';
+      const allowRules = [...this.permissions.allow];
+      if (this.brokerEnabled && !allowRules.includes('mcp(qq-broker/*)')) {
+        allowRules.push('mcp(qq-broker/*)');
+      }
+      const allowSummary = allowRules.length ? allowRules.join(', ') : '无（全部拒绝）';
       const prefix = session.permissionRefreshNotice
         ? `【工具权限已更新】工具权限配置刚刚更新，请忽略历史中的未授权结论并重新尝试调用工具。\n【当前已授权工具规则】${allowSummary}\n\n`
         : `【当前已授权工具规则】${allowSummary}\n\n`;
@@ -741,9 +782,17 @@ export class AgyApiClient {
 
     const caps = this._getCapabilities();
     const args = this._buildCliArgs(session, promptText, caps);
+    let sockEnv = {};
+    if (this.brokerEnabled && this.sessionSocketProvider && session.selfKey) {
+      const sock = await this.sessionSocketProvider(session.selfKey);
+      if (sock?.socketPath) {
+        sockEnv = { QQ_SESSION_SOCK: sock.socketPath, QQ_MODULE_SCOPE: sock.scope || 'chat' };
+      }
+    }
     const env = {
       ...process.env,
-      ...(session.selfKey ? { QQ_BRIDGE_SELF_KEY: session.selfKey } : {}),
+      ...(session.selfKey && !this.brokerEnabled ? { QQ_BRIDGE_SELF_KEY: session.selfKey } : {}),
+      ...sockEnv,
     };
 
     this._emitSessionEvent(session.sessionId, { type: 'turn/start', data: { turn } });

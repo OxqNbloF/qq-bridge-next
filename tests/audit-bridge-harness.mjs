@@ -49,6 +49,9 @@ import * as dshSession from '../src/dsh/session.js';
 import * as dshDeliver from '../src/dsh/deliver.js';
 import { createModeMemory } from '../src/conversations/mode-memory.js';
 import { createModeDispatch } from '../src/conversations/mode-dispatch.js';
+import { createSessionSocketHub } from '../src/broker/session-socket.js';
+import { createContextCompactor } from '../src/broker/compactor.js';
+import { buildCompactSystemPrompt, buildCompactDeltaPrompt } from '../src/broker/delta-prompt.js';
 import { createSchedulerExecutor } from '../src/scheduler/executor.js';
 import * as dshEvents from '../src/dsh/events.js';
 import * as routeNext from '../src/infra/http/route-next.js';
@@ -275,6 +278,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const getStickerEntries = () => stickerEntries;
   return {
     memoryAPI: app.memoryAPI, appendMemoryV2: app.appendMemoryV2, queued: app.queued,
+    sessionSocketHub: app.sessionSocketHub, contextCompactor: app.contextCompactor,
+    buildCompactSystemPrompt: app.buildCompactSystemPrompt, buildCompactDeltaPrompt: app.buildCompactDeltaPrompt,
     syncInstalledPreset, installedPresetYaml, ensureSession, ensureMemoryLearnerSession: app.ensureMemoryLearnerSession, resolvePresetName: app.resolvePresetName, deliverPrompt, drainPromptQueue,
     applyHealedTokens, reportTurnFailure: app.reportTurnFailure, recordVoiceSentV2: app.recordVoiceSentV2, rediscoverDshBase: app.rediscoverDshBase,
     terms,
@@ -348,6 +353,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     resolveInstalledPreset, synchronizePreset, renderPatch, persistSnowLumaEndpoint, persistToken,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...sticker,
     createMemoryAPI, createIdentityProjection, createAliasMemory, createInboundCommands, createTerms, createContextPreamble, createMemoryLearnerSession, createConsoleSystemRoutes, resolveApiPath, createToolGateway, createOutbound, ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...roleCard,
+    createSessionSocketHub, createContextCompactor, buildCompactSystemPrompt, buildCompactDeltaPrompt,
     // policy/ 纯函数模块，VM 里由外面传进来同名函数
     ...policyMode, ...policyAccess, ...policyAudit,
     // store/ 的基础操作（一次写完、版本号）

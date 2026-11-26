@@ -1,5 +1,7 @@
 export function createContextPreamble(b) {
   function withContextPreamble(promptText, currentKey = '') {
+    const compactMode = b.cfg?.broker?.enabled === true && b.cfg?.broker?.compactPrompt === true;
+    if (compactMode) return promptText;
     const now = new Date();
     const timeLine = `【当前时间】${now.toLocaleString('zh-CN', { hour12: false })}（${Intl.DateTimeFormat().resolvedOptions().timeZone}）`;
     const parts = [timeLine];

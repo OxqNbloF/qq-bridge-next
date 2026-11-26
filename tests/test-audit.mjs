@@ -103,6 +103,8 @@ const tests = [
   'test-console-modules.mjs',
   // 多后端工厂与 Antigravity CLI (agy) 后端离线回归
   'test-agy-backend.mjs',
+  // 模块化本地脚本 Broker、Unix Socket 能力、防注入 Delta 提示词与 Gemini CLI 适配器回归
+  'test-modular-broker.mjs',
 ];
 
 // 要真实环境、不进主回归的测试，必须写明理由

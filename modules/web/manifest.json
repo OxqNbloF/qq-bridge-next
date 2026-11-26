@@ -1,0 +1,24 @@
+{
+  "name": "web",
+  "scope": "chat",
+  "summary": "只读联网搜索与公网网页抓取（自动屏蔽内网/SSRF）",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 35000,
+  "network": true,
+  "actions": {
+    "search": {
+      "desc": "只读联网搜索热点、黑话或事实性问题",
+      "params": {
+        "query": { "type": "string", "required": true }
+      }
+    },
+    "fetch": {
+      "desc": "只读抓取公网 HTTP(S) 网页正文（禁止内网地址）",
+      "params": {
+        "url": { "type": "string", "required": true },
+        "maxChars": { "type": "integer", "required": false }
+      }
+    }
+  }
+}

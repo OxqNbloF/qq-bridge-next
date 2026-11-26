@@ -28,6 +28,30 @@
         ],
         "deny": []
       }
+    },
+    "gemini": {
+      "command": "gemini",
+      "args": [],
+      "model": "",
+      "timeoutMs": 300000,
+      "injectPresetPrompt": true
+    }
+  },
+  "broker": {
+    "enabled": false,
+    "compactPrompt": false,
+    "enabledModules": [
+      "msg",
+      "media",
+      "memory",
+      "wake",
+      "web",
+      "social"
+    ],
+    "compactThresholdTokens": 48000,
+    "scriptTimeoutMs": 20000,
+    "sandbox": {
+      "useBwrap": false
     }
   },
   "dsh": {

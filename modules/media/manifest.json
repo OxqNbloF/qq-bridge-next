@@ -1,0 +1,66 @@
+{
+  "name": "media",
+  "scope": "chat",
+  "summary": "看图、合并转发、表情包、拍一拍与语音（受控制台开关约束）",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 30000,
+  "network": false,
+  "actions": {
+    "get_images": {
+      "desc": "获取消息中的图片/表情",
+      "params": { "messageId": { "type": "string", "required": true } }
+    },
+    "get_forward": {
+      "desc": "查看合并转发消息内容",
+      "params": { "id": { "type": "string", "required": true } }
+    },
+    "list_stickers": {
+      "desc": "列出或搜索已收藏表情包",
+      "params": {
+        "keyword": { "type": "string", "required": false },
+        "limit": { "type": "integer", "required": false }
+      }
+    },
+    "get_sticker_image": {
+      "desc": "查看指定表情包图像",
+      "params": { "stickerId": { "type": "string", "required": true } }
+    },
+    "send_sticker": {
+      "desc": "发送一张收藏表情",
+      "params": {
+        "stickerId": { "type": "string", "required": true },
+        "replyToMessageId": { "type": "string", "required": false },
+        "atUserId": { "type": "string", "required": false }
+      }
+    },
+    "sticker_note": {
+      "desc": "更新表情本地认知备注或标签",
+      "params": {
+        "stickerId": { "type": "string", "required": true },
+        "note": { "type": "string", "required": false },
+        "tags": { "type": "array", "required": false },
+        "usage": { "type": "string", "required": false }
+      }
+    },
+    "collect_sticker": {
+      "desc": "收藏消息中的表情/图片",
+      "params": {
+        "messageId": { "type": "string", "required": true },
+        "remark": { "type": "string", "required": false }
+      }
+    },
+    "poke": {
+      "desc": "发送拍一拍",
+      "params": { "targetUserId": { "type": "string", "required": false } }
+    },
+    "list_voices": {
+      "desc": "列出可用语音库音频",
+      "params": {}
+    },
+    "send_voice": {
+      "desc": "发送语音库中的语音条",
+      "params": { "file": { "type": "string", "required": true } }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-// 工作台 13 大模块统一参数注册表（单一事实来源）：
+// 工作台 14 大模块统一参数注册表（单一事实来源）：
 // 声明每个模块的内部参数路径、类型、范围、生效方式（hot/restart）与安全边界（public/secret/localOnly）。
 import { loadConfig, deepMergePlain, isPlainConfigObject } from '../../infra/config.js';
 import { migrateLegacyConfig } from '../../infra/legacy-config.js';
@@ -103,18 +103,37 @@ export const MODULE_DEFINITIONS = Object.freeze([
   },
   {
     id: 'backend-agy',
-    title: 'Antigravity CLI (agy)',
+    title: 'CLI 后端与权限 (agy / gemini)',
     category: '上游连接',
-    description: '管理多后端切换、Antigravity CLI 模型、超时与 --settings 工具权限热下发。',
+    description: '管理多后端切换（dsh / agy / gemini）、CLI 模型、超时与 --settings 工具权限热下发。',
     fields: [
-      f('backend.type', '当前 Agent 后端类型', 'enum', { section: '后端切换', applyMode: 'restart', options: ['dsh', 'agy'], description: 'dsh 为 DeepSeek Harness；agy 为 Antigravity CLI（切换后重启生效）' }),
-      f('backend.agy.model', 'agy 默认模型', 'string', { section: '模型与执行', applyMode: 'hot', description: '留空使用 agy CLI 默认模型；保存后下一条消息生效' }),
-      f('backend.agy.timeoutMs', '单轮执行超时', 'integer', { section: '模型与执行', min: 10000, max: 1800000, unit: 'ms', applyMode: 'hot', description: '单次 agy 子进程执行超时时间' }),
-      f('backend.agy.injectPresetPrompt', '注入安全预设提示词', 'boolean', { section: '模型与执行', applyMode: 'hot', description: '非 closed-agent 模式首轮自动注入 qq-chat/qq-chat-v2 系统提示词' }),
+      f('backend.type', '当前 Agent 后端类型', 'enum', { section: '后端切换', applyMode: 'restart', options: ['dsh', 'agy', 'gemini'], description: 'dsh 为 DeepSeek Harness；agy 为 Antigravity CLI；gemini 为 Gemini CLI（切换后重启生效）' }),
+      f('backend.agy.model', 'agy 默认模型', 'string', { section: '模型与执行 (agy)', applyMode: 'hot', description: '留空使用 agy CLI 默认模型；保存后下一条消息生效' }),
+      f('backend.agy.timeoutMs', 'agy 单轮执行超时', 'integer', { section: '模型与执行 (agy)', min: 10000, max: 1800000, unit: 'ms', applyMode: 'hot', description: '单次 agy 子进程执行超时时间' }),
+      f('backend.agy.injectPresetPrompt', 'agy 注入安全预设提示词', 'boolean', { section: '模型与执行 (agy)', applyMode: 'hot', description: '非 closed-agent 模式首轮自动注入 qq-chat/qq-chat-v2 系统提示词' }),
       f('backend.agy.permissions.allow', '允许工具规则 (allow)', 'stringArray', { section: '工具权限（--settings 热下发）', applyMode: 'hot', description: '每轮经 --settings 下发，规则须带斜杠如 mcp(snowluma/*)；留空将拒绝全部 MCP 工具，修改后自动重置旧会话' }),
       f('backend.agy.permissions.deny', '拒绝工具规则 (deny)', 'stringArray', { section: '工具权限（--settings 热下发）', applyMode: 'hot', description: '显式拒绝规则（优先级高于 allow），修改后自动重置旧会话' }),
+      f('backend.gemini.model', 'gemini 默认模型', 'string', { section: '模型与执行 (gemini)', applyMode: 'hot', description: '留空使用 Gemini CLI 默认模型；保存后下一条消息生效' }),
+      f('backend.gemini.timeoutMs', 'gemini 单轮执行超时', 'integer', { section: '模型与执行 (gemini)', min: 10000, max: 1800000, unit: 'ms', applyMode: 'hot', description: '单次 gemini 子进程执行超时时间' }),
+      f('backend.gemini.injectPresetPrompt', 'gemini 注入安全预设提示词', 'boolean', { section: '模型与执行 (gemini)', applyMode: 'hot', description: '非 closed-agent 模式首轮自动注入 qq-chat/qq-chat-v2 系统提示词' }),
       f('backend.agy.command', 'agy 可执行文件路径', 'string', { section: '本机只读项', sensitivity: 'localOnly', applyMode: 'restart', description: '仅可在部署机 config.json 修改' }),
       f('backend.agy.args', 'agy 额外固定参数', 'stringArray', { section: '本机只读项', sensitivity: 'localOnly', applyMode: 'restart', description: '仅可在部署机 config.json 修改' }),
+      f('backend.gemini.command', 'gemini 可执行文件路径', 'string', { section: '本机只读项', sensitivity: 'localOnly', applyMode: 'restart', description: '仅可在部署机 config.json 修改' }),
+      f('backend.gemini.args', 'gemini 额外固定参数', 'stringArray', { section: '本机只读项', sensitivity: 'localOnly', applyMode: 'restart', description: '仅可在部署机 config.json 修改' }),
+    ],
+  },
+  {
+    id: 'modular-broker',
+    title: '模块化脚本连接层 (Broker)',
+    category: '上游连接',
+    description: '家长控制式本地脚本 Broker：外部控制台实时裁剪开放给 Agent 的模块，配合零令牌 Unix Socket 与精简增量提示词。',
+    fields: [
+      f('broker.enabled', '启用模块化脚本 Broker', 'boolean', { section: '核心开关', applyMode: 'hot', description: '开启后为每个受限会话注入专属 Unix Socket 与 5 工具 MCP 代理' }),
+      f('broker.compactPrompt', '启用精简 Delta 提示词与随机 Nonce', 'boolean', { section: '核心开关', applyMode: 'hot', description: '开启后每轮仅下发紧凑消息增量，隔离不可信文本并大幅减少提示词冗余' }),
+      f('broker.enabledModules', '开放给 Agent 的本地模块', 'stringArray', { section: '家长控制白名单', applyMode: 'hot', description: '控制台随时增删允许调用的模块（如 msg, media, memory, wake, web, social），Agent 无法触碰' }),
+      f('broker.compactThresholdTokens', '上下文自动压缩阈值', 'integer', { section: '上下文与沙箱', min: 4000, max: 1000000, applyMode: 'hot', description: '当单轮 input_tokens 达到阈值时提炼 <=400 字滚动摘要并重置后端续聊' }),
+      f('broker.scriptTimeoutMs', '本地模块脚本执行超时', 'integer', { section: '上下文与沙箱', min: 1000, max: 120000, unit: 'ms', applyMode: 'hot', description: '单个本地脚本执行的最长等待时间' }),
+      f('broker.sandbox.useBwrap', '使用 bubblewrap (bwrap) 沙箱运行脚本', 'boolean', { section: '上下文与沙箱', applyMode: 'hot', description: 'Linux 环境可用 bwrap 隔离本地脚本文件系统' }),
     ],
   },
   {
@@ -421,7 +440,7 @@ function stableEqual(a, b) {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
-/** 构造前端展示的 13 模块完整目录（附运行值、磁盘配置值、是否待重启、脱敏态） */
+/** 构造前端展示的 14 模块完整目录（附运行值、磁盘配置值、是否待重启、脱敏态） */
 export function buildModuleCatalog({ cfg, fileConfig, configFile = 'config.json' }) {
   const migratedFile = migrateLegacyConfig(fileConfig ?? {}).config;
   let effectiveDiskCfg = cfg;
@@ -623,14 +642,18 @@ export function applyHotModuleChanges(b, { moduleId, mod, validatedCfg, hotPaths
     b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
   }
   if (targetModuleId === 'backend-agy') {
-    b.api?.updateConfig?.(b.cfg.backend?.agy);
-    if (hotPaths.includes('backend.agy.model')) {
+    const backendType = b.cfg.backend?.type === 'gemini' ? 'gemini' : 'agy';
+    b.api?.updateConfig?.(b.cfg.backend?.[backendType] ?? b.cfg.backend?.agy);
+    if (hotPaths.includes('backend.agy.model') || hotPaths.includes('backend.gemini.model')) {
       b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
     }
     if (hotPaths.some((p) => p === 'backend.agy.permissions.allow' || p === 'backend.agy.permissions.deny')) {
       b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
       b.api?.onPermissionsChanged?.();
     }
+  }
+  if (targetModuleId === 'modular-broker') {
+    b.api?.updateBrokerConfig?.(b.cfg.broker);
   }
   if (targetModuleId === 'role' && hotPaths.includes('role.maxInjectChars') && typeof b.applyRoleInjectLimit === 'function') {
     b.roleInjectMaxChars = b.applyRoleInjectLimit(validatedCfg.role?.maxInjectChars);

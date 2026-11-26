@@ -192,6 +192,10 @@ export function createConsoleServer(b) {
         sendJson({ ok: false, error: error?.message ?? String(error) }, status);
       }
     });
+    b.sessionSocketHub?.setBridgeEndpoint({
+      getPort: () => server.address()?.port ?? port,
+      getConsoleToken: () => consoleToken,
+    });
     server.listen(port, '127.0.0.1', () => {
       b.log(`本地控制台已启动：http://127.0.0.1:${port}`);
     });

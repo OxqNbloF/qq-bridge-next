@@ -47,8 +47,8 @@ for (const rel of expectedAssets) {
   ok(fs.existsSync(path.join(webDir, rel)), `静态资产存在：${rel}`);
 }
 
-console.log('## 13 模块注册表与工具覆盖');
-ok(MODULE_DEFINITIONS.length === 13, '13 大功能模块全部注册', `共 ${MODULE_DEFINITIONS.length} 个`);
+console.log('## 14 模块注册表与工具覆盖');
+ok(MODULE_DEFINITIONS.length === 14, '14 大功能模块全部注册', `共 ${MODULE_DEFINITIONS.length} 个`);
 const allPaths = MODULE_DEFINITIONS.flatMap((m) => m.fields.map((f) => f.path));
 ok(new Set(allPaths).size === allPaths.length, '全部模块参数路径无重复', `共 ${allPaths.length} 项`);
 for (const flag of SOCIAL_V2_TOOL_FLAGS) {

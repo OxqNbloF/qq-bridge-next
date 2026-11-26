@@ -1,8 +1,9 @@
 // 多后端工厂：根据 config.backend.type 创建对应的 Agent 运行时客户端
 import { NodeApiClient } from '../dsh-client.js';
 import { AgyApiClient } from './agy-client.js';
+import { GeminiApiClient } from './gemini-client.js';
 
-export const SUPPORTED_BACKENDS = Object.freeze(['dsh', 'agy']);
+export const SUPPORTED_BACKENDS = Object.freeze(['dsh', 'agy', 'gemini']);
 
 /** 校验并规范化后端类型 */
 export function normalizeBackendType(raw) {
@@ -14,12 +15,39 @@ export function normalizeBackendType(raw) {
 }
 
 /** 根据配置创建后端客户端实例 */
-export function createBackendClient(cfg, { rootDir, stateDir, log, appendActivity } = {}) {
+export function createBackendClient(cfg, {
+  rootDir,
+  stateDir,
+  log,
+  appendActivity,
+  sessionSocketProvider,
+  compactSystemPromptProvider,
+} = {}) {
   const type = normalizeBackendType(cfg?.backend?.type);
+  const brokerEnabled = cfg?.broker?.enabled === true;
+  const compactPrompt = cfg?.broker?.compactPrompt === true;
   if (type === 'agy') {
     const agyCfg = cfg?.backend?.agy ?? {};
     return new AgyApiClient({
       ...agyCfg,
+      brokerEnabled,
+      compactPrompt,
+      sessionSocketProvider,
+      compactSystemPromptProvider,
+      rootDir,
+      stateDir,
+      log,
+      appendActivity,
+    });
+  }
+  if (type === 'gemini') {
+    const geminiCfg = cfg?.backend?.gemini ?? {};
+    return new GeminiApiClient({
+      ...geminiCfg,
+      brokerEnabled,
+      compactPrompt,
+      sessionSocketProvider,
+      compactSystemPromptProvider,
       rootDir,
       stateDir,
       log,

@@ -1,0 +1,66 @@
+{
+  "name": "msg",
+  "scope": "chat",
+  "summary": "收发 QQ 消息、等待下文、标记已读与查看成员",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 650000,
+  "network": false,
+  "actions": {
+    "send": {
+      "desc": "发送一条或多条短句到当前会话（可用数组分条）",
+      "params": {
+        "messages": { "type": "string_or_array", "required": false },
+        "replyToMessageId": { "type": "string", "required": false },
+        "atUserId": { "type": "string", "required": false }
+      }
+    },
+    "read_unread": {
+      "desc": "读取未读消息",
+      "params": {
+        "afterSeq": { "type": "integer", "required": false },
+        "limit": { "type": "integer", "required": false }
+      }
+    },
+    "read_recent": {
+      "desc": "读取最近历史消息",
+      "params": {
+        "limit": { "type": "integer", "required": false },
+        "offset": { "type": "integer", "required": false }
+      }
+    },
+    "message_detail": {
+      "desc": "按 messageId 查询单条消息详情",
+      "params": {
+        "messageId": { "type": "string", "required": true }
+      }
+    },
+    "wait": {
+      "desc": "等待新消息或完成沉睡前观察（purpose: reply | messages）",
+      "params": {
+        "timeoutMs": { "type": "integer", "required": false },
+        "quietMs": { "type": "integer", "required": false },
+        "purpose": { "type": "string", "required": false }
+      }
+    },
+    "done": {
+      "desc": "提交已读水位并可选更新下一次唤醒配置",
+      "params": {
+        "throughSeq": { "type": "integer", "required": false },
+        "wakeConfig": { "type": "object", "required": false }
+      }
+    },
+    "active_members": {
+      "desc": "查询近期活跃群成员",
+      "params": {
+        "limit": { "type": "integer", "required": false }
+      }
+    },
+    "group_members": {
+      "desc": "查询群成员列表",
+      "params": {
+        "limit": { "type": "integer", "required": false }
+      }
+    }
+  }
+}

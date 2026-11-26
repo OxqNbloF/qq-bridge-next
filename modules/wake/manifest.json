@@ -1,0 +1,26 @@
+{
+  "name": "wake",
+  "scope": "chat",
+  "summary": "查看唤醒状态、人设详情与调整潜水/触发条件",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 15000,
+  "network": false,
+  "actions": {
+    "state": {
+      "desc": "获取当前会话唤醒配置与未读计数",
+      "params": {}
+    },
+    "prompt": {
+      "desc": "拉取当前人设、推荐阈值与启用能力详情",
+      "params": {}
+    },
+    "set_config": {
+      "desc": "更新下一次唤醒条件并提交水位",
+      "params": {
+        "config": { "type": "object", "required": true },
+        "throughSeq": { "type": "integer", "required": false }
+      }
+    }
+  }
+}

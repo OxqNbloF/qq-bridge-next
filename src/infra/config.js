@@ -36,7 +36,7 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
   const raw = readJsonSafe(p, null, true);
   const file = raw && typeof raw === 'object' && !Array.isArray(raw) ? adaptLegacyConfig(raw) : raw;
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
-  for (const groupKey of ['backend', 'dsh', 'snowluma', 'security', 'role', 'identity']) {
+  for (const groupKey of ['backend', 'broker', 'dsh', 'snowluma', 'security', 'role', 'identity']) {
     if (file[groupKey] !== undefined && !isPlainConfigObject(file[groupKey])) {
       throw new TypeError(`配置 ${groupKey} 必须是对象`);
     }
@@ -63,7 +63,24 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
           deny: [],
         },
       },
+      gemini: {
+        command: 'gemini',
+        args: [],
+        model: '',
+        timeoutMs: 300000,
+        injectPresetPrompt: true,
+      },
     }, file.backend),
+    broker: deepMergePlain({
+      enabled: false,
+      compactPrompt: false,
+      enabledModules: ['msg', 'media', 'memory', 'wake', 'web', 'social'],
+      compactThresholdTokens: 48000,
+      scriptTimeoutMs: 20000,
+      sandbox: {
+        useBwrap: false,
+      },
+    }, file.broker),
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
       provider: 'deepseek-official',
@@ -299,10 +316,10 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       : 2000;
   }
 
-  // 校验后端类型与 agy 权限列表
+  // 校验后端类型与 agy/broker 配置
   const backendType = String(cfg.backend?.type ?? 'dsh').trim().toLowerCase() || 'dsh';
-  if (!['dsh', 'agy'].includes(backendType)) {
-    throw new Error(`配置 backend.type 非法：${JSON.stringify(cfg.backend?.type)}（只能是 "dsh" 或 "agy"）`);
+  if (!['dsh', 'agy', 'gemini'].includes(backendType)) {
+    throw new Error(`配置 backend.type 非法：${JSON.stringify(cfg.backend?.type)}（只能是 "dsh"、"agy" 或 "gemini"）`);
   }
   cfg.backend.type = backendType;
   for (const listKey of ['allow', 'deny']) {
@@ -311,6 +328,27 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       throw new TypeError(`配置 backend.agy.permissions.${listKey} 必须是字符串数组`);
     }
     cfg.backend.agy.permissions[listKey] = rawList.map((item) => String(item ?? '').trim()).filter(Boolean);
+  }
+  if (!Array.isArray(cfg.broker?.enabledModules)) {
+    throw new TypeError('配置 broker.enabledModules 必须是字符串数组');
+  }
+  cfg.broker.enabledModules = [...new Set(cfg.broker.enabledModules.map((m) => String(m ?? '').trim()).filter(Boolean))];
+  for (const modName of cfg.broker.enabledModules) {
+    if (!/^[a-z0-9_-]{1,32}$/.test(modName)) {
+      throw new Error(`配置 broker.enabledModules 包含非法模块名：${JSON.stringify(modName)}`);
+    }
+  }
+  {
+    const thresh = Number(cfg.broker.compactThresholdTokens);
+    if (!Number.isFinite(thresh) || thresh < 0) {
+      throw new Error(`配置 broker.compactThresholdTokens 非法：${JSON.stringify(cfg.broker.compactThresholdTokens)}`);
+    }
+    cfg.broker.compactThresholdTokens = Math.round(thresh);
+    const timeout = Number(cfg.broker.scriptTimeoutMs);
+    if (!Number.isFinite(timeout) || timeout < 1000 || timeout > 120000) {
+      throw new Error(`配置 broker.scriptTimeoutMs 非法：${JSON.stringify(cfg.broker.scriptTimeoutMs)}（范围 1000~120000）`);
+    }
+    cfg.broker.scriptTimeoutMs = Math.round(timeout);
   }
 
   // 自动找到的 token 只是保底；同时记下用户有没有自己填

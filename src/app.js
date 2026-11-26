@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { discoverDshLaunchToken } from './dsh-client.js';
 import { createBackendClient } from './backends/index.js';
+import { createSessionSocketHub } from './broker/session-socket.js';
+import { createContextCompactor } from './broker/compactor.js';
+import { buildCompactSystemPrompt, buildCompactDeltaPrompt } from './broker/delta-prompt.js';
 import { discoverDshBaseUrl } from './dsh-endpoint.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { compactModelMessage, describeAge, sanitizeUntrustedText } from './qq-model-view.js';
@@ -622,12 +625,31 @@ async function main() {
     log('ℹ️  socialV2.voice.allowAbsolutePath=true 已不再放宽 AI 通道：AI 发的语音始终只允许来自语音库（库外文件请用语音工具/CLI 发送）');
   }
 
-  // Agent 运行时后端（支持 dsh / agy）
+  // Agent 运行时后端（支持 dsh / agy / gemini）
+  const sessionSocketHub = createSessionSocketHub(app);
+  const contextCompactor = createContextCompactor(app);
+  Object.assign(app, {
+    sessionSocketHub,
+    contextCompactor,
+    buildCompactSystemPrompt,
+    buildCompactDeltaPrompt,
+  });
   const api = createBackendClient(cfg, {
     rootDir: ROOT,
     stateDir: STATE_DIR,
     log,
     appendActivity: (...args) => app.appendActivity?.(...args),
+    sessionSocketProvider: async (key) => sessionSocketHub.ensureSocket(key),
+    compactSystemPromptProvider: (key) => {
+      const roleState = app.readRoleState?.();
+      const roleHint = roleState?.role ? app.roleForWake?.(key)?.text : '';
+      const initialPrompt = key ? app.getInitialPrompt?.(key) : '';
+      return buildCompactSystemPrompt({
+        roleName: roleState?.role || '',
+        roleHint: roleHint || '',
+        initialPrompt: initialPrompt || '',
+      });
+    },
   });
   log(`Agent 后端：${api.backendLabel || api.backendType || 'DSH'}（${api.resolveBase?.() ?? cfg.dsh.baseUrl}）`);
   // 模型列表和会话模型的设置；代码在 dsh/model.js

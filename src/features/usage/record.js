@@ -23,6 +23,9 @@ export function createUsageRecorder(b) {
         model: event?.data?.usage?.model ?? known?.model,
         provider: event?.data?.provider ?? known?.provider
       });
+      if (event?.type === 'assistant/message' && event?.data?.usage) {
+        b.contextCompactor?.observeUsage?.(sessionId, event.data.usage);
+      }
     } catch (error) {
       b.log('token 账本：摄入事件失败', error?.message ?? error);
     }

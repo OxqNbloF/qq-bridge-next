@@ -1,0 +1,22 @@
+{
+  "name": "social",
+  "scope": "chat",
+  "summary": "查看自身近期发言与提交异常反馈",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 15000,
+  "network": false,
+  "actions": {
+    "my_recent": {
+      "desc": "查询机器人近期在本会话的发言",
+      "params": { "limit": { "type": "integer", "required": false } }
+    },
+    "feedback": {
+      "desc": "向管理端报告工具异常或建议",
+      "params": {
+        "message": { "type": "string", "required": true },
+        "level": { "type": "string", "required": false }
+      }
+    }
+  }
+}

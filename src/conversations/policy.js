@@ -241,6 +241,7 @@ export function createConversationPolicy(b) {
     if (entry) { b.clearTimeout(entry.timer); void b.cancelPendingEntry({ ...entry, key }).catch(() => {}); }
     b.pending.delete(key);
     if (!deferSave) { b.saveState(); b.saveSocialV2State(); }
+    b.sessionSocketHub?.revokeSocket?.(key);
     stopRetiredSessionWork(sessionId, key);
     b.log(`会话权限已变化，停用旧映射 ${key} -> ${sessionId}`);
   }
