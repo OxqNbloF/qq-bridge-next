@@ -58,6 +58,10 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
         allowedTools: [],
         disallowedTools: [],
         injectPresetPrompt: true,
+        permissions: {
+          allow: ['mcp(snowluma/*)', 'mcp(snowluma-host/*)', 'mcp(web-search-safe/*)'],
+          deny: [],
+        },
       },
     }, file.backend),
     dsh: {
@@ -295,12 +299,19 @@ export function loadConfig({ configFile, readJsonSafe, discoverDshLaunchToken, l
       : 2000;
   }
 
-  // 校验后端类型
+  // 校验后端类型与 agy 权限列表
   const backendType = String(cfg.backend?.type ?? 'dsh').trim().toLowerCase() || 'dsh';
   if (!['dsh', 'agy'].includes(backendType)) {
     throw new Error(`配置 backend.type 非法：${JSON.stringify(cfg.backend?.type)}（只能是 "dsh" 或 "agy"）`);
   }
   cfg.backend.type = backendType;
+  for (const listKey of ['allow', 'deny']) {
+    const rawList = cfg.backend.agy?.permissions?.[listKey];
+    if (!Array.isArray(rawList)) {
+      throw new TypeError(`配置 backend.agy.permissions.${listKey} 必须是字符串数组`);
+    }
+    cfg.backend.agy.permissions[listKey] = rawList.map((item) => String(item ?? '').trim()).filter(Boolean);
+  }
 
   // 自动找到的 token 只是保底；同时记下用户有没有自己填
   cfg.dsh.authTokenExplicit = Boolean(cfg.dsh.authToken);

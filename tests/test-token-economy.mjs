@@ -420,7 +420,7 @@ await test('busy and rate-limited wake attempts preserve the current observation
   h.promptQueues.delete(KEY);
   h.cfg.socialV2.wake.maxWakePerMinute = 1;
   st.wakeTimes = [Date.now()];
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'probability');
   checkObservation();
   assert.equal(h.calls.prompts.length, 0);
 });

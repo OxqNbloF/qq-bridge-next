@@ -1,4 +1,4 @@
-// 工作台 12 大模块统一参数注册表（单一事实来源）：
+// 工作台 13 大模块统一参数注册表（单一事实来源）：
 // 声明每个模块的内部参数路径、类型、范围、生效方式（hot/restart）与安全边界（public/secret/localOnly）。
 import { loadConfig, deepMergePlain, isPlainConfigObject } from '../../infra/config.js';
 import { migrateLegacyConfig } from '../../infra/legacy-config.js';
@@ -63,7 +63,7 @@ const TOOL_FIELDS = SOCIAL_V2_TOOL_FLAGS.map((flag) => {
   );
 });
 
-/** 全部 12 大功能模块定义 */
+/** 全部 13 大功能模块定义 */
 export const MODULE_DEFINITIONS = Object.freeze([
   {
     id: 'core',
@@ -99,6 +99,22 @@ export const MODULE_DEFINITIONS = Object.freeze([
       f('dsh.authHeader', '鉴权请求头名称', 'string', { section: '鉴权设置', applyMode: 'restart', description: '默认 authorization' }),
       f('dsh.authPrefix', '鉴权前缀', 'string', { section: '鉴权设置', applyMode: 'restart', description: '默认 Bearer' }),
       f('dsh.authToken', 'DSH 显式访问令牌', 'string', { section: '鉴权设置', sensitivity: 'secret', applyMode: 'restart', description: '留空不改；仅写入不回显明文' }),
+    ],
+  },
+  {
+    id: 'backend-agy',
+    title: 'Antigravity CLI (agy)',
+    category: '上游连接',
+    description: '管理多后端切换、Antigravity CLI 模型、超时与 --settings 工具权限热下发。',
+    fields: [
+      f('backend.type', '当前 Agent 后端类型', 'enum', { section: '后端切换', applyMode: 'restart', options: ['dsh', 'agy'], description: 'dsh 为 DeepSeek Harness；agy 为 Antigravity CLI（切换后重启生效）' }),
+      f('backend.agy.model', 'agy 默认模型', 'string', { section: '模型与执行', applyMode: 'hot', description: '留空使用 agy CLI 默认模型；保存后下一条消息生效' }),
+      f('backend.agy.timeoutMs', '单轮执行超时', 'integer', { section: '模型与执行', min: 10000, max: 1800000, unit: 'ms', applyMode: 'hot', description: '单次 agy 子进程执行超时时间' }),
+      f('backend.agy.injectPresetPrompt', '注入安全预设提示词', 'boolean', { section: '模型与执行', applyMode: 'hot', description: '非 closed-agent 模式首轮自动注入 qq-chat/qq-chat-v2 系统提示词' }),
+      f('backend.agy.permissions.allow', '允许工具规则 (allow)', 'stringArray', { section: '工具权限（--settings 热下发）', applyMode: 'hot', description: '每轮经 --settings 下发，规则须带斜杠如 mcp(snowluma/*)；留空将拒绝全部 MCP 工具，修改后自动重置旧会话' }),
+      f('backend.agy.permissions.deny', '拒绝工具规则 (deny)', 'stringArray', { section: '工具权限（--settings 热下发）', applyMode: 'hot', description: '显式拒绝规则（优先级高于 allow），修改后自动重置旧会话' }),
+      f('backend.agy.command', 'agy 可执行文件路径', 'string', { section: '本机只读项', sensitivity: 'localOnly', applyMode: 'restart', description: '仅可在部署机 config.json 修改' }),
+      f('backend.agy.args', 'agy 额外固定参数', 'stringArray', { section: '本机只读项', sensitivity: 'localOnly', applyMode: 'restart', description: '仅可在部署机 config.json 修改' }),
     ],
   },
   {
@@ -405,7 +421,7 @@ function stableEqual(a, b) {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
-/** 构造前端展示的 12 模块完整目录（附运行值、磁盘配置值、是否待重启、脱敏态） */
+/** 构造前端展示的 13 模块完整目录（附运行值、磁盘配置值、是否待重启、脱敏态） */
 export function buildModuleCatalog({ cfg, fileConfig, configFile = 'config.json' }) {
   const migratedFile = migrateLegacyConfig(fileConfig ?? {}).config;
   let effectiveDiskCfg = cfg;
@@ -605,6 +621,16 @@ export function applyHotModuleChanges(b, { moduleId, mod, validatedCfg, hotPaths
   }
   if (targetModuleId === 'dsh' && hotPaths.some((p) => ['dsh.provider', 'dsh.model', 'dsh.reasoningEffort'].includes(p))) {
     b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
+  }
+  if (targetModuleId === 'backend-agy') {
+    b.api?.updateConfig?.(b.cfg.backend?.agy);
+    if (hotPaths.includes('backend.agy.model')) {
+      b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
+    }
+    if (hotPaths.some((p) => p === 'backend.agy.permissions.allow' || p === 'backend.agy.permissions.deny')) {
+      b.modelSelectionEpoch = (b.modelSelectionEpoch ?? 0) + 1;
+      b.api?.onPermissionsChanged?.();
+    }
   }
   if (targetModuleId === 'role' && hotPaths.includes('role.maxInjectChars') && typeof b.applyRoleInjectLimit === 'function') {
     b.roleInjectMaxChars = b.applyRoleInjectLimit(validatedCfg.role?.maxInjectChars);

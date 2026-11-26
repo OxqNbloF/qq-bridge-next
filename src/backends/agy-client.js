@@ -7,7 +7,7 @@ import { extractPresetPrefix } from '../preset-prompt.js';
 import { BOUND_SESSION_ID_RE } from '../policy/self-key.js';
 import { atomicWriteJson, readJsonSafe } from '../store/fs-atomic.js';
 
-/** 非 closed-agent 会话默认禁止的本地执行与高危工具 */
+/** 非 closed-agent 会话默认禁止的本地执行与高危工具（老版本 CLI 兼容回退） */
 export const DEFAULT_DISALLOWED_LOCAL_TOOLS = Object.freeze([
   'run_command',
   'bash',
@@ -34,11 +34,18 @@ export const DEFAULT_DISALLOWED_LOCAL_TOOLS = Object.freeze([
   'browser',
 ]);
 
-/** 非 closed-agent 会话默认允许的安全 MCP 工具前缀 */
+/** 非 closed-agent 会话默认允许的安全 MCP 工具前缀（老版本 CLI 兼容回退） */
 export const DEFAULT_SAFE_ALLOWED_TOOLS = Object.freeze([
   'mcp__snowluma__*',
   'mcp__snowluma-host__*',
   'mcp__web-search-safe__*',
+]);
+
+/** agy 1.5.x --settings 默认允许的安全 MCP 规则（带斜杠通配） */
+export const DEFAULT_AGY_PERMISSIONS_ALLOW = Object.freeze([
+  'mcp(snowluma/*)',
+  'mcp(snowluma-host/*)',
+  'mcp(web-search-safe/*)',
 ]);
 
 /** 从预分配的 BOUND_SESSION_ID 反解会话 selfKey（group:xxx / private:xxx） */
@@ -47,6 +54,37 @@ export function decodeSelfKeyFromSessionId(sessionId) {
   if (!m) return '';
   const kind = String(sessionId).startsWith('qqb-g-') ? 'group' : 'private';
   return `${kind}:${m[1]}`;
+}
+
+/** 解析 `agy --help` 输出中的命令行能力开关 */
+export function parseAgyHelpCapabilities(helpText) {
+  const text = String(helpText ?? '');
+  const hasFlag = (flag) => new RegExp(`(?:^|[\\s,])${flag}(?=[\\s,=]|$)`).test(text);
+  return {
+    systemPrompt: hasFlag('--system-prompt'),
+    allowedTools: hasFlag('--allowedTools'),
+    disallowedTools: hasFlag('--disallowedTools'),
+    settings: hasFlag('--settings'),
+    sandbox: hasFlag('--sandbox'),
+  };
+}
+
+/** 格式化 agy result.denied_actions 为可读文本 */
+export function formatDeniedActions(list) {
+  if (!Array.isArray(list) || !list.length) return '';
+  return list.map((item) => {
+    if (typeof item === 'string') return item;
+    if (!item || typeof item !== 'object') return String(item);
+    const action = String(item.action ?? item.type ?? 'tool').trim();
+    const target = String(item.display_name ?? item.displayName ?? item.tool ?? item.name ?? '').trim();
+    return target ? `${action}(${target})` : action;
+  }).filter(Boolean).join(', ');
+}
+
+/** 提取 stderr 末尾最多 maxLines 行非空内容 */
+function stderrTail(text, maxLines = 20) {
+  const lines = String(text ?? '').split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean);
+  return lines.slice(-maxLines).join('\n');
 }
 
 /** 构造标准 RPC 成功/失败响应，兼容 unwrap() */
@@ -156,13 +194,18 @@ export function parseAgyStreamLine(line) {
         ? res.response
         : (typeof res.output === 'string' ? res.output : ''));
     const usage = res.usage ?? obj.usage ?? null;
-    const isError = res.is_error === true || obj.is_error === true || res.status === 'error' || Boolean(res.error);
+    const deniedActions = Array.isArray(res.denied_actions)
+      ? res.denied_actions
+      : (Array.isArray(obj.denied_actions) ? obj.denied_actions : []);
+    const statusLower = String(res.status ?? obj.status ?? '').toLowerCase();
+    const isError = res.is_error === true || obj.is_error === true || statusLower === 'error' || Boolean(res.error);
     return {
       kind: 'result',
       conversationId: conversationId ? String(conversationId) : null,
       text,
       usage,
       model: res.model ?? obj.model ?? null,
+      deniedActions,
       isError,
       error: isError ? String(res.error?.message ?? res.error ?? obj.error ?? 'agy execution failed') : null,
     };
@@ -242,11 +285,21 @@ export class AgyApiClient {
     this.allowedTools = Array.isArray(options.allowedTools) ? options.allowedTools.map(String).filter(Boolean) : [];
     this.disallowedTools = Array.isArray(options.disallowedTools) ? options.disallowedTools.map(String).filter(Boolean) : [];
     this.injectPresetPrompt = options.injectPresetPrompt !== false;
+    this.permissions = {
+      allow: Array.isArray(options.permissions?.allow)
+        ? options.permissions.allow.map((x) => String(x ?? '').trim()).filter(Boolean)
+        : [...DEFAULT_AGY_PERMISSIONS_ALLOW],
+      deny: Array.isArray(options.permissions?.deny)
+        ? options.permissions.deny.map((x) => String(x ?? '').trim()).filter(Boolean)
+        : [],
+    };
     this.rootDir = options.rootDir || process.cwd();
     this.stateDir = options.stateDir || '';
     this.log = typeof options.log === 'function' ? options.log : () => {};
+    this.appendActivity = typeof options.appendActivity === 'function' ? options.appendActivity : () => {};
     this._spawn = options.spawn || spawn;
     this._checkAvailable = options.checkAvailable || null;
+    this._detectCapabilities = typeof options.detectCapabilities === 'function' ? options.detectCapabilities : null;
 
     this._sessionsFile = this.stateDir ? path.join(this.stateDir, 'agy-sessions.json') : '';
     this._sessions = new Map(); // sessionId -> session record
@@ -255,6 +308,9 @@ export class AgyApiClient {
     this._listeners = new Set(); // active mux queues
     this._modeOverride = '';
     this._availabilityCache = { ok: false, checkedAt: 0 };
+    this._capabilities = null;
+    this._permissionsEpoch = 0;
+    this._warnedNoPermFlag = false;
 
     this._loadPersistedSessions();
   }
@@ -273,6 +329,79 @@ export class AgyApiClient {
 
   invalidateAuth() {}
 
+  /** 探测并缓存 agy CLI 支持的参数标志（只探测一次） */
+  _getCapabilities() {
+    if (this._capabilities) return this._capabilities;
+    let caps;
+    let shouldCache = true;
+    if (this._detectCapabilities) {
+      caps = {
+        systemPrompt: false,
+        allowedTools: false,
+        disallowedTools: false,
+        settings: false,
+        sandbox: false,
+        ...(this._detectCapabilities(this.command) ?? {}),
+      };
+    } else {
+      try {
+        const res = spawnSync(this.command, ['--help'], {
+          encoding: 'utf8',
+          timeout: 5000,
+        });
+        if (res.error) shouldCache = false;
+        caps = parseAgyHelpCapabilities(`${res.stdout || ''}\n${res.stderr || ''}`);
+      } catch {
+        shouldCache = false;
+        caps = parseAgyHelpCapabilities('');
+      }
+    }
+    if (shouldCache) {
+      this._capabilities = caps;
+      this.log(`agy 能力探测：systemPrompt=${caps.systemPrompt} allowedTools=${caps.allowedTools} disallowedTools=${caps.disallowedTools} settings=${caps.settings} sandbox=${caps.sandbox}`);
+    }
+    return caps;
+  }
+
+  /** 热更新模型、超时、预设注入与权限配置 */
+  updateConfig(nextAgyCfg = {}) {
+    if (!nextAgyCfg || typeof nextAgyCfg !== 'object') return;
+    if (nextAgyCfg.model !== undefined) {
+      this.defaultModel = String(nextAgyCfg.model || '').trim();
+    }
+    if (nextAgyCfg.timeoutMs !== undefined) {
+      const nextTimeout = Number(nextAgyCfg.timeoutMs);
+      if (Number.isFinite(nextTimeout) && nextTimeout > 0) this.timeoutMs = nextTimeout;
+    }
+    if (nextAgyCfg.injectPresetPrompt !== undefined) {
+      this.injectPresetPrompt = nextAgyCfg.injectPresetPrompt !== false;
+      for (const session of this._sessions.values()) {
+        session.systemPrompt = this._loadPresetPrompt(session.agentPreset);
+      }
+    }
+    if (nextAgyCfg.permissions && typeof nextAgyCfg.permissions === 'object') {
+      if (Array.isArray(nextAgyCfg.permissions.allow)) {
+        this.permissions.allow = nextAgyCfg.permissions.allow.map((x) => String(x ?? '').trim()).filter(Boolean);
+      }
+      if (Array.isArray(nextAgyCfg.permissions.deny)) {
+        this.permissions.deny = nextAgyCfg.permissions.deny.map((x) => String(x ?? '').trim()).filter(Boolean);
+      }
+    }
+  }
+
+  /** 权限变更时作废所有旧 agyConversationId 并标记下次提示注入最新权限摘要 */
+  onPermissionsChanged() {
+    this._permissionsEpoch += 1;
+    let resetCount = 0;
+    for (const session of this._sessions.values()) {
+      if (session.agyConversationId) resetCount += 1;
+      session.agyConversationId = '';
+      session.permissionRefreshNotice = true;
+    }
+    this._persistSessions();
+    this.log(`[agy] 工具权限已更新（allow=${this.permissions.allow.length} 条，deny=${this.permissions.deny.length} 条），已重置 ${resetCount} 个会话续聊上下文`);
+  }
+
   _loadPersistedSessions() {
     if (!this._sessionsFile) return;
     const saved = readJsonSafe(this._sessionsFile, null);
@@ -288,6 +417,7 @@ export class AgyApiClient {
         systemPrompt: this._loadPresetPrompt(meta.agentPreset),
         model: String(meta.model || this.defaultModel || ''),
         agyConversationId: meta.agyConversationId ? String(meta.agyConversationId) : '',
+        permissionRefreshNotice: meta.permissionRefreshNotice === true,
         turnCounter: Number(meta.turnCounter) || 0,
         eventSeq: Number(meta.eventSeq) || 0,
         queue: [],
@@ -310,6 +440,7 @@ export class AgyApiClient {
         selfKey: s.selfKey,
         model: s.model,
         agyConversationId: s.agyConversationId,
+        permissionRefreshNotice: Boolean(s.permissionRefreshNotice),
         turnCounter: s.turnCounter,
         eventSeq: s.eventSeq,
       };
@@ -368,6 +499,7 @@ export class AgyApiClient {
       }
     }
     this._availabilityCache = { ok, checkedAt: now };
+    if (ok) this._getCapabilities();
     return ok;
   }
 
@@ -453,6 +585,7 @@ export class AgyApiClient {
         systemPrompt: this._loadPresetPrompt(preset),
         model: this.defaultModel || '',
         agyConversationId: '',
+        permissionRefreshNotice: false,
         turnCounter: 0,
         eventSeq: 0,
         queue: [],
@@ -540,8 +673,14 @@ export class AgyApiClient {
     }
   }
 
-  _buildCliArgs(session, promptText) {
-    const args = [...this.extraArgs, '-p', promptText, '--output-format', 'stream-json'];
+  _buildCliArgs(session, promptText, caps = this._getCapabilities()) {
+    const useSystemFlag = Boolean(session.systemPrompt && !session.agyConversationId && this.injectPresetPrompt && caps.systemPrompt);
+    const useInlineSystem = Boolean(session.systemPrompt && !session.agyConversationId && this.injectPresetPrompt && !caps.systemPrompt);
+    const effectivePrompt = useInlineSystem
+      ? `<system>\n${session.systemPrompt}\n</system>\n\n---\n\n${promptText}`
+      : promptText;
+
+    const args = [...this.extraArgs, '-p', effectivePrompt, '--output-format', 'stream-json'];
     if (session.agyConversationId) {
       args.push('--conversation', session.agyConversationId);
     }
@@ -549,15 +688,33 @@ export class AgyApiClient {
     if (model && model !== 'default' && model !== 'auto') {
       args.push('--model', model);
     }
-    if (session.systemPrompt && !session.agyConversationId && this.injectPresetPrompt) {
+    if (useSystemFlag) {
       args.push('--system-prompt', session.systemPrompt);
     }
+
     if (session.restricted) {
-      const allowed = this.allowedTools.length ? this.allowedTools : DEFAULT_SAFE_ALLOWED_TOOLS;
-      const disallowed = this.disallowedTools.length ? this.disallowedTools : DEFAULT_DISALLOWED_LOCAL_TOOLS;
-      if (allowed.length) args.push('--allowedTools', allowed.join(','));
-      if (disallowed.length) args.push('--disallowedTools', disallowed.join(','));
-    } else if (this.disallowedTools.length) {
+      if (caps.settings) {
+        args.push('--settings', JSON.stringify({
+          permissions: {
+            allow: [...this.permissions.allow],
+            deny: [...this.permissions.deny],
+          },
+        }));
+      } else if (caps.allowedTools || caps.disallowedTools) {
+        const allowed = this.allowedTools.length ? this.allowedTools : DEFAULT_SAFE_ALLOWED_TOOLS;
+        const disallowed = this.disallowedTools.length ? this.disallowedTools : DEFAULT_DISALLOWED_LOCAL_TOOLS;
+        if (caps.allowedTools && allowed.length) args.push('--allowedTools', allowed.join(','));
+        if (caps.disallowedTools && disallowed.length) args.push('--disallowedTools', disallowed.join(','));
+      } else {
+        if (!this._warnedNoPermFlag) {
+          this._warnedNoPermFlag = true;
+          this.log('⚠️ agy 不支持 --settings 与 --disallowedTools，受限会话权限将依赖全局 settings.json');
+        }
+        if (caps.sandbox) args.push('--sandbox');
+      }
+    } else if (caps.settings && this.permissions.deny.length > 0) {
+      args.push('--settings', JSON.stringify({ permissions: { deny: [...this.permissions.deny] } }));
+    } else if (caps.disallowedTools && this.disallowedTools.length > 0) {
       args.push('--disallowedTools', this.disallowedTools.join(','));
     }
     return args;
@@ -569,8 +726,21 @@ export class AgyApiClient {
     session.activeTurn = turn;
     session.cancelled = false;
 
-    const promptText = materializePromptContent(content, session.cwd, turn);
-    const args = this._buildCliArgs(session, promptText);
+    let promptText = materializePromptContent(content, session.cwd, turn);
+    if (session.restricted && (!session.agyConversationId || session.permissionRefreshNotice)) {
+      const allowSummary = this.permissions.allow.length ? this.permissions.allow.join(', ') : '无（全部拒绝）';
+      const prefix = session.permissionRefreshNotice
+        ? `【工具权限已更新】工具权限配置刚刚更新，请忽略历史中的未授权结论并重新尝试调用工具。\n【当前已授权工具规则】${allowSummary}\n\n`
+        : `【当前已授权工具规则】${allowSummary}\n\n`;
+      promptText = `${prefix}${promptText}`;
+      if (session.permissionRefreshNotice) {
+        session.permissionRefreshNotice = false;
+        this._persistSessions();
+      }
+    }
+
+    const caps = this._getCapabilities();
+    const args = this._buildCliArgs(session, promptText, caps);
     const env = {
       ...process.env,
       ...(session.selfKey ? { QQ_BRIDGE_SELF_KEY: session.selfKey } : {}),
@@ -584,6 +754,10 @@ export class AgyApiClient {
     let usage = undefined;
     let activeModel = session.model || this.defaultModel || 'agy';
     let streamError = null;
+    let timedOut = false;
+    let exitCode = null;
+    let anyToolSucceeded = false;
+    const deniedActions = [];
 
     await new Promise((resolve) => {
       let settled = false;
@@ -605,13 +779,18 @@ export class AgyApiClient {
         });
       } catch (error) {
         streamError = String(error?.message ?? error);
+        this.log(`[agy] 启动进程失败 (session=${session.sessionId}): ${streamError}`);
+        this.appendActivity(`agy 启动失败：${streamError.slice(0, 120)}`);
         finish();
         return;
       }
 
       session.activeChild = child;
       const killTimer = setTimeout(() => {
+        timedOut = true;
         streamError = `agy CLI 执行超时（${Math.round(this.timeoutMs / 1000)}s）`;
+        this.log(`[agy] ${streamError} (session=${session.sessionId})`);
+        this.appendActivity(streamError);
         this._killActiveChild(session);
       }, this.timeoutMs);
       killTimer.unref?.();
@@ -664,6 +843,7 @@ export class AgyApiClient {
         }
 
         if (parsed.kind === 'tool_result') {
+          if (!parsed.isError) anyToolSucceeded = true;
           this._emitSessionEvent(session.sessionId, {
             type: 'tool/result',
             data: {
@@ -686,6 +866,9 @@ export class AgyApiClient {
           if (parsed.model) activeModel = parsed.model;
           if (parsed.text) fullTextFromResult = parsed.text;
           if (parsed.usage) usage = normalizeAgyUsage(parsed.usage, activeModel);
+          if (Array.isArray(parsed.deniedActions) && parsed.deniedActions.length > 0) {
+            deniedActions.push(...parsed.deniedActions);
+          }
           if (parsed.isError && parsed.error) streamError = parsed.error;
           return;
         }
@@ -706,25 +889,43 @@ export class AgyApiClient {
       });
 
       child.stderr?.on('data', (chunk) => {
-        if (stderrBuf.length < 4096) stderrBuf += chunk.toString('utf8');
+        stderrBuf += chunk.toString('utf8');
+        if (stderrBuf.length > 16384) stderrBuf = stderrBuf.slice(-16384);
       });
 
       child.on('error', (error) => {
         streamError = String(error?.message ?? error);
+        this.log(`[agy] 进程错误 (session=${session.sessionId}): ${streamError}`);
+        this.appendActivity(`agy 进程错误：${streamError.slice(0, 120)}`);
         finish();
       });
 
       child.on('close', (code) => {
+        exitCode = code;
         if (lineBuf.trim()) handleLine(lineBuf);
-        if (!session.cancelled && code !== 0 && !streamError) {
-          const tail = stderrBuf.trim().slice(-400);
-          streamError = tail || `agy CLI exited with code ${code}`;
+        if (!session.cancelled && !timedOut && code !== 0) {
+          const tail = stderrTail(stderrBuf, 20);
+          this.log(`[agy] 进程非 0 退出 (session=${session.sessionId}, code=${code})${tail ? `\n${tail}` : ''}`);
+          const lastLine = tail ? tail.split('\n').pop().slice(0, 120) : '';
+          this.appendActivity(`agy 异常退出（code=${code}）${lastLine ? `：${lastLine}` : ''}`);
+          if (!streamError) {
+            streamError = tail ? `agy 退出码=${code}，stderr=${tail.slice(-600)}` : `agy 退出码=${code}`;
+          }
         }
         finish();
       });
     });
 
     const finalText = accumulatedText || fullTextFromResult;
+    if (deniedActions.length > 0) {
+      const deniedText = `agy 拒绝工具：${formatDeniedActions(deniedActions)}`;
+      this.log(`[agy] ${deniedText} (session=${session.sessionId})`);
+      this.appendActivity(deniedText);
+      if (!streamError && !finalText && !anyToolSucceeded) {
+        streamError = deniedText;
+      }
+    }
+
     if (finalText || usage) {
       this._emitSessionEvent(session.sessionId, {
         type: 'assistant/message',
@@ -740,9 +941,22 @@ export class AgyApiClient {
       });
     }
 
-    const reason = session.cancelled
-      ? { kind: 'cancelled' }
-      : (streamError ? { kind: 'error', message: streamError } : { kind: 'completed' });
+    let reason;
+    if (timedOut) {
+      reason = { kind: 'error', error: { message: streamError || 'agy CLI 执行超时', code: 'timeout' } };
+    } else if (session.cancelled) {
+      reason = { kind: 'aborted' };
+    } else if (streamError) {
+      reason = {
+        kind: 'error',
+        error: {
+          message: streamError,
+          code: exitCode !== null && exitCode !== 0 ? `exit-${exitCode}` : 'agy-error',
+        },
+      };
+    } else {
+      reason = { kind: 'completed' };
+    }
 
     this._emitSessionEvent(session.sessionId, {
       type: 'turn/end',

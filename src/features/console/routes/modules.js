@@ -81,7 +81,7 @@ export function createConsoleModuleRoutes(b) {
           const written = syncConfigAliases(checked.nextFile);
           atomicWriteJson(configFile, written);
           applyHotModuleChanges(
-            { ...b, clearSearchCache },
+            Object.assign(Object.create(b), { clearSearchCache }),
             { moduleId, validatedCfg: checked.validatedCfg, hotPaths: checked.hotPaths }
           );
           const nextRevision = hashRevision(written);

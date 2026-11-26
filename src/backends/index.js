@@ -14,7 +14,7 @@ export function normalizeBackendType(raw) {
 }
 
 /** 根据配置创建后端客户端实例 */
-export function createBackendClient(cfg, { rootDir, stateDir, log } = {}) {
+export function createBackendClient(cfg, { rootDir, stateDir, log, appendActivity } = {}) {
   const type = normalizeBackendType(cfg?.backend?.type);
   if (type === 'agy') {
     const agyCfg = cfg?.backend?.agy ?? {};
@@ -23,6 +23,7 @@ export function createBackendClient(cfg, { rootDir, stateDir, log } = {}) {
       rootDir,
       stateDir,
       log,
+      appendActivity,
     });
   }
   const client = new NodeApiClient(cfg.dsh.baseUrl, undefined, {

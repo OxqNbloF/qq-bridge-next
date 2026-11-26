@@ -19,7 +19,15 @@
       "timeoutMs": 300000,
       "allowedTools": [],
       "disallowedTools": [],
-      "injectPresetPrompt": true
+      "injectPresetPrompt": true,
+      "permissions": {
+        "allow": [
+          "mcp(snowluma/*)",
+          "mcp(snowluma-host/*)",
+          "mcp(web-search-safe/*)"
+        ],
+        "deny": []
+      }
     }
   },
   "dsh": {

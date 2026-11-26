@@ -1,6 +1,6 @@
 import { createTimerRegistry } from './timer.js';
 import { createTurnEngine } from './turn-engine.js';
-import { wakePriority, isTimerReason, isDirectedReason } from './trigger.js';
+import { wakePriority, isTimerReason, isDirectedReason, isRateLimitExemptReason } from './trigger.js';
 
 // 旧模式作为执行适配层：只在引擎出队后才构造唤醒提示词、创建会话并投递。
 export function createSchedulerExecutor(b) {
@@ -73,7 +73,9 @@ export function createSchedulerExecutor(b) {
       strategy: decision?.strategy ?? (kind === 'manual' ? 'manual' : windowMs ? 'batched' : timer ? 'timer' : 'immediate'), reason: decision?.reason ?? wakeReason ?? 'prompt' },
       payload: { promptText, opts, wakeReason, sourceQqs: opts?.sourceQqs ?? (st?.unread ?? []).map(message => message.userId).filter(Boolean) }, priority: Math.max(decision?.priority ?? 0, wakePriority(wakeReason)), windowMs,
       batchKey: windowMs ? 'messages' : null,
-      rate: { perMinute: Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0, perHour: Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0 },
+      rate: wakeReason && isRateLimitExemptReason(wakeReason)
+        ? { perMinute: 0, perHour: 0 }
+        : { perMinute: Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0, perHour: Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0 },
     };
   }
   function submit(request) {

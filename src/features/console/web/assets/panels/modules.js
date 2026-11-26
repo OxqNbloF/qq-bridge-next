@@ -57,7 +57,7 @@ async function renderModulesView(root) {
     <div class="page-head">
       <div>
         <h1>全模块参数中心</h1>
-        <p>全项目 12 大功能模块的内部参数统一在此调节；热更新项保存即刻生效，重启项自动备份并标明差异。</p>
+        <p>全项目 ${modules.length} 大功能模块的内部参数统一在此调节；热更新项保存即刻生效，重启项自动备份并标明差异。</p>
       </div>
       <div class="toolbar">
         <input id="modLocalFilter" type="search" class="search-input" placeholder="过滤当前/全部参数…" value="${esc(activeFilter)}" />

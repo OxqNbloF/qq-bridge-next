@@ -2,6 +2,7 @@
 import { modelMessageVisible, modelHistoryState } from '../../gate/model-visibility.js';
 import { truncateText } from '../../md-to-plain.js';
 import { getModeAdapter } from '../../modes/registry.js';
+import { isRateLimitExemptReason } from '../../scheduler/trigger.js';
 
 // describeAge 等须经 b 传入，保证与消息同一 realm
 export function createWakePromptV2(b) {
@@ -77,9 +78,9 @@ export function createWakePromptV2(b) {
   }
 
   // 限频并投递唤醒简报，忙时暂存
-  function sendWakePromptV2(key, reason) {
+  function sendWakePromptV2(key, reason, opts = {}) {
     if (b.schedulerEnabled?.(key)) return b.scheduleWakeTurn(key, reason);
-    return executeWakePromptV2(key, reason);
+    return executeWakePromptV2(key, reason, opts);
   }
 
   async function executeWakePromptV2(key, reason, opts = {}) {
@@ -103,13 +104,14 @@ export function createWakePromptV2(b) {
       b.log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}，原因=${b.busyReasonV2(key, st)}）`);
       return;
     }
-    // 超限频时延后重试，不能直接丢弃，否则会话卡在静默
+    // 超限频时延后重试，不能直接丢弃，否则会话卡在静默；定向唤醒（@/私聊/追问/回复等）不受限流约束
     const now = Date.now();
     const maxPerMinute = Number(b.cfg.socialV2?.wake?.maxWakePerMinute) || 0;
     const maxPerHour = Number(b.cfg.socialV2?.wake?.maxWakePerHour) || 0;
     const recentMinute = (st.wakeTimes || []).filter((t) => now - t < 60000).length;
     const recentHour = (st.wakeTimes || []).filter((t) => now - t < 3600000).length;
-    if (!opts.schedulerTurnId && ((maxPerMinute > 0 && recentMinute >= maxPerMinute) || (maxPerHour > 0 && recentHour >= maxPerHour))) {
+    const rateLimitExempt = isRateLimitExemptReason(reason);
+    if (!opts.schedulerTurnId && !rateLimitExempt && ((maxPerMinute > 0 && recentMinute >= maxPerMinute) || (maxPerHour > 0 && recentHour >= maxPerHour))) {
       let retryAfterMs = 0;
       if (maxPerMinute > 0 && recentMinute >= maxPerMinute) {
         const times = (st.wakeTimes || []).filter((t) => now - t < 60000).sort((a, b) => a - b);
@@ -135,11 +137,12 @@ export function createWakePromptV2(b) {
             b.log(`[reserved2] 限频重试前发现未读已清空，跳过 ${key}（${retryReason}）`);
             return;
           }
-          void sendWakePromptV2(key, retryReason).catch((error) => b.log(`[reserved2] 限频重试唤醒异常 ${key}:`, error?.message ?? error));
+          void sendWakePromptV2(key, retryReason, { isRateLimitRetry: true }).catch((error) => b.log(`[reserved2] 限频重试唤醒异常 ${key}:`, error?.message ?? error));
         }, waitMs);
         runtime.rateLimitRetryTimer.unref?.();
       }
-      b.log(`[reserved2] 唤醒频率超限，${Math.round(waitMs / 1000)}s 后重试 ${key}（${runtime.rateLimitRetryReason}）`);
+      const sourceLabel = opts.isRateLimitRetry ? '限流重试' : '触发';
+      b.log(`[reserved2] 唤醒频率超限，${Math.round(waitMs / 1000)}s 后重试 ${key}（${runtime.rateLimitRetryReason}，来源=${sourceLabel}，计数=${recentMinute}/${maxPerMinute}/分 ${recentHour}/${maxPerHour}/时）`);
       return;
     }
     // 只有真正唤醒才重置观察，跳过/忙时保留进度

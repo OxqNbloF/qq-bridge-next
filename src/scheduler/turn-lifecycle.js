@@ -204,7 +204,7 @@ export function createTurnLifecycle(b, { v2TurnStartAt, lastEventAt, turnLeaseNo
         await b.sendToQQ(key, plain, { ai: true });
       }
     } else if (ended.reason.kind === 'error') {
-      await b.reportTurnFailure(key, 'error', ended.reason.error);
+      await b.reportTurnFailure(key, 'error', ended.reason.error ?? (ended.reason.message ? { message: ended.reason.message } : undefined));
       finishFarewell(key, isFarewell, '退场发言出错，回到观望');
     } else if (ended.reason.kind === 'aborted') {
       await b.reportTurnFailure(key, 'aborted');

@@ -149,6 +149,33 @@ export function createConsoleSocialRoutes(b) {
       rq.sendJson({ ok: true });
       return;
     }
+    if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/social/wake-reset') {
+      const body = await rq.readBody();
+      const rawKey = body && typeof body === 'object' && !Array.isArray(body) ? String(body.key ?? '').trim() : '';
+      if (rawKey && !/^(group|private):\d+$/.test(rawKey)) {
+        rq.sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400);
+        return;
+      }
+      const targetKeys = rawKey
+        ? (b.socialV2.conversations.has(rawKey) ? [rawKey] : [])
+        : [...b.socialV2.conversations.keys()];
+      for (const k of targetKeys) {
+        const st = b.socialV2.conversations.get(k);
+        if (!st) continue;
+        st.wakeTimes = [];
+        const runtime = b.schedulerRuntime?.(k, st) ?? st;
+        if (runtime.rateLimitRetryTimer) {
+          (b.clearSchedulerTimer ?? b.clearTimeout ?? clearTimeout)(runtime.rateLimitRetryTimer);
+          runtime.rateLimitRetryTimer = null;
+        }
+        runtime.rateLimitRetryReason = null;
+      }
+      b.saveSocialV2State?.();
+      b.log(`控制台：已重置唤醒计数（${rawKey || `全部 ${targetKeys.length} 个会话`}）`);
+      b.appendActivity?.(`控制台重置唤醒计数：${rawKey || '全部会话'}`);
+      rq.sendJson({ ok: true, resetKeys: targetKeys });
+      return;
+    }
     // 向指定会话的 DSH agent 投递控制端提醒
     if (rq.req.method === 'POST' && rq.url.pathname === '/api/console/notify-ai') {
       const body = await rq.readBody();

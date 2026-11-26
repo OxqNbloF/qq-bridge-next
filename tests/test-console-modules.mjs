@@ -5,12 +5,12 @@ import { MODULE_DEFINITIONS, buildModuleCatalog, validateModulePatch, applyHotMo
 import { resolveApiPath } from '../src/policy/api-paths.js';
 import { SOCIAL_V2_TOOL_FLAGS } from '../src/policy/tool-defaults.js';
 
-test('全部 12 模块参数注册表无重复路径且覆盖全部 29 项工具开关与关键模块', () => {
-  assert.equal(MODULE_DEFINITIONS.length, 12);
+test('全部 13 模块参数注册表无重复路径且覆盖全部 29 项工具开关与关键模块', () => {
+  assert.equal(MODULE_DEFINITIONS.length, 13);
   const paths = MODULE_DEFINITIONS.flatMap((m) => m.fields.map((f) => f.path));
   assert.equal(new Set(paths).size, paths.length, '模块参数路径不得重复');
   for (const required of [
-    'ackMessage', 'dsh.model', 'snowluma.silenceWarnMs', 'ignore.sendQQ',
+    'ackMessage', 'dsh.model', 'backend.type', 'backend.agy.permissions.allow', 'snowluma.silenceWarnMs', 'ignore.sendQQ',
     'architecture.schedulerV2.maxConcurrent', 'modes.reserved.triggerProbability',
     'modes.reserved2.wake.staleChatMinutes', 'modes.reserved2.media.maxLongEdge',
     'role.injectEveryNWakes', 'memory.archive.retentionDays', 'identity.exposeQqInPrompt',
@@ -59,10 +59,22 @@ test('validateModulePatch 拒绝 localOnly 字段、未知路径与越界数值�
   }), /仅可在部署机/);
 
   assert.throws(() => validateModulePatch({
+    moduleId: 'backend-agy',
+    values: { 'backend.agy.command': '/tmp/evil-agy' },
+    currentFile: {},
+  }), /仅可在部署机/);
+
+  assert.throws(() => validateModulePatch({
     moduleId: 'media',
     values: { 'modes.reserved2.media.maxLongEdge': 999999 },
     currentFile: {},
   }), /不能大于/);
+
+  assert.throws(() => validateModulePatch({
+    moduleId: 'backend-agy',
+    values: { 'backend.agy.command': '/tmp/evil-agy' },
+    currentFile: {},
+  }), /仅可在部署机/);
 
   assert.throws(() => validateModulePatch({
     moduleId: 'media',
@@ -85,8 +97,11 @@ test('validateModulePatch 拒绝 localOnly 字段、未知路径与越界数值�
 test('applyHotModuleChanges 同步热更新运行态并触发对应模块钩子', () => {
   let reconciled = 0;
   let clearedSearch = 0;
+  let agyUpdated = 0;
+  let agyPermsChanged = 0;
   const b = {
     cfg: {
+      backend: { type: 'agy', agy: { command: 'agy', args: [], model: '', timeoutMs: 300000, injectPresetPrompt: true, permissions: { allow: ['mcp(snowluma/*)'], deny: [] } } },
       dsh: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
       allow: { groups: [], private: [] },
       deny: { groups: [], private: [] },
@@ -96,11 +111,26 @@ test('applyHotModuleChanges 同步热更新运行态并触发对应模块钩子'
     modelSelectionEpoch: 1,
     reconcileSessionPolicies: () => { reconciled += 1; },
     clearSearchCache: () => { clearedSearch += 1; },
+    api: {
+      updateConfig: () => { agyUpdated += 1; },
+      onPermissionsChanged: () => { agyPermsChanged += 1; },
+    },
   };
   const dshPatch = validateModulePatch({ moduleId: 'dsh', values: { 'dsh.model': 'deepseek-pro' }, currentFile: {} });
   applyHotModuleChanges(b, dshPatch);
   assert.equal(b.cfg.dsh.model, 'deepseek-pro');
   assert.equal(b.modelSelectionEpoch, 2);
+
+  const agyPatch = validateModulePatch({
+    moduleId: 'backend-agy',
+    values: { 'backend.agy.permissions.allow': ['mcp(snowluma/*)', 'mcp(snowluma-host/*)'] },
+    currentFile: {},
+  });
+  applyHotModuleChanges(b, agyPatch);
+  assert.deepEqual(b.cfg.backend.agy.permissions.allow, ['mcp(snowluma/*)', 'mcp(snowluma-host/*)']);
+  assert.equal(agyUpdated, 1);
+  assert.equal(agyPermsChanged, 1);
+  assert.equal(b.modelSelectionEpoch, 3);
 
   const gatePatch = validateModulePatch({ moduleId: 'gate', values: { 'allow.groups': ['123456'], 'ignore.sendQQ': ['99999'] }, currentFile: {} });
   applyHotModuleChanges(b, gatePatch);

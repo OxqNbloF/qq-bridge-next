@@ -135,19 +135,23 @@ node scripts/setup-dsh.mjs
 node scripts/setup-agy.mjs
 ```
 
-此命令会备份并更新 `~/.gemini/config/mcp_config.json`（注册三个安全 MCP 服务）以及 `~/.gemini/antigravity-cli/settings.json`（在 `permissions.allow` 中预放行这三个 MCP 服务）。然后在 `config.json` 中切换后端：
+此命令会备份并更新 `~/.gemini/config/mcp_config.json`（注册三个安全 MCP 服务）以及 `~/.gemini/antigravity-cli/settings.json`（在 `permissions.allow` 中预放行这三个 MCP 服务），并在写入后自动调用只读工具自检。**注意**：`agy` 1.5.x 的 `allow` 规则必须带 `/tool` 或 `/*`（例如 `mcp(snowluma/*)`）。然后在 `config.json` 中切换后端：
 
 ```json
 "backend": {
   "type": "agy",
   "agy": {
     "command": "agy",
-    "model": ""
+    "model": "",
+    "permissions": {
+      "allow": ["mcp(snowluma/*)", "mcp(snowluma-host/*)", "mcp(web-search-safe/*)"],
+      "deny": []
+    }
   }
 }
 ```
 
-非 `closed-agent` 模式下，`agy` 后端会自动加载 `dsh/agent-presets/` 下的安全系统提示词、通过 `--disallowedTools` 禁用本地文件/命令工具，并注入 `QQ_BRIDGE_SELF_KEY` 隔离会话。
+非 `closed-agent` 模式下，`agy` 后端会自动加载 `dsh/agent-presets/` 下的安全系统提示词、每轮通过 `--settings` 下发上述工具权限（也可在控制台「全模块参数中心 → Antigravity CLI (agy)」热修改），并注入 `QQ_BRIDGE_SELF_KEY` 隔离会话。
 
 ### 4. 启动并验证收发
 

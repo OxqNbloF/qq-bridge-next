@@ -6,6 +6,8 @@ const TIMER_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'boots
 export function wakePriority(reason) { return WAKE_PRIORITY[String(reason ?? '').split(':')[0]] ?? 0; }
 export function isTimerReason(reason) { return TIMER_REASONS.has(String(reason ?? '').split(':')[0]); }
 export function isDirectedReason(reason) { return ['private', 'atMention', 'nameMention', 'poke'].includes(String(reason ?? '').split(':')[0]); }
+const RATE_LIMIT_EXEMPT_REASONS = new Set(['private', 'atMention', 'nameMention', 'poke', 'question', 'reply', 'admin']);
+export function isRateLimitExemptReason(reason) { return RATE_LIMIT_EXEMPT_REASONS.has(String(reason ?? '').split(':')[0]); }
 
 // 随机样本与名字由调用侧传入，同一输入永远得到同一判定。
 export function evaluateTrigger({ kind, triggers: tr, event, plainContent, quoteTargetIsSelf, names, directed, random }) {

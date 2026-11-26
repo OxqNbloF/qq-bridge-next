@@ -92,6 +92,7 @@
   "/api/console/social",
   "/api/console/social/flush",
   "/api/console/social/state",
+  "/api/console/social/wake-reset",
   "/api/console/stickers",
   "/api/console/stickers/note",
   "/api/console/stickers/remark",

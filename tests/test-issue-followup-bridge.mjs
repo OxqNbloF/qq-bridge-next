@@ -93,22 +93,31 @@ await test('#109 read receipts cannot discard directed wake requests', {}, async
   }
 });
 
-await test('#109 a deferred directed wake survives read receipts during the rate-limit window', {
+await test('#109 a deferred timer wake survives read receipts and directed wakes bypass rate-limit window', {
   config: { socialV2: { wake: { maxWakePerMinute: 1, maxWakePerHour: 0 } } }
 }, async (h) => {
   h.setMode('reserved2');
   const st = h.getSocialV2State(KEY);
   st.unread = [];
   st.wakeTimes = [Date.now()];
-  await h.sendWakePromptV2(KEY, 'atMention');
+  await h.sendWakePromptV2(KEY, 'timeout');
   const retry = st.rateLimitRetryTimer;
   assert.ok(retry);
   const callback = retry._onTimeout;
   clearTimeout(retry);
+  st.rateLimitRetryTimer = null;
   st.wakeTimes = [];
   callback();
   for (let attempt = 0; attempt < 50 && !h.calls.prompts.length; attempt++) await new Promise((resolve) => setTimeout(resolve, 1));
-  assert.equal(h.calls.prompts.length, 1, 'directed retry must deliver even when unread has been cleared');
+  assert.equal(h.calls.prompts.length, 1, 'timer retry must deliver even when unread has been cleared');
+
+  // 定向唤醒（atMention）不受限流窗口约束，应立即投递
+  h.pendingWakeKeys.delete(KEY);
+  st.wakeTimes = [Date.now()];
+  st.unread = [];
+  await h.sendWakePromptV2(KEY, 'atMention');
+  assert.equal(h.calls.prompts.length, 2, 'directed wake must deliver immediately during rate-limit window');
+  assert.equal(st.rateLimitRetryTimer, null);
 });
 
 await test('#104 failed or aborted reserved2 turns remain private; other modes get bounded fixed notices', {}, async (h) => {
