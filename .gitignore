@@ -77,6 +77,7 @@ _snowluma-catalog.json
 
 # ── 用户数据与运行状态（运行时生成，不提交） ──────────────
 state/
+data/
 audio/
 *.sqlite
 *.sqlite3

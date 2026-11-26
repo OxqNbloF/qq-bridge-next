@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QQ Bridge v3 — 家长控制与多 CLI 控制台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">QQ</span>
+        <div>
+          <strong>Bridge v3</strong>
+          <small>外部家长控制台</small>
+        </div>
+      </div>
+      <nav class="nav">
+        <button type="button" data-tab="runtime" class="active">后端与模型</button>
+        <button type="button" data-tab="chats">聊天与模式</button>
+        <button type="button" data-tab="modules">家长控制模块</button>
+        <button type="button" data-tab="settings">共享策略与人设</button>
+        <button type="button" data-tab="activity">实时日志</button>
+      </nav>
+      <div class="status-card" id="statusSummary">未连接控制台</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 id="pageTitle">多后端切换与模型选择</h1>
+        <div class="token-bar">
+          <input id="tokenInput" type="password" placeholder="粘贴 console.token 密钥" />
+          <button id="connectBtn" type="button">连接</button>
+          <button id="refreshBtn" type="button" class="secondary">刷新</button>
+        </div>
+      </header>
+
+      <section class="panel" data-panel="runtime">
+        <div class="card">
+          <h2>全局默认后端与模型（热切换，共享其余全部设置）</h2>
+          <div class="grid-2">
+            <label>当前活跃后端
+              <select id="backendSelect"></select>
+            </label>
+            <label>选择模型（可选预设或自定义输入）
+              <input id="modelInput" list="modelOptions" placeholder="留空则使用后端默认模型" />
+              <datalist id="modelOptions"></datalist>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="switchRuntimeBtn" type="button">立即热切换</button>
+            <button id="checkHealthBtn" type="button" class="secondary">检测当前后端健康</button>
+            <span id="runtimeMsg" class="hint"></span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>已注册后端概览</h3>
+          <div id="backendCards" class="cards-grid"></div>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="chats">
+        <div class="card">
+          <h2>每个聊天的独立模式与后端覆盖</h2>
+          <p class="hint">模式决定拟人触发频率：<code>off</code> 停用 · <code>listen</code> 只记录不回话 · <code>chat</code> 即时聊天 · <code>human</code> 拟人低频防刷屏 · <code>admin</code> 管理员专属。</p>
+          <div id="chatsTable"></div>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="modules">
+        <div class="card">
+          <h2>Agent 工具白名单（外部家长控制，Agent 完全不可见与不可改）</h2>
+          <p class="hint">取消勾选后立即通过每会话 Unix Socket 拦截，Agent 连手册都看不到该模块。</p>
+          <div id="modulesGrid" class="cards-grid"></div>
+          <div class="actions">
+            <button id="saveModulesBtn" type="button">保存模块授权</button>
+            <span id="modulesMsg" class="hint"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="settings">
+        <div class="card">
+          <h2>共享策略与拟人调度参数（切换任何后端均自动沿用）</h2>
+          <div class="grid-2">
+            <label>管理员 QQ <input id="cfgOwnerQQ" /></label>
+            <label>机器人人设名称 <input id="cfgPersonaName" /></label>
+            <label>允许的群号（逗号分隔）<input id="cfgAllowGroups" /></label>
+            <label>允许的私聊 QQ（逗号分隔）<input id="cfgAllowPrivate" /></label>
+            <label>群聊默认模式
+              <select id="cfgDefaultGroup">
+                <option value="human">human (拟人低频)</option>
+                <option value="chat">chat (积极对话)</option>
+                <option value="listen">listen (只读不回)</option>
+                <option value="off">off (关闭)</option>
+              </select>
+            </label>
+            <label>私聊默认模式
+              <select id="cfgDefaultPrivate">
+                <option value="chat">chat (积极对话)</option>
+                <option value="human">human (拟人低频)</option>
+                <option value="listen">listen (只读不回)</option>
+                <option value="off">off (关闭)</option>
+              </select>
+            </label>
+            <label>普通群消息冷却 (ms) <input id="cfgCooldownMs" type="number" /></label>
+            <label>累计多少条未读才唤醒 <input id="cfgMinBatch" type="number" /></label>
+            <label>自动压缩 Token 阈值 <input id="cfgCompactTokens" type="number" /></label>
+            <label>每分钟发送上限 <input id="cfgRateLimit" type="number" /></label>
+          </div>
+          <label class="full">角色提示词
+            <textarea id="cfgPersonaPrompt" rows="3"></textarea>
+          </label>
+          <div class="actions">
+            <button id="saveSettingsBtn" type="button">保存共享设置</button>
+            <span id="settingsMsg" class="hint"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="activity">
+        <div class="card">
+          <h2>近期运行活动</h2>
+          <pre id="activityLog" class="log-box"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

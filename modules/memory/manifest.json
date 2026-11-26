@@ -1,41 +1,38 @@
 {
   "name": "memory",
   "scope": "chat",
-  "summary": "按需查询与维护群聊轻量记忆、群友印象、黑话与称呼",
+  "summary": "读取、保存与检索当前聊天和全局轻量记忆",
   "entry": "run.mjs",
   "runtime": "node",
   "timeoutMs": 15000,
   "network": false,
   "actions": {
-    "query": {
-      "desc": "查询记忆或词汇（category: activeTopic|pendingThought|memberImpression|term|alias|event|preference|commitment|summary）",
+    "list": {
+      "desc": "列出近期记忆条目",
       "params": {
-        "category": { "type": "string", "required": true },
-        "q": { "type": "string", "required": false },
-        "target": { "type": "string", "required": false }
+        "includeGlobal": { "type": "boolean", "required": false },
+        "limit": { "type": "integer", "required": false }
       }
     },
-    "append": {
-      "desc": "记录新的话题、印象、黑话或称呼候选",
+    "save": {
+      "desc": "保存一条精简记忆",
       "params": {
-        "category": { "type": "string", "required": true },
         "content": { "type": "string", "required": true },
-        "target": { "type": "string", "required": false },
-        "extra": { "type": "object", "required": false }
+        "tags": { "type": "array", "required": false },
+        "scope": { "type": "string", "required": false }
       }
     },
-    "remove": {
-      "desc": "删除过时记忆或词汇",
+    "delete": {
+      "desc": "按 ID 删除一条记忆",
       "params": {
-        "category": { "type": "string", "required": true },
-        "content": { "type": "string", "required": false },
-        "target": { "type": "string", "required": false }
+        "id": { "type": "string", "required": true }
       }
     },
-    "clear": {
-      "desc": "清空指定类别轻量记忆",
+    "search": {
+      "desc": "按关键词检索记忆",
       "params": {
-        "category": { "type": "string", "required": false }
+        "query": { "type": "string", "required": true },
+        "limit": { "type": "integer", "required": false }
       }
     }
   }

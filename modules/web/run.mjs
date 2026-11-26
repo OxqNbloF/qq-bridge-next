@@ -1,31 +1,17 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runModuleMain } from '../_lib/sock-client.mjs';
+import { runModule } from '../_lib/client.mjs';
 
-const ROOT = process.env.QQ_BRIDGE_ROOT || path.resolve(process.cwd(), '../..');
+const root = process.env.QQ_BRIDGE_ROOT || path.resolve(import.meta.dirname, '../..');
+const safeFetchMod = await import(pathToFileURL(path.join(root, 'src/security/safe-fetch.js')).href);
 
-function sanitizeQuery(query) {
-  return String(query ?? '')
-    .replace(/\[CQ:[^\]]*\]/gi, ' ')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120);
-}
-
-await runModuleMain(async (action, args) => {
+await runModule(async (action, args) => {
   if (action === 'search') {
-    const clean = sanitizeQuery(args.query);
-    if (!clean) return { ok: false, error: '查询词为空' };
-    const { webSearch } = await import(pathToFileURL(path.join(ROOT, 'src', 'web-search.js')).href);
-    const result = await webSearch(clean, { root: ROOT });
-    return { ok: true, untrusted: true, data: result };
+    return safeFetchMod.webSearch(args.query, { maxResults: args.maxResults ?? 6 });
   }
   if (action === 'fetch') {
-    const maxChars = Math.min(50000, Math.max(500, Number(args.maxChars) || 12000));
-    const { safeFetch } = await import(pathToFileURL(path.join(ROOT, 'src', 'safe-fetch.js')).href);
-    const result = await safeFetch(String(args.url ?? ''), maxChars, { allowPorts: [80, 443, 8080, 8443] });
-    return { ok: true, untrusted: true, data: result };
+    const res = await safeFetchMod.safeFetch(args.url, { maxChars: args.maxChars ?? 20000 });
+    return { ok: true, status: res.status, url: res.url, text: res.text };
   }
-  return { ok: false, error: `未知 web 动作：${action}` };
+  return { ok: false, error: `未知 web 动作: ${action}` };
 });
