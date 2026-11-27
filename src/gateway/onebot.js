@@ -1,6 +1,7 @@
 // SnowLuma OneBot v11 WebSocket / HTTP 网关适配
-import { SnowLumaWebSocketClient, at, reply, text } from '@snowluma/sdk';
+import { SnowLumaWebSocketClient, message } from '@snowluma/sdk';
 import { parseConvKey } from '../security/access.js';
+import { extractForwardIds } from '../features/forward.js';
 
 function normalizeSegments(rawMessage, selfId) {
   const segs = Array.isArray(rawMessage) ? rawMessage : [];
@@ -8,9 +9,10 @@ function normalizeSegments(rawMessage, selfId) {
   const media = [];
   let atBot = false;
   let replyToId = '';
+  const forwardIds = extractForwardIds(segs);
 
   if (typeof rawMessage === 'string') {
-    return { text: rawMessage, media, atBot, replyToId };
+    return { text: rawMessage, media, forwardIds, atBot, replyToId };
   }
   for (const seg of segs) {
     if (!seg || typeof seg !== 'object') continue;
@@ -22,6 +24,8 @@ function normalizeSegments(rawMessage, selfId) {
       texts.push(`@${target}`);
     } else if (seg.type === 'reply' && seg.data?.id) {
       replyToId = String(seg.data.id);
+    } else if (seg.type === 'forward') {
+      texts.push(`[合并转发#${seg.data?.id ?? ''}]`);
     } else if (seg.type === 'image' || seg.type === 'record' || seg.type === 'video' || seg.type === 'file') {
       media.push({
         type: seg.type,
@@ -31,10 +35,10 @@ function normalizeSegments(rawMessage, selfId) {
       texts.push(`[${seg.type === 'image' ? '图片' : seg.type}]`);
     }
   }
-  return { text: texts.join('').trim(), media, atBot, replyToId };
+  return { text: texts.join('').trim(), media, forwardIds, atBot, replyToId };
 }
 
-export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, onMessage }) {
+export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, onMessage, onRecall, onPoke }) {
   let client = null;
   let connected = false;
   let selfUserId = '';
@@ -70,11 +74,14 @@ export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, 
       messageId: String(event?.message_id ?? ''),
       userId,
       senderName,
+      card: String(event?.sender?.card ?? ''),
+      nickname: String(event?.sender?.nickname ?? ''),
       text: parsed.text || String(event?.raw_message ?? ''),
       atBot: parsed.atBot,
       replyToBot: false,
       replyToId: parsed.replyToId,
       media: parsed.media,
+      forwardIds: parsed.forwardIds,
       ts: event?.time ? Number(event.time) * 1000 : Date.now(),
       fromSelf: false,
     });
@@ -93,6 +100,28 @@ export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, 
 
     client.onPrivateMessage?.((ev) => handleNormalizedEvent('private', ev));
     client.onGroupMessage?.((ev) => handleNormalizedEvent('group', ev));
+    client.onNotice?.('group_recall', (ev) => {
+      if (ev?.group_id && ev?.message_id) {
+        onRecall?.({ convKey: `group:${ev.group_id}`, messageId: String(ev.message_id), userId: String(ev.user_id ?? '') });
+      }
+    });
+    client.onNotice?.('friend_recall', (ev) => {
+      if (ev?.user_id && ev?.message_id) {
+        onRecall?.({ convKey: `private:${ev.user_id}`, messageId: String(ev.message_id), userId: String(ev.user_id) });
+      }
+    });
+    client.onNotice?.('notify', (ev) => {
+      if (ev?.sub_type !== 'poke') return;
+      const convKey = ev.group_id ? `group:${ev.group_id}` : (ev.user_id ? `private:${ev.user_id}` : '');
+      if (!convKey) return;
+      const selfId = String(ev?.self_id ?? selfUserId ?? '');
+      onPoke?.({
+        convKey,
+        userId: String(ev.user_id ?? ''),
+        targetId: String(ev.target_id ?? ''),
+        isTargetSelf: Boolean(selfId && String(ev.target_id ?? '') === selfId),
+      });
+    });
     client.on?.('open', () => {
       connected = true;
       lastError = '';
@@ -124,9 +153,9 @@ export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, 
     const parsed = parseConvKey(convKey);
     if (!parsed) throw new Error(`非法目标会话: ${convKey}`);
     const segs = [];
-    if (replyToMessageId) segs.push(reply(String(replyToMessageId)));
-    if (atUserId && parsed.chatType === 'group') segs.push(at(String(atUserId)), text(' '));
-    segs.push(text(String(msgText)));
+    if (replyToMessageId) segs.push(message.reply(String(replyToMessageId)));
+    if (atUserId && parsed.chatType === 'group') segs.push(message.at(String(atUserId)), message.text(' '));
+    segs.push(message.text(String(msgText)));
 
     if (client?.isConnected) {
       if (parsed.chatType === 'group') {
@@ -160,6 +189,50 @@ export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, 
     return Array.isArray(res?.data) ? res.data : [];
   }
 
+  async function sendImage(convKey, fileOrUrl) {
+    const parsed = parseConvKey(convKey);
+    if (!parsed) throw new Error(`非法目标会话: ${convKey}`);
+    const segs = [message.image(String(fileOrUrl))];
+    if (client?.isConnected) {
+      if (parsed.chatType === 'group') return client.sendGroupMessage(Number(parsed.targetId), segs);
+      return client.sendPrivateMessage(Number(parsed.targetId), segs);
+    }
+    const action = parsed.chatType === 'group' ? 'send_group_msg' : 'send_private_msg';
+    const idField = parsed.chatType === 'group' ? { group_id: Number(parsed.targetId) } : { user_id: Number(parsed.targetId) };
+    return callHttpAction(action, { ...idField, message: segs });
+  }
+
+  async function sendRecord(convKey, absFilePath) {
+    const parsed = parseConvKey(convKey);
+    if (!parsed) throw new Error(`非法目标会话: ${convKey}`);
+    const segs = [message.record(String(absFilePath))];
+    if (client?.isConnected) {
+      if (parsed.chatType === 'group') return client.sendGroupMessage(Number(parsed.targetId), segs);
+      return client.sendPrivateMessage(Number(parsed.targetId), segs);
+    }
+    const action = parsed.chatType === 'group' ? 'send_group_msg' : 'send_private_msg';
+    const idField = parsed.chatType === 'group' ? { group_id: Number(parsed.targetId) } : { user_id: Number(parsed.targetId) };
+    return callHttpAction(action, { ...idField, message: segs });
+  }
+
+  async function getForwardMsg(forwardId) {
+    if (client?.isConnected && typeof client.request === 'function') {
+      const res = await client.request('get_forward_msg', { id: String(forwardId) });
+      return res?.data?.messages ?? res?.data ?? [];
+    }
+    const res = await callHttpAction('get_forward_msg', { id: String(forwardId) });
+    return res?.data?.messages ?? res?.data ?? [];
+  }
+
+  async function fetchCustomFaces() {
+    if (client?.isConnected && typeof client.request === 'function') {
+      const res = await client.request('fetch_custom_face', {});
+      return Array.isArray(res?.data) ? res.data : [];
+    }
+    const res = await callHttpAction('fetch_custom_face', {});
+    return Array.isArray(res?.data) ? res.data : [];
+  }
+
   function getStatus() {
     return {
       connected,
@@ -170,5 +243,16 @@ export function createOneBotGateway({ getConfig, clientFactory, log = () => {}, 
     };
   }
 
-  return { start, stop, sendMessage, sendPoke, getGroupMembers, getStatus };
+  return {
+    start,
+    stop,
+    sendMessage,
+    sendImage,
+    sendRecord,
+    sendPoke,
+    getGroupMembers,
+    getForwardMsg,
+    fetchCustomFaces,
+    getStatus,
+  };
 }

@@ -19,8 +19,11 @@
       <nav class="nav">
         <button type="button" data-tab="runtime" class="active">后端与模型</button>
         <button type="button" data-tab="chats">聊天与模式</button>
+        <button type="button" data-tab="gate">门禁 gateV2</button>
+        <button type="button" data-tab="persona">角色、黑话与身份</button>
+        <button type="button" data-tab="media">表情与语音库</button>
         <button type="button" data-tab="modules">家长控制模块</button>
-        <button type="button" data-tab="settings">共享策略与人设</button>
+        <button type="button" data-tab="settings">共享策略</button>
         <button type="button" data-tab="activity">实时日志</button>
       </nav>
       <div class="status-card" id="statusSummary">未连接控制台</div>
@@ -68,6 +71,91 @@
         </div>
       </section>
 
+      <section class="panel hidden" data-panel="gate">
+        <div class="card">
+          <h2>成员四开关门禁 (gateV2)</h2>
+          <div class="actions">
+            <label class="inline-check"><input id="gateEnabledToggle" type="checkbox" /> 启用精细群成员四开关门禁 (respond / converse / context / memory)</label>
+            <button id="saveGateToggleBtn" type="button">应用门禁开关</button>
+          </div>
+          <div class="grid-2 spacer">
+            <label>群号 <input id="gateGroupId" placeholder="例如 456789" /></label>
+            <label>成员策略模式
+              <select id="gateGroupMode">
+                <option value="all">all (按成员单独覆盖)</option>
+                <option value="blacklist">blacklist (默认放行，黑名单成员受限)</option>
+                <option value="whitelist">whitelist (默认拒绝，仅白名单放行)</option>
+              </select>
+            </label>
+            <label>成员 QQ <input id="gateMemberQq" placeholder="纯数字 QQ 号" /></label>
+            <label>四开关快捷预设
+              <select id="gatePresetFlags">
+                <option value="allow">全部允许 (4/4)</option>
+                <option value="lurk">只看上下文不回应 (respond=false)</option>
+                <option value="mute">完全屏蔽 (0/4)</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="saveGateGroupBtn" type="button">保存群门禁模式</button>
+            <button id="saveGateMemberBtn" type="button" class="secondary">保存该成员策略</button>
+            <span id="gateMsg" class="hint"></span>
+          </div>
+          <div id="gateGroupsView" class="spacer"></div>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="persona">
+        <div class="card">
+          <h2>角色卡库与每聊开场说明</h2>
+          <div class="grid-2">
+            <label>角色卡名 <input id="roleNameInput" placeholder="例如 群友小蓝" /></label>
+            <label>当前生效角色
+              <select id="activeRoleSelect"></select>
+            </label>
+          </div>
+          <label class="full">角色卡正文 (Markdown)
+            <textarea id="roleContentInput" rows="4"></textarea>
+          </label>
+          <div class="actions">
+            <button id="saveRoleBtn" type="button">保存角色卡</button>
+            <button id="activateRoleBtn" type="button" class="secondary">设为全局生效角色</button>
+            <span id="roleMsg" class="hint"></span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>黑话词库与成员别名</h3>
+          <div class="grid-2">
+            <label>黑话词条 <input id="termNameInput" /></label>
+            <label>释义 <input id="termMeaningInput" /></label>
+            <label>作用域（留空全局或填 group:xxx）<input id="termScopeInput" placeholder="global" /></label>
+            <div class="actions"><button id="addTermBtn" type="button">添加词条</button></div>
+          </div>
+          <div id="termsList" class="spacer"></div>
+          <hr class="sep" />
+          <div class="grid-2">
+            <label>成员 QQ <input id="aliasQqInput" placeholder="纯数字 QQ" /></label>
+            <label>添加称呼别名 <input id="aliasNameInput" placeholder="例如 老王" /></label>
+          </div>
+          <div class="actions"><button id="addAliasBtn" type="button">保存成员别名</button></div>
+          <div id="identityList" class="spacer"></div>
+        </div>
+      </section>
+
+      <section class="panel hidden" data-panel="media">
+        <div class="card">
+          <h2>收藏表情库与本地语音库</h2>
+          <div class="actions">
+            <button id="syncStickersBtn" type="button">同步 QQ 收藏表情</button>
+            <span id="mediaMsg" class="hint"></span>
+          </div>
+          <div id="stickersList" class="cards-grid spacer"></div>
+          <hr class="sep" />
+          <h3>本地语音库 (<code>voice.dir</code>)</h3>
+          <div id="voicesList" class="cards-grid spacer"></div>
+        </div>
+      </section>
+
       <section class="panel hidden" data-panel="modules">
         <div class="card">
           <h2>Agent 工具白名单（外部家长控制，Agent 完全不可见与不可改）</h2>
@@ -85,7 +173,7 @@
           <h2>共享策略与拟人调度参数（切换任何后端均自动沿用）</h2>
           <div class="grid-2">
             <label>管理员 QQ <input id="cfgOwnerQQ" /></label>
-            <label>机器人人设名称 <input id="cfgPersonaName" /></label>
+            <label>默认昵称参考 <input id="cfgPersonaName" /></label>
             <label>允许的群号（逗号分隔）<input id="cfgAllowGroups" /></label>
             <label>允许的私聊 QQ（逗号分隔）<input id="cfgAllowPrivate" /></label>
             <label>群聊默认模式
@@ -108,8 +196,10 @@
             <label>累计多少条未读才唤醒 <input id="cfgMinBatch" type="number" /></label>
             <label>自动压缩 Token 阈值 <input id="cfgCompactTokens" type="number" /></label>
             <label>每分钟发送上限 <input id="cfgRateLimit" type="number" /></label>
+            <label class="inline-check"><input id="cfgVoiceEnabled" type="checkbox" /> 启用语音发送模块 (voice)</label>
+            <label class="inline-check"><input id="cfgExposeQq" type="checkbox" /> 向模型暴露真实 QQ 号 (关闭则仅传 memberRef)</label>
           </div>
-          <label class="full">角色提示词
+          <label class="full">兜底角色提示词（未激活角色卡时生效）
             <textarea id="cfgPersonaPrompt" rows="3"></textarea>
           </label>
           <div class="actions">

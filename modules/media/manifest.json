@@ -13,6 +13,18 @@
         "messageId": { "type": "string", "required": false },
         "limit": { "type": "integer", "required": false }
       }
+    },
+    "get_forward": {
+      "desc": "展开并读取一条合并转发消息的内容",
+      "params": {
+        "forwardId": { "type": "string", "required": true }
+      }
+    },
+    "inspect_image": {
+      "desc": "校验公网图片 URL 的格式与宽高尺寸",
+      "params": {
+        "url": { "type": "string", "required": true }
+      }
     }
   }
 }

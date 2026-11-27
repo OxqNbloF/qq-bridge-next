@@ -1,0 +1,23 @@
+{
+  "name": "voice",
+  "scope": "chat",
+  "summary": "查看本地语音库列表与按配额发送语音消息",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 20000,
+  "network": false,
+  "actions": {
+    "list": {
+      "desc": "列出本地语音库中的可用音频文件",
+      "params": {
+        "limit": { "type": "integer", "required": false }
+      }
+    },
+    "send": {
+      "desc": "按语音库相对路径发送语音条（受频率预算与目录白名单限制）",
+      "params": {
+        "file": { "type": "string", "required": true }
+      }
+    }
+  }
+}

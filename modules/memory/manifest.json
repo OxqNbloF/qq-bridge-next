@@ -34,6 +34,19 @@
         "query": { "type": "string", "required": true },
         "limit": { "type": "integer", "required": false }
       }
+    },
+    "terms_list": {
+      "desc": "列出本群与全局黑话词库",
+      "params": {
+        "limit": { "type": "integer", "required": false }
+      }
+    },
+    "terms_search": {
+      "desc": "按关键词检索黑话词条释义",
+      "params": {
+        "query": { "type": "string", "required": true },
+        "limit": { "type": "integer", "required": false }
+      }
     }
   }
 }

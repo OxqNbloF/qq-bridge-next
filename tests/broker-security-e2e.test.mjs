@@ -42,7 +42,7 @@ test('manifest/runner 安全校验 + Unix Socket 防伪造 + 端到端 MCP Broke
   const errors = [];
   const manifests = loadModuleManifests(path.join(ROOT, 'modules'), { onError: (n, e) => errors.push({ n, e }) });
   assert.deepEqual(errors, []);
-  for (const name of ['msg', 'memory', 'wake', 'media', 'social', 'web']) {
+  for (const name of ['msg', 'memory', 'wake', 'media', 'social', 'web', 'sticker', 'voice']) {
     assert.equal(manifests.has(name), true);
   }
 

@@ -6,6 +6,8 @@ export function createHumanScheduler({
   chatStore,
   turnQueue,
   runChatTurn,
+  memberGate = null,
+  identityStore = null,
   log = () => {},
 }) {
   const coalesceTimers = new Map(); // convKey -> { timer, reason }
@@ -102,8 +104,28 @@ export function createHumanScheduler({
     const runtime = resolveChatRuntime(cfg, convKey);
     if (runtime.mode === 'off') return { accepted: false, reason: 'mode_off' };
 
-    const record = chatStore.appendIncoming(convKey, rawMsg);
-    notifyWaiters(convKey, record);
+    identityStore?.observe?.({
+      convKey,
+      userId: rawMsg.userId,
+      nickname: rawMsg.nickname || rawMsg.senderName,
+      card: rawMsg.card || '',
+    });
+
+    const gateFlags = memberGate
+      ? memberGate.evaluate(convKey, rawMsg.userId)
+      : { respond: true, converse: true, context: true, memory: true };
+
+    const record = chatStore.appendIncoming(convKey, {
+      ...rawMsg,
+      modelVisible: gateFlags.context !== false,
+    });
+    if (gateFlags.context !== false) {
+      notifyWaiters(convKey, record);
+    }
+
+    if (gateFlags.respond === false) {
+      return { accepted: true, woken: false, reason: 'gate_member_blocked', seq: record.seq };
+    }
 
     if (runtime.paused || runtime.mode === 'listen') {
       return { accepted: true, woken: false, reason: runtime.paused ? 'paused' : 'listen_only', seq: record.seq };
@@ -123,10 +145,12 @@ export function createHumanScheduler({
     }
 
     // human 拟人模式：直接提及/私聊走短合批，群内普通闲聊只在达到未读阈值且过冷却期才唤醒
-    const isDirect = parsed.chatType === 'private'
+    const isDirect = (gateFlags.converse !== false) && (
+      parsed.chatType === 'private'
       || Boolean(rawMsg.atBot)
       || Boolean(rawMsg.replyToBot)
-      || matchesKeyword(cfg, rawMsg.text);
+      || matchesKeyword(cfg, rawMsg.text)
+    );
 
     if (isDirect) {
       const reason = rawMsg.atBot ? 'mention' : (parsed.chatType === 'private' ? 'private' : 'direct');
@@ -236,8 +260,38 @@ export function createHumanScheduler({
     waitQueues.clear();
   }
 
+  function onRecall({ convKey, messageId } = {}) {
+    if (!convKey || !messageId) return false;
+    return chatStore.redactMessage(convKey, messageId);
+  }
+
+  function onPoke({ convKey, userId, targetId, isTargetSelf } = {}) {
+    if (closed || !convKey) return { accepted: false };
+    const cfg = getConfig();
+    if (!isChatAllowed(cfg, convKey) || isSenderIgnored(cfg, userId)) return { accepted: false };
+    const runtime = resolveChatRuntime(cfg, convKey);
+    if (runtime.mode === 'off') return { accepted: false };
+
+    const actor = identityStore?.resolveDisplayName?.(convKey, userId) || userId || '群友';
+    const target = isTargetSelf ? '你' : (identityStore?.resolveDisplayName?.(convKey, targetId) || targetId || '成员');
+    const gateFlags = memberGate ? memberGate.evaluate(convKey, userId) : { respond: true, context: true };
+    const record = chatStore.appendIncoming(convKey, {
+      userId,
+      senderName: actor,
+      text: `[拍一拍] ${actor} 拍了拍 ${target}`,
+      modelVisible: gateFlags.context !== false,
+    });
+    if (isTargetSelf && gateFlags.respond !== false && !runtime.paused && (runtime.mode === 'human' || runtime.mode === 'chat')) {
+      scheduleCoalesceWake(convKey, 'poke', cfg.wake.coalesceMs);
+      return { accepted: true, woken: true, seq: record.seq };
+    }
+    return { accepted: true, woken: false, seq: record.seq };
+  }
+
   return {
     onIncomingMessage,
+    onRecall,
+    onPoke,
     wakeNow,
     applyWakeConfig,
     waitForNewMessages,

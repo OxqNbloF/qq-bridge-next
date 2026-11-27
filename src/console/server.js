@@ -83,6 +83,12 @@ export function resolveConsoleToken({ configToken = '', dataDir = '' } = {}) {
 export function createConsoleServer({
   configStore,
   chatStore,
+  roleStore = null,
+  memberGate = null,
+  termsStore = null,
+  identityStore = null,
+  stickerStore = null,
+  voiceService = null,
   backendRegistry,
   scheduler,
   turnQueue,
@@ -217,7 +223,7 @@ export function createConsoleServer({
       return;
     }
 
-    const chatActionMatch = /^\/api\/console\/chats\/([^/]+)(?:\/(wake|reset))?$/.exec(p);
+    const chatActionMatch = /^\/api\/console\/chats\/([^/]+)(?:\/(wake|reset|initial-prompt))?$/.exec(p);
     if (chatActionMatch) {
       const convKey = canonicalConvKey(decodeURIComponent(chatActionMatch[1]));
       if (!convKey) {
@@ -233,6 +239,12 @@ export function createConsoleServer({
           configStore.patch({ modes: { chats: { [convKey]: body } } });
         }
         sendJson(res, 200, { ok: true, runtime: resolveChatRuntime(configStore.get(), convKey) });
+        return;
+      }
+      if (method === 'PUT' && action === 'initial-prompt' && roleStore) {
+        const body = await readJsonBody(req);
+        const text = roleStore.setInitialPrompt(convKey, body?.text ?? '');
+        sendJson(res, 200, { ok: true, convKey, text });
         return;
       }
       if (method === 'POST' && action === 'wake') {
@@ -281,6 +293,130 @@ export function createConsoleServer({
 
     if (method === 'GET' && p === '/api/console/activity') {
       sendJson(res, 200, { ok: true, items: getActivity() });
+      return;
+    }
+
+    // ── 角色卡与开场说明 ──
+    if (roleStore && p === '/api/console/roles' && method === 'GET') {
+      sendJson(res, 200, {
+        ok: true,
+        activeRole: roleStore.getActiveRole(),
+        roles: roleStore.listRoles(),
+        initialPrompts: roleStore.listInitialPrompts(),
+      });
+      return;
+    }
+    if (roleStore && p === '/api/console/roles/active' && method === 'POST') {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, activeRole: roleStore.setActiveRole(body?.name || '') });
+      return;
+    }
+    const roleMatch = /^\/api\/console\/roles\/([^/]+)$/.exec(p);
+    if (roleStore && roleMatch) {
+      const name = decodeURIComponent(roleMatch[1]);
+      if (method === 'GET') {
+        const role = roleStore.getRole(name);
+        if (!role) { sendJson(res, 404, { ok: false, error: '角色卡不存在' }); return; }
+        sendJson(res, 200, { ok: true, role });
+        return;
+      }
+      if (method === 'PUT') {
+        const body = await readJsonBody(req);
+        sendJson(res, 200, { ok: true, role: roleStore.saveRole(name, body?.content ?? '') });
+        return;
+      }
+      if (method === 'DELETE') {
+        sendJson(res, 200, { ok: true, deleted: roleStore.deleteRole(name) });
+        return;
+      }
+    }
+
+    // ── 精细成员门禁 gateV2 ──
+    if (memberGate && p === '/api/console/gate/members' && method === 'GET') {
+      const gid = url.searchParams.get('groupId') || '';
+      sendJson(res, 200, {
+        ok: true,
+        enabled: configStore.get().gate.enabled === true,
+        groups: memberGate.listGroups(),
+        group: gid ? memberGate.getGroupPolicy(gid) : null,
+      });
+      return;
+    }
+    const gateGroupMatch = /^\/api\/console\/gate\/members\/(\d{1,20})$/.exec(p);
+    if (memberGate && gateGroupMatch && method === 'PUT') {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, group: memberGate.setGroupPolicy(gateGroupMatch[1], body) });
+      return;
+    }
+    const gateMemberMatch = /^\/api\/console\/gate\/members\/(\d{1,20})\/(\d{1,20})$/.exec(p);
+    if (memberGate && gateMemberMatch) {
+      if (method === 'PATCH') {
+        const body = await readJsonBody(req);
+        sendJson(res, 200, { ok: true, group: memberGate.setMemberFlags(gateMemberMatch[1], gateMemberMatch[2], body) });
+        return;
+      }
+      if (method === 'DELETE') {
+        sendJson(res, 200, { ok: true, deleted: memberGate.deleteMember(gateMemberMatch[1], gateMemberMatch[2]) });
+        return;
+      }
+    }
+
+    // ── 黑话词库与身份别名 ──
+    if (termsStore && p === '/api/console/terms' && method === 'GET') {
+      const key = url.searchParams.get('convKey') || '';
+      sendJson(res, 200, { ok: true, items: termsStore.list(key, { includeGlobal: true, limit: 200 }) });
+      return;
+    }
+    if (termsStore && p === '/api/console/terms' && method === 'POST') {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, item: termsStore.save(body?.convKey || 'global', body) });
+      return;
+    }
+    const termIdMatch = /^\/api\/console\/terms\/([^/]+)$/.exec(p);
+    if (termsStore && termIdMatch && method === 'DELETE') {
+      sendJson(res, 200, { ok: true, deleted: termsStore.remove(decodeURIComponent(termIdMatch[1])) });
+      return;
+    }
+    if (identityStore && p === '/api/console/identity' && method === 'GET') {
+      sendJson(res, 200, { ok: true, profiles: identityStore.listSnapshot() });
+      return;
+    }
+    if (identityStore && p === '/api/console/identity/alias' && method === 'POST') {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, profile: identityStore.addAlias(body) });
+      return;
+    }
+    if (identityStore && p === '/api/console/identity/alias' && method === 'DELETE') {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, removed: identityStore.removeAlias(body) });
+      return;
+    }
+
+    // ── 表情与语音库 ──
+    if (stickerStore && p === '/api/console/stickers' && method === 'GET') {
+      const query = url.searchParams.get('query') || '';
+      sendJson(res, 200, { ok: true, stickers: stickerStore.list('', { query, limit: 100 }) });
+      return;
+    }
+    if (stickerStore && p === '/api/console/stickers/sync' && method === 'POST') {
+      sendJson(res, 200, await stickerStore.syncFromOneBot(onebot));
+      return;
+    }
+    const stickerPatchMatch = /^\/api\/console\/stickers\/([^/]+)$/.exec(p);
+    if (stickerStore && stickerPatchMatch && method === 'PATCH') {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, {
+        ok: true,
+        sticker: stickerStore.setNote(decodeURIComponent(stickerPatchMatch[1]), body?.convKey || 'global', body?.note ?? ''),
+      });
+      return;
+    }
+    if (voiceService && p === '/api/console/voices' && method === 'GET') {
+      sendJson(res, 200, {
+        ok: true,
+        enabled: configStore.get().voice.enabled === true,
+        voices: voiceService.listVoices({ limit: 100 }),
+      });
       return;
     }
 

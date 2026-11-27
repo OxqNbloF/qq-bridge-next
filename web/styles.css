@@ -77,6 +77,9 @@ label.full { margin-top: 12px; }
   background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 12px;
   font-size: 13px;
 }
+.spacer { margin-top: 14px; }
+.sep { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+.inline-check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
 .log-box {

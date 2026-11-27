@@ -113,6 +113,8 @@ export function createChatStore({ dataDir = '' } = {}) {
       replyToBot: Boolean(msg.replyToBot),
       replyToId: msg.replyToId ? String(msg.replyToId) : '',
       media: Array.isArray(msg.media) ? msg.media : [],
+      forwardIds: Array.isArray(msg.forwardIds) ? msg.forwardIds : [],
+      modelVisible: msg.modelVisible !== false,
       fromSelf: false,
     };
     st.unread.push(record);
@@ -169,12 +171,13 @@ export function createChatStore({ dataDir = '' } = {}) {
     };
   }
 
-  function getUnread(convKey, { afterSeq = null, limit = 30 } = {}) {
+  function getUnread(convKey, { afterSeq = null, limit = 30, forModel = false } = {}) {
     const st = ensure(convKey);
     const lim = Math.min(100, Math.max(1, Number(limit) || 30));
+    const base = forModel ? st.unread.filter((m) => m.modelVisible !== false) : st.unread;
     const filtered = afterSeq === null || afterSeq === undefined
-      ? st.unread
-      : st.unread.filter((m) => m.seq > Number(afterSeq));
+      ? base
+      : base.filter((m) => m.seq > Number(afterSeq));
     const slice = filtered.slice(0, lim);
     const readThroughSeq = slice.length ? slice[slice.length - 1].seq : st.readThroughSeq;
     return {
@@ -185,13 +188,34 @@ export function createChatStore({ dataDir = '' } = {}) {
     };
   }
 
-  function getRecent(convKey, { limit = 20, offset = 0 } = {}) {
+  function getRecent(convKey, { limit = 20, offset = 0, forModel = false } = {}) {
     const st = ensure(convKey);
     const lim = Math.min(100, Math.max(1, Number(limit) || 20));
     const off = Math.max(0, Number(offset) || 0);
-    const end = Math.max(0, st.recent.length - off);
+    const base = forModel ? st.recent.filter((m) => m.modelVisible !== false) : st.recent;
+    const end = Math.max(0, base.length - off);
     const start = Math.max(0, end - lim);
-    return st.recent.slice(start, end);
+    return base.slice(start, end);
+  }
+
+  function redactMessage(convKey, messageId) {
+    const st = chats.get(convKey);
+    const targetId = String(messageId ?? '').trim();
+    if (!st || !targetId) return false;
+    let changed = false;
+    for (const list of [st.unread, st.recent]) {
+      for (const item of list) {
+        if (String(item.messageId) === targetId) {
+          item.text = '[已撤回]';
+          item.media = [];
+          item.forwardIds = [];
+          item.redacted = true;
+          changed = true;
+        }
+      }
+    }
+    if (changed) scheduleSave();
+    return changed;
   }
 
   function getBackendSession(convKey, backendId) {
@@ -271,6 +295,7 @@ export function createChatStore({ dataDir = '' } = {}) {
     acknowledgeThrough,
     getUnread,
     getRecent,
+    redactMessage,
     getBackendSession,
     setBackendSession,
     clearBackendSession,

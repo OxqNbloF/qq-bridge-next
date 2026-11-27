@@ -6,6 +6,14 @@ import { createChatStore } from './storage/chat-store.js';
 import { createMemoryStore } from './storage/memory-store.js';
 import { parseConvKey, resolveChatRuntime } from './security/access.js';
 import { createOutboundGuard } from './security/outbound-guard.js';
+import { createMemberGate } from './security/member-gate.js';
+import { createRoleStore } from './features/roles.js';
+import { createTermsStore } from './features/terms.js';
+import { createIdentityStore } from './features/identity.js';
+import { createStickerStore } from './features/stickers.js';
+import { createVoiceService } from './features/voice.js';
+import { inspectImageUrl } from './features/media.js';
+import { formatForwardNodes } from './features/forward.js';
 import { buildDeltaPrompt, buildSystemPrompt } from './core/prompt.js';
 import { createContextCompactor } from './core/compactor.js';
 import { createOneBotGateway } from './gateway/onebot.js';
@@ -41,6 +49,12 @@ export function createBridgeApp({
   const configStore = createConfigStore({ configPath, initialConfig });
   const chatStore = createChatStore({ dataDir: resolvedDataDir });
   const memoryStore = createMemoryStore({ dataDir: resolvedDataDir });
+  const roleStore = createRoleStore({ dataDir: resolvedDataDir, getConfig: () => configStore.get() });
+  const memberGate = createMemberGate({ dataDir: resolvedDataDir, getConfig: () => configStore.get() });
+  const termsStore = createTermsStore({ dataDir: resolvedDataDir, getConfig: () => configStore.get() });
+  const identityStore = createIdentityStore({ dataDir: resolvedDataDir, getConfig: () => configStore.get() });
+  const stickerStore = createStickerStore({ dataDir: resolvedDataDir, getConfig: () => configStore.get() });
+  const voiceService = createVoiceService({ rootDir, getConfig: () => configStore.get() });
   let consoleServer = null;
   const outboundGuard = createOutboundGuard({
     getConfig: () => configStore.get(),
@@ -56,6 +70,8 @@ export function createBridgeApp({
     clientFactory: onebotClientFactory,
     log,
     onMessage: (msg) => scheduler?.onIncomingMessage(msg),
+    onRecall: (ev) => scheduler?.onRecall?.(ev),
+    onPoke: (ev) => scheduler?.onPoke?.(ev),
   });
 
   let compactor = null;
@@ -101,15 +117,23 @@ export function createBridgeApp({
       return { ok: true, sentCount: sent.length };
     },
     'msg.read_unread': async ({ convKey, args }) => {
-      const res = chatStore.getUnread(convKey, { afterSeq: args.afterSeq, limit: args.limit });
-      return { ok: true, ...res };
+      const res = chatStore.getUnread(convKey, { afterSeq: args.afterSeq, limit: args.limit, forModel: true });
+      return {
+        ok: true,
+        ...res,
+        messages: identityStore.projectForModel(convKey, res.messages),
+      };
     },
     'msg.read_recent': async ({ convKey, args }) => {
-      const messages = chatStore.getRecent(convKey, { limit: args.limit, offset: args.offset });
-      return { ok: true, messages };
+      const messages = chatStore.getRecent(convKey, { limit: args.limit, offset: args.offset, forModel: true });
+      return { ok: true, messages: identityStore.projectForModel(convKey, messages) };
     },
     'msg.wait': async ({ convKey, args }) => {
-      return scheduler.waitForNewMessages(convKey, { timeoutMs: args.timeoutMs, quietMs: args.quietMs });
+      const waitRes = await scheduler.waitForNewMessages(convKey, { timeoutMs: args.timeoutMs, quietMs: args.quietMs });
+      return {
+        ...waitRes,
+        messages: identityStore.projectForModel(convKey, waitRes.messages ?? []),
+      };
     },
     'msg.done': async ({ convKey, args }) => {
       const ack = chatStore.acknowledgeThrough(convKey, args.throughSeq ?? null);
@@ -121,7 +145,10 @@ export function createBridgeApp({
     },
     'memory.list': async ({ convKey, args }) => ({
       ok: true,
-      items: memoryStore.list(convKey, { includeGlobal: args.includeGlobal !== false, limit: args.limit }),
+      items: identityStore.projectForModel(
+        convKey,
+        memoryStore.list(convKey, { includeGlobal: args.includeGlobal !== false, limit: args.limit }),
+      ),
     }),
     'memory.save': async ({ convKey, scope, args }) => {
       const targetScope = args.scope === 'global' && scope === 'admin' ? 'global' : 'chat';
@@ -134,7 +161,18 @@ export function createBridgeApp({
     }),
     'memory.search': async ({ convKey, args }) => ({
       ok: true,
-      items: memoryStore.search(convKey, args.query, { limit: args.limit }),
+      items: identityStore.projectForModel(
+        convKey,
+        memoryStore.search(convKey, args.query, { limit: args.limit }),
+      ),
+    }),
+    'memory.terms_list': async ({ convKey, args }) => ({
+      ok: true,
+      items: termsStore.list(convKey, { includeGlobal: true, limit: args.limit }),
+    }),
+    'memory.terms_search': async ({ convKey, args }) => ({
+      ok: true,
+      items: termsStore.search(convKey, args.query, { limit: args.limit }),
     }),
     'wake.get_state': async ({ convKey }) => {
       const st = chatStore.ensure(convKey);
@@ -145,7 +183,7 @@ export function createBridgeApp({
       wakeConfig: scheduler.applyWakeConfig(convKey, args),
     }),
     'media.get_images': async ({ convKey, args }) => {
-      const recent = chatStore.getRecent(convKey, { limit: 60 });
+      const recent = chatStore.getRecent(convKey, { limit: 60, forModel: true });
       const items = [];
       for (const m of recent) {
         if (args.messageId && m.messageId !== String(args.messageId)) continue;
@@ -153,29 +191,60 @@ export function createBridgeApp({
       }
       return { ok: true, items: items.slice(-(Number(args.limit) || 10)) };
     },
+    'media.get_forward': async ({ convKey, args }) => {
+      const cfg = configStore.get();
+      const rawNodes = await onebot.getForwardMsg(args.forwardId);
+      const formatted = formatForwardNodes(rawNodes, { maxDepth: cfg.media.maxForwardDepth });
+      return {
+        ok: true,
+        forwardId: args.forwardId,
+        lines: identityStore.projectForModel(convKey, formatted.lines),
+        media: formatted.media,
+        truncated: formatted.truncated,
+      };
+    },
+    'media.inspect_image': async ({ args }) => {
+      const cfg = configStore.get();
+      return inspectImageUrl(args.url, { maxBytes: cfg.media.maxBytes, maxPixels: cfg.media.maxPixels });
+    },
+    'sticker.list': async ({ convKey, args }) => ({
+      ok: true,
+      stickers: stickerStore.list(convKey, { query: args.query, limit: args.limit }),
+    }),
+    'sticker.send': async ({ convKey, args }) => stickerStore.sendSticker(convKey, args.ref, { onebot, outboundGuard }),
+    'sticker.note': async ({ convKey, args }) => ({
+      ok: true,
+      sticker: stickerStore.setNote(args.id, convKey, args.note),
+    }),
+    'voice.list': async ({ args }) => ({
+      ok: true,
+      voices: voiceService.listVoices({ limit: args.limit }),
+    }),
+    'voice.send': async ({ convKey, args }) => voiceService.sendVoice(convKey, args.file, { onebot, outboundGuard }),
     'social.group_members': async ({ convKey, args }) => {
       const parsed = parseConvKey(convKey);
       if (parsed?.chatType !== 'group') return { ok: false, error: '仅群聊可查群成员' };
       const members = await onebot.getGroupMembers(parsed.targetId);
       const lim = Math.min(200, Math.max(1, Number(args.limit) || 50));
+      const raw = members.slice(0, lim).map((m) => ({
+        userId: String(m.user_id ?? ''),
+        nickname: String(m.card || m.nickname || ''),
+        role: m.role || 'member',
+      }));
       return {
         ok: true,
-        members: members.slice(0, lim).map((m) => ({
-          userId: String(m.user_id ?? ''),
-          nickname: String(m.card || m.nickname || ''),
-          role: m.role || 'member',
-        })),
+        members: identityStore.projectForModel(convKey, raw),
       };
     },
     'social.active_members': async ({ convKey, args }) => {
-      const recent = chatStore.getRecent(convKey, { limit: 80 });
+      const recent = chatStore.getRecent(convKey, { limit: 80, forModel: true });
       const byUser = new Map();
       for (const m of recent) {
         if (m.fromSelf || !m.userId) continue;
         byUser.set(m.userId, { userId: m.userId, name: m.senderName, lastTs: m.ts });
       }
-      const list = [...byUser.values()].sort((a, b) => b.lastTs - a.lastTs);
-      return { ok: true, members: list.slice(0, Number(args.limit) || 15) };
+      const list = [...byUser.values()].sort((a, b) => b.lastTs - a.lastTs).slice(0, Number(args.limit) || 15);
+      return { ok: true, members: identityStore.projectForModel(convKey, list) };
     },
     'social.poke': async ({ convKey, args }) => {
       await onebot.sendPoke(convKey, args.userId);
@@ -196,14 +265,29 @@ export function createBridgeApp({
     const parsed = parseConvKey(convKey);
     const { unreadCount, messages, partial, readThroughSeq } = chatStore.getUnread(convKey, {
       limit: cfg.prompt.maxUnreadInline,
+      forModel: true,
     });
     const sock = await socketHub.ensureSocket(convKey);
-    const systemPrompt = buildSystemPrompt({ persona: cfg.persona, chatPolicy: runtime });
+    const roleInj = roleStore.resolvePromptInjection(convKey);
+    const termsBlock = termsStore.buildPromptBlock(convKey);
+    const rosterBlock = parsed?.chatType === 'group'
+      ? identityStore.renderRoster(convKey, { exposeQq: cfg.identity.exposeQqInPrompt === true })
+      : '';
+    const systemPrompt = buildSystemPrompt({
+      persona: cfg.persona,
+      chatPolicy: runtime,
+      roleName: roleInj.roleName,
+      roleCardText: roleInj.roleCardText,
+      initialPrompt: roleInj.initialPrompt,
+      termsBlock,
+      rosterBlock,
+    });
+    const projectedMessages = identityStore.projectForModel(convKey, messages);
     const deltaPrompt = buildDeltaPrompt({
       reason,
       convKey,
       chatType: parsed?.chatType || 'group',
-      unread: messages,
+      unread: projectedMessages,
       readThroughSeq,
       partial,
       mode: runtime.mode,
@@ -225,12 +309,20 @@ export function createBridgeApp({
     chatStore,
     turnQueue,
     runChatTurn,
+    memberGate,
+    identityStore,
     log,
   });
 
   consoleServer = createConsoleServer({
     configStore,
     chatStore,
+    roleStore,
+    memberGate,
+    termsStore,
+    identityStore,
+    stickerStore,
+    voiceService,
     backendRegistry,
     scheduler,
     turnQueue,
@@ -262,6 +354,12 @@ export function createBridgeApp({
     configStore,
     chatStore,
     memoryStore,
+    roleStore,
+    memberGate,
+    termsStore,
+    identityStore,
+    stickerStore,
+    voiceService,
     outboundGuard,
     onebot,
     backendRegistry,

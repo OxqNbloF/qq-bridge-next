@@ -87,6 +87,38 @@ export const ConfigSchema = z.object({
   persona: z.object({
     name: z.string().trim().min(1),
     prompt: z.string(),
+    maxInjectChars: z.number().int().min(200).max(32000),
+    injectEveryNWakes: z.number().int().min(0).max(50),
+    maxInitialPromptChars: z.number().int().min(100).max(8000),
+  }),
+  gate: z.object({
+    enabled: z.boolean(),
+  }),
+  identity: z.object({
+    enabled: z.boolean(),
+    learnFromChat: z.boolean(),
+    exposeQqInPrompt: z.boolean(),
+    maxAliasesPerUser: z.number().int().min(1).max(32),
+  }),
+  terms: z.object({
+    enabled: z.boolean(),
+    maxInject: z.number().int().min(0).max(50),
+  }),
+  media: z.object({
+    maxBytes: z.number().int().min(1024).max(33554432),
+    maxPixels: z.number().int().min(1024).max(67108864),
+    maxForwardDepth: z.number().int().min(1).max(8),
+  }),
+  sticker: z.object({
+    enabled: z.boolean(),
+    maxInPrompt: z.number().int().min(0).max(32),
+  }),
+  voice: z.object({
+    enabled: z.boolean(),
+    dir: z.string().trim().min(1),
+    maxBytes: z.number().int().min(1024).max(52428800),
+    maxPerMinute: z.number().int().min(1).max(60),
+    maxPerDay: z.number().int().min(1).max(1000),
   }),
   runtime: z.object({
     activeBackend: z.string().trim().min(1),
@@ -178,6 +210,38 @@ export const DEFAULT_CONFIG = Object.freeze({
   persona: {
     name: '群友',
     prompt: '你是一个真实自然的群聊成员，说话简短口语化；无关话题或不该插嘴时保持克制沉默。',
+    maxInjectChars: 4000,
+    injectEveryNWakes: 4,
+    maxInitialPromptChars: 1000,
+  },
+  gate: {
+    enabled: false,
+  },
+  identity: {
+    enabled: true,
+    learnFromChat: true,
+    exposeQqInPrompt: false,
+    maxAliasesPerUser: 8,
+  },
+  terms: {
+    enabled: true,
+    maxInject: 12,
+  },
+  media: {
+    maxBytes: 3145728,
+    maxPixels: 16777216,
+    maxForwardDepth: 3,
+  },
+  sticker: {
+    enabled: true,
+    maxInPrompt: 8,
+  },
+  voice: {
+    enabled: false,
+    dir: 'data/voices',
+    maxBytes: 20971520,
+    maxPerMinute: 3,
+    maxPerDay: 20,
   },
   runtime: {
     activeBackend: 'agy',
@@ -216,7 +280,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     cliProfiles: {},
   },
   broker: {
-    enabledModules: ['msg', 'memory', 'wake', 'media', 'social', 'web'],
+    enabledModules: ['msg', 'memory', 'wake', 'media', 'social', 'web', 'sticker', 'voice'],
     scriptTimeoutMs: 20000,
     useBwrap: false,
   },
