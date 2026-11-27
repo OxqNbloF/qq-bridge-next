@@ -52,17 +52,12 @@ const DEFAULT_RULES = {
     { name: '带凭据的 URL', pattern: 'https?://[^/\\s:@]+:[^/\\s:@]+@', flags: 'i' },
   ],
   // 这些文件本来就不该进公开仓库；出现即失败（无论内容）。
-  denyFiles: ['config.json', 'state/', 'audio/', '*.log', '*.bak', '*.bak-*', 'roles/*.md.bak*'],
+  denyFiles: ['config.json', 'data/', '*.secret', '*.token', '*.log', '*.bak', '*.bak-*'],
   // 这些文件里都是占位数据，跳过不报。
   // 加进来之前要确认：里面确实只有假数据。
   allowPaths: [
-    'scripts/privacy-', 'config.example.json', 'package-lock.json', 'src/sensitive.js',
-    // 测试夹具/回归脚本：里面是刻意构造的假 ID 与假凭据
-    'tests/',
-    'scripts/check-onebot-status.mjs', 'scripts/send-test-group.mjs', 'scripts/send-voice.mjs',
-    'scripts/setup-dsh.mjs', 'scripts/patch-', 'scripts/verify-', 'scripts/probe-',
-    // 下面几项是说明文档里的占位符示例，不是真数据。
-    // 不排除它们，外部验证的人每次都会看到一片红。
+    'scripts/privacy-', 'config.example.json', 'package-lock.json',
+    'tests/', 'scripts/patch-',
   ],
 };
 

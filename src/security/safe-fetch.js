@@ -83,7 +83,7 @@ export async function safeFetch(urlString, {
         method: 'GET',
         headers: {
           Host: url.host,
-          'User-Agent': 'qq-bridge-v3-safe-fetch/1.0',
+          'User-Agent': 'chat-relay-fetch/1.0',
           Accept: 'text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5',
         },
         ...(isHttps ? { servername: url.hostname } : {}),

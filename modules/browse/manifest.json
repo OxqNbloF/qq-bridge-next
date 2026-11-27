@@ -1,0 +1,25 @@
+{
+  "name": "browse",
+  "scope": "standard",
+  "summary": "SSRF 防护的公网搜索与网页正文读取",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 25000,
+  "network": true,
+  "actions": {
+    "search": {
+      "desc": "使用公开网页搜索引擎检索关键词",
+      "params": {
+        "query": { "type": "string", "required": true, "desc": "搜索关键词" },
+        "maxResults": { "type": "integer", "desc": "最多返回结果条数" }
+      }
+    },
+    "fetch": {
+      "desc": "抓取公网 HTTP/HTTPS 网页内容（自动拦截内网 IP）",
+      "params": {
+        "url": { "type": "string", "required": true, "desc": "目标公网 URL" },
+        "maxChars": { "type": "integer", "desc": "最多返回字符数" }
+      }
+    }
+  }
+}

@@ -1,22 +1,22 @@
-// v3 统一配置模式校验、热更新与密钥脱敏存储
+// 全新 Zod 配置模式、热更新与密钥脱敏存储
 import { z } from 'zod';
 import { atomicWriteJson, readJsonSafe } from '../storage/fs-atomic.js';
 
-export const CHAT_MODES = Object.freeze(['off', 'listen', 'chat', 'human', 'admin']);
-export const BUILTIN_BACKENDS = Object.freeze(['dsh', 'agy', 'gemini']);
-export const SECRET_MASK = '********';
+export const ROOM_MODES = Object.freeze(['muted', 'observer', 'direct', 'ambient', 'operator']);
+export const BUILTIN_ENGINES = Object.freeze(['dsh', 'agy', 'gemini']);
+export const REDACTED_SECRET = '********';
 
 export function isPlainObject(v) {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 }
 
-export function deepMergePlain(base, patch) {
+export function mergePlain(base, patch) {
   if (!isPlainObject(patch)) return structuredClone(base);
   const out = isPlainObject(base) ? structuredClone(base) : {};
   for (const [k, v] of Object.entries(patch)) {
     if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     if (isPlainObject(v) && isPlainObject(out[k])) {
-      out[k] = deepMergePlain(out[k], v);
+      out[k] = mergePlain(out[k], v);
     } else if (v !== undefined) {
       out[k] = structuredClone(v);
     }
@@ -24,19 +24,19 @@ export function deepMergePlain(base, patch) {
   return out;
 }
 
-const IdListSchema = z.array(z.union([z.string(), z.number()])).transform((arr) =>
+const IdArraySchema = z.array(z.union([z.string(), z.number()])).transform((arr) =>
   [...new Set(arr.map((x) => String(x ?? '').trim()).filter(Boolean))],
 );
 
-const ChatOverrideSchema = z.object({
-  mode: z.enum(CHAT_MODES).optional(),
-  backend: z.string().trim().min(1).optional(),
+const RoomOverrideSchema = z.object({
+  mode: z.enum(ROOM_MODES).optional(),
+  engine: z.string().trim().min(1).optional(),
   model: z.string().trim().optional(),
   paused: z.boolean().optional(),
-  personaOverride: z.string().optional(),
+  personaNote: z.string().optional(),
 });
 
-const CliProfileSchema = z.object({
+const CustomCliSchema = z.object({
   label: z.string().trim().min(1),
   command: z.string().trim().min(1),
   argsTemplate: z.array(z.string()),
@@ -49,84 +49,84 @@ const CliProfileSchema = z.object({
   env: z.record(z.string(), z.string()),
 });
 
-export const ConfigSchema = z.object({
-  ownerQQ: z.union([z.string(), z.number()]).transform((v) => String(v ?? '').trim()),
-  console: z.object({
+export const SettingsSchema = z.object({
+  ownerId: z.union([z.string(), z.number()]).transform((v) => String(v ?? '').trim()),
+  controlPlane: z.object({
     host: z.string().trim().min(1),
     port: z.number().int().min(0).max(65535),
-    token: z.string(),
+    secret: z.string(),
   }),
-  onebot: z.object({
+  transport: z.object({
     wsUrl: z.string().trim().min(1),
     httpUrl: z.string().trim().min(1),
-    accessToken: z.string(),
+    token: z.string(),
   }),
-  access: z.object({
-    allowGroups: IdListSchema,
-    allowPrivate: IdListSchema,
-    denyGroups: IdListSchema,
-    denyPrivate: IdListSchema,
-    ignoreUsers: IdListSchema,
-    allowAllWhenEmpty: z.boolean(),
+  perimeter: z.object({
+    allowedGroups: IdArraySchema,
+    allowedDirects: IdArraySchema,
+    blockedGroups: IdArraySchema,
+    blockedDirects: IdArraySchema,
+    mutedSenders: IdArraySchema,
+    openWhenEmpty: z.boolean(),
   }),
-  modes: z.object({
-    defaultGroup: z.enum(CHAT_MODES),
-    defaultPrivate: z.enum(CHAT_MODES),
-    chats: z.record(z.string(), ChatOverrideSchema),
+  routing: z.object({
+    defaultGroupMode: z.enum(ROOM_MODES),
+    defaultDirectMode: z.enum(ROOM_MODES),
+    rooms: z.record(z.string(), RoomOverrideSchema),
   }),
-  wake: z.object({
+  memberPolicy: z.object({
+    enabled: z.boolean(),
+  }),
+  pacing: z.object({
     coalesceMs: z.number().int().min(0).max(60000),
     cooldownMs: z.number().int().min(0).max(3600000),
-    minUnreadBatch: z.number().int().min(1).max(200),
-    defaultSleepMs: z.number().int().min(1000).max(86400000),
-    minSleepMs: z.number().int().min(1000).max(86400000),
-    maxSleepMs: z.number().int().min(1000).max(86400000),
-    preSleepQuietMs: z.number().int().min(0).max(3600000),
-    mustWakeKeywords: z.array(z.string()),
+    batchThreshold: z.number().int().min(1).max(200),
+    dormantMs: z.number().int().min(1000).max(86400000),
+    minDormantMs: z.number().int().min(1000).max(86400000),
+    maxDormantMs: z.number().int().min(1000).max(86400000),
+    quietWindowMs: z.number().int().min(0).max(3600000),
+    triggerKeywords: z.array(z.string()),
   }),
-  persona: z.object({
-    name: z.string().trim().min(1),
-    prompt: z.string(),
-    maxInjectChars: z.number().int().min(200).max(32000),
-    injectEveryNWakes: z.number().int().min(0).max(50),
-    maxInitialPromptChars: z.number().int().min(100).max(8000),
+  character: z.object({
+    displayName: z.string().trim().min(1),
+    instructions: z.string(),
+    maxCardChars: z.number().int().min(200).max(32000),
+    refreshEveryNWakes: z.number().int().min(0).max(50),
+    maxIntroChars: z.number().int().min(100).max(8000),
   }),
-  gate: z.object({
+  directory: z.object({
     enabled: z.boolean(),
+    autoLearn: z.boolean(),
+    revealRawId: z.boolean(),
+    maxAliases: z.number().int().min(1).max(32),
   }),
-  identity: z.object({
-    enabled: z.boolean(),
-    learnFromChat: z.boolean(),
-    exposeQqInPrompt: z.boolean(),
-    maxAliasesPerUser: z.number().int().min(1).max(32),
-  }),
-  terms: z.object({
+  glossary: z.object({
     enabled: z.boolean(),
     maxInject: z.number().int().min(0).max(50),
   }),
-  media: z.object({
+  attachments: z.object({
     maxBytes: z.number().int().min(1024).max(33554432),
     maxPixels: z.number().int().min(1024).max(67108864),
     maxForwardDepth: z.number().int().min(1).max(8),
   }),
-  sticker: z.object({
+  emoticon: z.object({
     enabled: z.boolean(),
     maxInPrompt: z.number().int().min(0).max(32),
   }),
-  voice: z.object({
+  audio: z.object({
     enabled: z.boolean(),
-    dir: z.string().trim().min(1),
+    libraryDir: z.string().trim().min(1),
     maxBytes: z.number().int().min(1024).max(52428800),
-    maxPerMinute: z.number().int().min(1).max(60),
-    maxPerDay: z.number().int().min(1).max(1000),
+    perMinuteCap: z.number().int().min(1).max(60),
+    perDayCap: z.number().int().min(1).max(1000),
   }),
-  runtime: z.object({
-    activeBackend: z.string().trim().min(1),
-    activeModel: z.string().trim(),
-    maxConcurrent: z.number().int().min(1).max(64),
+  engine: z.object({
+    active: z.string().trim().min(1),
+    model: z.string().trim(),
+    maxConcurrency: z.number().int().min(1).max(64),
     turnTimeoutMs: z.number().int().min(5000).max(1800000),
   }),
-  backends: z.object({
+  engines: z.object({
     dsh: z.object({
       baseUrl: z.string().trim().min(1),
       provider: z.string().trim().min(1),
@@ -154,102 +154,62 @@ export const ConfigSchema = z.object({
       models: z.array(z.string()),
       timeoutMs: z.number().int().min(5000).max(1800000),
     }),
-    cliProfiles: z.record(z.string(), CliProfileSchema),
+    customCli: z.record(z.string(), CustomCliSchema),
   }),
-  broker: z.object({
-    enabledModules: z.array(z.string().trim().min(1)),
+  toolbox: z.object({
+    enabledCapabilities: z.array(z.string().trim().min(1)),
     scriptTimeoutMs: z.number().int().min(1000).max(120000),
-    useBwrap: z.boolean(),
+    useSandbox: z.boolean(),
   }),
-  prompt: z.object({
-    compactThresholdTokens: z.number().int().min(1000).max(2000000),
-    maxUnreadInline: z.number().int().min(1).max(100),
+  context: z.object({
+    compactAtTokens: z.number().int().min(1000).max(2000000),
+    maxInlineUnread: z.number().int().min(1).max(100),
   }),
-  security: z.object({
-    blockSensitiveOutbound: z.boolean(),
-    rateLimitPerMinute: z.number().int().min(1).max(600),
-    maxBurstMessages: z.number().int().min(1).max(10),
+  guard: z.object({
+    blockSensitive: z.boolean(),
+    maxPerMinute: z.number().int().min(1).max(600),
+    maxBurst: z.number().int().min(1).max(10),
   }),
 });
 
-export const DEFAULT_CONFIG = Object.freeze({
-  ownerQQ: '',
-  console: {
-    host: '127.0.0.1',
-    port: 3100,
-    token: '',
+export const DEFAULT_SETTINGS = Object.freeze({
+  ownerId: '',
+  controlPlane: { host: '127.0.0.1', port: 3100, secret: '' },
+  transport: { wsUrl: 'ws://127.0.0.1:3001', httpUrl: 'http://127.0.0.1:3000', token: '' },
+  perimeter: {
+    allowedGroups: [],
+    allowedDirects: [],
+    blockedGroups: [],
+    blockedDirects: [],
+    mutedSenders: [],
+    openWhenEmpty: false,
   },
-  onebot: {
-    wsUrl: 'ws://127.0.0.1:3001',
-    httpUrl: 'http://127.0.0.1:3000',
-    accessToken: '',
-  },
-  access: {
-    allowGroups: [],
-    allowPrivate: [],
-    denyGroups: [],
-    denyPrivate: [],
-    ignoreUsers: [],
-    allowAllWhenEmpty: false,
-  },
-  modes: {
-    defaultGroup: 'human',
-    defaultPrivate: 'chat',
-    chats: {},
-  },
-  wake: {
+  routing: { defaultGroupMode: 'ambient', defaultDirectMode: 'direct', rooms: {} },
+  memberPolicy: { enabled: false },
+  pacing: {
     coalesceMs: 2500,
     cooldownMs: 45000,
-    minUnreadBatch: 6,
-    defaultSleepMs: 900000,
-    minSleepMs: 60000,
-    maxSleepMs: 7200000,
-    preSleepQuietMs: 120000,
-    mustWakeKeywords: [],
+    batchThreshold: 6,
+    dormantMs: 900000,
+    minDormantMs: 60000,
+    maxDormantMs: 7200000,
+    quietWindowMs: 120000,
+    triggerKeywords: [],
   },
-  persona: {
-    name: '群友',
-    prompt: '你是一个真实自然的群聊成员，说话简短口语化；无关话题或不该插嘴时保持克制沉默。',
-    maxInjectChars: 4000,
-    injectEveryNWakes: 4,
-    maxInitialPromptChars: 1000,
+  character: {
+    displayName: '群友',
+    instructions: '你是一个真实自然的群聊成员，说话简短口语化；无关话题或不该插嘴时保持克制沉默。',
+    maxCardChars: 4000,
+    refreshEveryNWakes: 4,
+    maxIntroChars: 1000,
   },
-  gate: {
-    enabled: false,
-  },
-  identity: {
-    enabled: true,
-    learnFromChat: true,
-    exposeQqInPrompt: false,
-    maxAliasesPerUser: 8,
-  },
-  terms: {
-    enabled: true,
-    maxInject: 12,
-  },
-  media: {
-    maxBytes: 3145728,
-    maxPixels: 16777216,
-    maxForwardDepth: 3,
-  },
-  sticker: {
-    enabled: true,
-    maxInPrompt: 8,
-  },
-  voice: {
-    enabled: false,
-    dir: 'data/voices',
-    maxBytes: 20971520,
-    maxPerMinute: 3,
-    maxPerDay: 20,
-  },
-  runtime: {
-    activeBackend: 'agy',
-    activeModel: '',
-    maxConcurrent: 4,
-    turnTimeoutMs: 300000,
-  },
-  backends: {
+  directory: { enabled: true, autoLearn: true, revealRawId: false, maxAliases: 8 },
+  glossary: { enabled: true, maxInject: 12 },
+  attachments: { maxBytes: 3145728, maxPixels: 16777216, maxForwardDepth: 3 },
+  emoticon: { enabled: true, maxInPrompt: 8 },
+  audio: { enabled: false, libraryDir: 'data/audio', maxBytes: 20971520, perMinuteCap: 3, perDayCap: 20 },
+  engine: { active: 'agy', model: '', maxConcurrency: 4, turnTimeoutMs: 300000 },
+  engines: {
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
       provider: 'deepseek-official',
@@ -265,10 +225,7 @@ export const DEFAULT_CONFIG = Object.freeze({
       model: '',
       models: [],
       timeoutMs: 300000,
-      permissions: {
-        allow: ['mcp(qq-broker/*)'],
-        deny: [],
-      },
+      permissions: { allow: ['mcp(relay-hub/*)'], deny: [] },
     },
     gemini: {
       command: 'gemini',
@@ -277,25 +234,18 @@ export const DEFAULT_CONFIG = Object.freeze({
       models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
       timeoutMs: 300000,
     },
-    cliProfiles: {},
+    customCli: {},
   },
-  broker: {
-    enabledModules: ['msg', 'memory', 'wake', 'media', 'social', 'web', 'sticker', 'voice'],
+  toolbox: {
+    enabledCapabilities: ['chat', 'notes', 'pacing', 'attach', 'people', 'browse', 'emoticon', 'audio'],
     scriptTimeoutMs: 20000,
-    useBwrap: false,
+    useSandbox: false,
   },
-  prompt: {
-    compactThresholdTokens: 48000,
-    maxUnreadInline: 20,
-  },
-  security: {
-    blockSensitiveOutbound: true,
-    rateLimitPerMinute: 20,
-    maxBurstMessages: 4,
-  },
+  context: { compactAtTokens: 48000, maxInlineUnread: 20 },
+  guard: { blockSensitive: true, maxPerMinute: 20, maxBurst: 4 },
 });
 
-const DEFAULT_CLI_PROFILE = Object.freeze({
+const DEFAULT_CUSTOM_CLI = Object.freeze({
   label: 'Custom CLI',
   command: '',
   argsTemplate: ['-p', '{{prompt}}'],
@@ -308,94 +258,93 @@ const DEFAULT_CLI_PROFILE = Object.freeze({
   env: {},
 });
 
-function normalizeCliProfiles(rawProfiles) {
-  if (!isPlainObject(rawProfiles)) return {};
+function normalizeCustomCli(rawMap) {
+  if (!isPlainObject(rawMap)) return {};
   const out = {};
-  for (const [id, spec] of Object.entries(rawProfiles)) {
-    if (!/^[a-z0-9_-]{1,32}$/.test(id)) throw new Error(`cliProfiles 名称非法：${id}`);
-    out[id] = deepMergePlain(DEFAULT_CLI_PROFILE, spec);
+  for (const [id, spec] of Object.entries(rawMap)) {
+    if (!/^[a-z0-9_-]{1,32}$/.test(id)) throw new Error(`customCli 名称非法：${id}`);
+    out[id] = mergePlain(DEFAULT_CUSTOM_CLI, spec);
   }
   return out;
 }
 
-/** 解析并校验完整配置 */
-export function parseConfig(rawInput = {}) {
+export function parseSettings(rawInput = {}) {
   const input = isPlainObject(rawInput) ? structuredClone(rawInput) : {};
-  const merged = deepMergePlain(DEFAULT_CONFIG, input);
-  merged.backends.cliProfiles = normalizeCliProfiles(input?.backends?.cliProfiles ?? merged.backends.cliProfiles);
-  const parsed = ConfigSchema.parse(merged);
+  const merged = mergePlain(DEFAULT_SETTINGS, input);
+  merged.engines.customCli = normalizeCustomCli(input?.engines?.customCli ?? merged.engines.customCli);
+  const parsed = SettingsSchema.parse(merged);
 
-  if (parsed.wake.minSleepMs > parsed.wake.maxSleepMs) {
-    const tmp = parsed.wake.minSleepMs;
-    parsed.wake.minSleepMs = parsed.wake.maxSleepMs;
-    parsed.wake.maxSleepMs = tmp;
+  if (parsed.pacing.minDormantMs > parsed.pacing.maxDormantMs) {
+    const t = parsed.pacing.minDormantMs;
+    parsed.pacing.minDormantMs = parsed.pacing.maxDormantMs;
+    parsed.pacing.maxDormantMs = t;
   }
-  if (parsed.wake.defaultSleepMs < parsed.wake.minSleepMs) parsed.wake.defaultSleepMs = parsed.wake.minSleepMs;
-  if (parsed.wake.defaultSleepMs > parsed.wake.maxSleepMs) parsed.wake.defaultSleepMs = parsed.wake.maxSleepMs;
+  if (parsed.pacing.dormantMs < parsed.pacing.minDormantMs) parsed.pacing.dormantMs = parsed.pacing.minDormantMs;
+  if (parsed.pacing.dormantMs > parsed.pacing.maxDormantMs) parsed.pacing.dormantMs = parsed.pacing.maxDormantMs;
 
-  const backendId = parsed.runtime.activeBackend;
-  const knownBackends = new Set([...BUILTIN_BACKENDS, ...Object.keys(parsed.backends.cliProfiles)]);
-  if (!knownBackends.has(backendId)) {
-    throw new Error(`未知 activeBackend: ${backendId}`);
+  const known = new Set([...BUILTIN_ENGINES, ...Object.keys(parsed.engines.customCli)]);
+  if (!known.has(parsed.engine.active)) {
+    throw new Error(`未知 engine.active: ${parsed.engine.active}`);
   }
   return parsed;
 }
 
-/** 控制台回显脱敏配置（隐藏密钥，附带 hasToken 标记） */
-export function maskConfigSecrets(cfg) {
+export function redactSettingsSecrets(cfg) {
   const copy = structuredClone(cfg);
-  copy.console = { ...copy.console, token: copy.console.token ? SECRET_MASK : '', hasToken: Boolean(cfg.console.token) };
-  copy.onebot = { ...copy.onebot, accessToken: copy.onebot.accessToken ? SECRET_MASK : '', hasToken: Boolean(cfg.onebot.accessToken) };
-  copy.backends.dsh = {
-    ...copy.backends.dsh,
-    authToken: copy.backends.dsh.authToken ? SECRET_MASK : '',
-    hasToken: Boolean(cfg.backends.dsh.authToken),
+  copy.controlPlane = {
+    ...copy.controlPlane,
+    secret: copy.controlPlane.secret ? REDACTED_SECRET : '',
+    hasSecret: Boolean(cfg.controlPlane.secret),
+  };
+  copy.transport = {
+    ...copy.transport,
+    token: copy.transport.token ? REDACTED_SECRET : '',
+    hasToken: Boolean(cfg.transport.token),
+  };
+  copy.engines.dsh = {
+    ...copy.engines.dsh,
+    authToken: copy.engines.dsh.authToken ? REDACTED_SECRET : '',
+    hasToken: Boolean(cfg.engines.dsh.authToken),
   };
   return copy;
 }
 
-function preserveMaskedSecrets(patch, currentCfg) {
-  const next = deepMergePlain({}, patch);
-  if (next.console?.token === SECRET_MASK) next.console.token = currentCfg.console.token;
-  if (next.onebot?.accessToken === SECRET_MASK) next.onebot.accessToken = currentCfg.onebot.accessToken;
-  if (next.backends?.dsh?.authToken === SECRET_MASK) next.backends.dsh.authToken = currentCfg.backends.dsh.authToken;
-  if (next.console?.token === null) next.console.token = '';
-  if (next.onebot?.accessToken === null) next.onebot.accessToken = '';
-  if (next.backends?.dsh?.authToken === null) next.backends.dsh.authToken = '';
+function preserveRedactedSecrets(patch, current) {
+  const next = mergePlain({}, patch);
+  if (next.controlPlane?.secret === REDACTED_SECRET) next.controlPlane.secret = current.controlPlane.secret;
+  if (next.transport?.token === REDACTED_SECRET) next.transport.token = current.transport.token;
+  if (next.engines?.dsh?.authToken === REDACTED_SECRET) next.engines.dsh.authToken = current.engines.dsh.authToken;
+  if (next.controlPlane?.secret === null) next.controlPlane.secret = '';
+  if (next.transport?.token === null) next.transport.token = '';
+  if (next.engines?.dsh?.authToken === null) next.engines.dsh.authToken = '';
   return next;
 }
 
-/** 创建可热更新的配置存储 */
-export function createConfigStore({ configPath = '', initialConfig = null } = {}) {
+export function createSettingsStore({ configPath = '', initialConfig = null } = {}) {
   const disk = configPath ? readJsonSafe(configPath, null) : null;
-  let current = parseConfig(initialConfig ?? disk ?? {});
+  let current = parseSettings(initialConfig ?? disk ?? {});
   const listeners = new Set();
 
-  function get() {
-    return current;
-  }
+  function get() { return current; }
 
   function patch(partial) {
     if (!isPlainObject(partial)) throw new Error('配置补丁必须是 JSON 对象');
-    const sanitizedPatch = preserveMaskedSecrets(partial, current);
-    const candidate = deepMergePlain(current, sanitizedPatch);
-    // 允许 chats 与 cliProfiles 全量替换条目（如删除单条）
-    if (isPlainObject(sanitizedPatch.modes?.chats)) {
-      for (const [k, v] of Object.entries(sanitizedPatch.modes.chats)) {
-        if (v === null) delete candidate.modes.chats[k];
+    const cleanPatch = preserveRedactedSecrets(partial, current);
+    const candidate = mergePlain(current, cleanPatch);
+    if (isPlainObject(cleanPatch.routing?.rooms)) {
+      for (const [k, v] of Object.entries(cleanPatch.routing.rooms)) {
+        if (v === null) delete candidate.routing.rooms[k];
       }
     }
-    if (isPlainObject(sanitizedPatch.backends?.cliProfiles)) {
-      for (const [k, v] of Object.entries(sanitizedPatch.backends.cliProfiles)) {
-        if (v === null) delete candidate.backends.cliProfiles[k];
+    if (isPlainObject(cleanPatch.engines?.customCli)) {
+      for (const [k, v] of Object.entries(cleanPatch.engines.customCli)) {
+        if (v === null) delete candidate.engines.customCli[k];
       }
     }
     const prev = current;
-    const validated = parseConfig(candidate);
+    const validated = parseSettings(candidate);
     current = validated;
-    if (configPath) {
-      atomicWriteJson(configPath, validated, { mode: 0o600 });
-    }
+    if (configPath) atomicWriteJson(configPath, validated, { mode: 0o600 });
     for (const fn of listeners) {
       try { fn(validated, prev); } catch {}
     }
@@ -408,7 +357,7 @@ export function createConfigStore({ configPath = '', initialConfig = null } = {}
   }
 
   function listSecrets() {
-    return [current.console.token, current.onebot.accessToken, current.backends.dsh.authToken].filter(
+    return [current.controlPlane.secret, current.transport.token, current.engines.dsh.authToken].filter(
       (x) => typeof x === 'string' && x.length >= 6,
     );
   }

@@ -1,137 +1,38 @@
-# ════════════════════════════════════════════════════════════
-# qq-bridge-next .gitignore
-# 原则：只提交源码与公开示例；编译/构建/缓存/日志/隐私/运行状态一律不提交
-# ════════════════════════════════════════════════════════════
+# chat-relay .gitignore
 
-# ── 依赖 ──────────────────────────────────────────────────
+# Dependencies
 node_modules/
-.npm-cache/
-.npm/
-.pnpm-store/
-.yarn/
-!.yarn/patches
-!.yarn/releases
-!.yarn/plugins
 package-lock.json.bak
 
-# ── 编译 / 构建产物 ───────────────────────────────────────
-dist/
-build/
-out/
-coverage/
-*.tsbuildinfo
-*.map
-.next/
-.nuxt/
-.output/
-.svelte-kit/
-.turbo/
-.vercel/
-.netlify/
-
-# ── 缓存 ──────────────────────────────────────────────────
-.cache/
-.parcel-cache/
-.vite/
-.eslintcache
-.stylelintcache
-.node-gyp/
-*.cache
-
-# ── 日志 ──────────────────────────────────────────────────
-*.log
-logs/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# ── 隐私：本机配置 / 凭据 / 密钥（绝不提交） ──────────────
+# Local config, runtime data & secrets
 config.json
-config.local.json
 config.*.local.json
 .env
 .env.*
 !.env.example
+data/
+*.secret
+*.token
 *.pem
 *.key
-*.p12
-*.pfx
-*.crt
-*.cer
-*.der
-*.keystore
-*.jks
-id_rsa
-id_rsa.*
-id_ed25519
-id_ed25519.*
-*.ppk
 secrets/
 credentials/
-.npmrc.local
 scripts/privacy-rules.json
-# SnowLuma catalog 投影受再分发限制（见 NOTICE.md §2.2）
-_snowluma-catalog.json
 
-# ── 用户数据与运行状态（运行时生成，不提交） ──────────────
-state/
-data/
-audio/
-*.sqlite
-*.sqlite3
-*.db
-*.bak
-*.bak-*
+# Build, logs & temp
+dist/
+coverage/
+logs/
+*.log
 *.tmp
 *.temp
-*.swp
-*.swo
-*~
+*.bak
+*.bak-*
 
-# ── 操作系统 / 编辑器杂项 ─────────────────────────────────
+# OS & editors
 .DS_Store
 .DS_Store?
 ._*
-.Spotlight-V100
-.Trashes
 Thumbs.db
-ehthumbs.db
-Desktop.ini
-.idea/
 .vscode/
-*.iml
-*.sublime-workspace
-*.sublime-project
-
-# ── 本机一次性调试脚本（含本机路径/ID，不提交） ───────────
-/scripts/cleanup-probe-sessions.mjs
-/scripts/cleanup-probe-workspaces.mjs
-/scripts/cleanup-test-sessions.mjs
-/scripts/debug-whitelist.mjs
-/scripts/diag-archive.mjs
-/scripts/fix-probe-workspace-title.mjs
-/scripts/patch-qq-chat-v2-collect-memory.mjs
-/scripts/patch-qq-chat-v2-presleep.mjs
-/scripts/patch-qq-chat-v2-stickers.mjs
-/scripts/patch-web-mcp-timeout.mjs
-
-# ── 内部文档 / 计划 / 调研（内部资料，不进公开仓库） ──────
-/AGENTS.md
-/agent.md
-/docs/
-/PROJECT_GUIDE.md
-/ARCH_REVIEW.md
-/DSH_QQ_TOOLS_PLAN.md
-/GEN2_SIMULATION_PLAN.md
-/SOCIAL_MODE_PLAN.md
-/RESEARCH_QQ_MESSAGE_DND.md
-/RESEARCH_SNOWLUMA_EMOJI_STICKER.md
-/SnowLuma功能调研.md
-/真人语感策略.md
-/TOKEN_COST.md
-/LOCAL_MODEL_SIZING.md
-
-# ── 大体积演示素材（改由 Release 附件托管，README 有链接） ──
-/assets/project-intro.mp4
+.idea/

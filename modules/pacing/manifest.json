@@ -1,0 +1,22 @@
+{
+  "name": "pacing",
+  "scope": "standard",
+  "summary": "查询与微调当前房间的拟人唤醒节奏",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 15000,
+  "network": false,
+  "actions": {
+    "status": {
+      "desc": "获取当前房间未读数量、触发次数与节奏状态",
+      "params": {}
+    },
+    "tune": {
+      "desc": "调整当前房间的活跃状态与休眠间隔",
+      "params": {
+        "state": { "type": "string", "desc": "engaged 或 dormant" },
+        "dormantMs": { "type": "integer", "desc": "下次后台检查间隔毫秒" }
+      }
+    }
+  }
+}

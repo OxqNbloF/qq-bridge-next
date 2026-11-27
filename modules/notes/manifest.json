@@ -1,0 +1,52 @@
+{
+  "name": "notes",
+  "scope": "standard",
+  "summary": "房间长期笔记与术语表检索管理",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 15000,
+  "network": false,
+  "actions": {
+    "list": {
+      "desc": "列出当前房间及全局长期笔记",
+      "params": {
+        "includeGlobal": { "type": "boolean", "desc": "是否包含全局笔记" },
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "put": {
+      "desc": "写入一条长期笔记",
+      "params": {
+        "content": { "type": "string", "required": true, "desc": "笔记正文" },
+        "tags": { "type": "array", "desc": "可选标签数组" },
+        "scope": { "type": "string", "desc": "room 或 global" }
+      }
+    },
+    "remove": {
+      "desc": "删除指定 ID 的笔记",
+      "params": {
+        "id": { "type": "string", "required": true, "desc": "笔记 ID" }
+      }
+    },
+    "find": {
+      "desc": "按关键词检索笔记",
+      "params": {
+        "query": { "type": "string", "required": true, "desc": "检索词" },
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "glossary_list": {
+      "desc": "列出房间与全局黑话术语表",
+      "params": {
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "glossary_find": {
+      "desc": "检索黑话或术语解释",
+      "params": {
+        "query": { "type": "string", "required": true, "desc": "术语或关键词" },
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    }
+  }
+}

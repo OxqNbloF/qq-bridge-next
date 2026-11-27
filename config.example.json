@@ -1,81 +1,81 @@
 {
-  "ownerQQ": "",
-  "console": {
+  "ownerId": "",
+  "controlPlane": {
     "host": "127.0.0.1",
     "port": 3100,
-    "token": ""
+    "secret": ""
   },
-  "onebot": {
+  "transport": {
     "wsUrl": "ws://127.0.0.1:3001",
     "httpUrl": "http://127.0.0.1:3000",
-    "accessToken": ""
+    "token": ""
   },
-  "access": {
-    "allowGroups": [],
-    "allowPrivate": [],
-    "denyGroups": [],
-    "denyPrivate": [],
-    "ignoreUsers": [],
-    "allowAllWhenEmpty": false
+  "perimeter": {
+    "allowedGroups": [],
+    "allowedDirects": [],
+    "blockedGroups": [],
+    "blockedDirects": [],
+    "mutedSenders": [],
+    "openWhenEmpty": false
   },
-  "modes": {
-    "defaultGroup": "human",
-    "defaultPrivate": "chat",
-    "chats": {}
+  "routing": {
+    "defaultGroupMode": "ambient",
+    "defaultDirectMode": "direct",
+    "rooms": {}
   },
-  "wake": {
-    "coalesceMs": 2500,
-    "cooldownMs": 45000,
-    "minUnreadBatch": 6,
-    "defaultSleepMs": 900000,
-    "minSleepMs": 60000,
-    "maxSleepMs": 7200000,
-    "preSleepQuietMs": 120000,
-    "mustWakeKeywords": []
-  },
-  "persona": {
-    "name": "群友",
-    "prompt": "你是一个真实自然的群聊成员，说话简短口语化；无关话题或不该插嘴时保持克制沉默。",
-    "maxInjectChars": 4000,
-    "injectEveryNWakes": 4,
-    "maxInitialPromptChars": 1000
-  },
-  "gate": {
+  "memberPolicy": {
     "enabled": false
   },
-  "identity": {
-    "enabled": true,
-    "learnFromChat": true,
-    "exposeQqInPrompt": false,
-    "maxAliasesPerUser": 8
+  "pacing": {
+    "coalesceMs": 2500,
+    "cooldownMs": 45000,
+    "batchThreshold": 6,
+    "dormantMs": 900000,
+    "minDormantMs": 60000,
+    "maxDormantMs": 7200000,
+    "quietWindowMs": 120000,
+    "triggerKeywords": []
   },
-  "terms": {
+  "character": {
+    "displayName": "群友",
+    "instructions": "你是一个真实自然的群聊成员，说话简短口语化；无关话题或不该插嘴时保持克制沉默。",
+    "maxCardChars": 4000,
+    "refreshEveryNWakes": 4,
+    "maxIntroChars": 1000
+  },
+  "directory": {
+    "enabled": true,
+    "autoLearn": true,
+    "revealRawId": false,
+    "maxAliases": 8
+  },
+  "glossary": {
     "enabled": true,
     "maxInject": 12
   },
-  "media": {
+  "attachments": {
     "maxBytes": 3145728,
     "maxPixels": 16777216,
     "maxForwardDepth": 3
   },
-  "sticker": {
+  "emoticon": {
     "enabled": true,
     "maxInPrompt": 8
   },
-  "voice": {
+  "audio": {
     "enabled": false,
-    "dir": "data/voices",
+    "libraryDir": "data/audio",
     "maxBytes": 20971520,
-    "maxPerMinute": 3,
-    "maxPerDay": 20
+    "perMinuteCap": 3,
+    "perDayCap": 20
   },
-  "runtime": {
-    "activeBackend": "agy",
-    "activeModel": "",
-    "maxConcurrent": 4,
+  "engine": {
+    "active": "agy",
+    "model": "",
+    "maxConcurrency": 4,
     "turnTimeoutMs": 300000
   },
-  "backends": {
+  "engines": {
     "dsh": {
       "baseUrl": "http://127.0.0.1:3080",
       "provider": "deepseek-official",
@@ -92,7 +92,7 @@
       "models": [],
       "timeoutMs": 300000,
       "permissions": {
-        "allow": ["mcp(qq-broker/*)"],
+        "allow": ["mcp(relay-hub/*)"],
         "deny": []
       }
     },
@@ -103,7 +103,7 @@
       "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
       "timeoutMs": 300000
     },
-    "cliProfiles": {
+    "customCli": {
       "claude-example": {
         "label": "Claude Code (示例)",
         "command": "claude",
@@ -118,18 +118,18 @@
       }
     }
   },
-  "broker": {
-    "enabledModules": ["msg", "memory", "wake", "media", "social", "web", "sticker", "voice"],
+  "toolbox": {
+    "enabledCapabilities": ["chat", "notes", "pacing", "attach", "people", "browse", "emoticon", "audio"],
     "scriptTimeoutMs": 20000,
-    "useBwrap": false
+    "useSandbox": false
   },
-  "prompt": {
-    "compactThresholdTokens": 48000,
-    "maxUnreadInline": 20
+  "context": {
+    "compactAtTokens": 48000,
+    "maxInlineUnread": 20
   },
-  "security": {
-    "blockSensitiveOutbound": true,
-    "rateLimitPerMinute": 20,
-    "maxBurstMessages": 4
+  "guard": {
+    "blockSensitive": true,
+    "maxPerMinute": 20,
+    "maxBurst": 4
   }
 }

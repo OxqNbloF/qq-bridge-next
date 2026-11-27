@@ -1,0 +1,31 @@
+{
+  "name": "emoticon",
+  "scope": "standard",
+  "summary": "浏览本地表情库、维护备注与发送表情图",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 20000,
+  "network": false,
+  "actions": {
+    "list": {
+      "desc": "按关键词列出本地缓存或标注的表情",
+      "params": {
+        "query": { "type": "string", "desc": "搜索关键词" },
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "send": {
+      "desc": "发送已入库的表情图片到当前房间",
+      "params": {
+        "ref": { "type": "string", "required": true, "desc": "表情 ID 或文件名" }
+      }
+    },
+    "annotate": {
+      "desc": "为指定表情添加语义备注",
+      "params": {
+        "id": { "type": "string", "required": true, "desc": "表情 ID" },
+        "note": { "type": "string", "required": true, "desc": "表情语境说明" }
+      }
+    }
+  }
+}

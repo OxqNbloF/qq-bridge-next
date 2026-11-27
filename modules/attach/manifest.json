@@ -1,0 +1,30 @@
+{
+  "name": "attach",
+  "scope": "standard",
+  "summary": "查询媒体附件、展开合并转发与检测外链图片",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 20000,
+  "network": true,
+  "actions": {
+    "list_media": {
+      "desc": "列出当前房间最近的媒体附件信息",
+      "params": {
+        "messageId": { "type": "string", "desc": "按消息 ID 过滤" },
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "unpack_bundle": {
+      "desc": "解包合并转发消息并整理对话全文",
+      "params": {
+        "bundleId": { "type": "string", "required": true, "desc": "合并转发包 ID" }
+      }
+    },
+    "check_image": {
+      "desc": "以 SSRF 安全方式检查远程图片大小与格式头",
+      "params": {
+        "url": { "type": "string", "required": true, "desc": "公网 HTTP/HTTPS 图片链接" }
+      }
+    }
+  }
+}

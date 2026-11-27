@@ -1,0 +1,23 @@
+{
+  "name": "audio",
+  "scope": "standard",
+  "summary": "查看内置语音素材库并发送语音条",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 20000,
+  "network": false,
+  "actions": {
+    "list": {
+      "desc": "列出可用的安全语音文件",
+      "params": {
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "send": {
+      "desc": "向当前房间发送指定语音文件",
+      "params": {
+        "file": { "type": "string", "required": true, "desc": "语音文件名" }
+      }
+    }
+  }
+}

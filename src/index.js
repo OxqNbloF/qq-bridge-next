@@ -1,34 +1,31 @@
-// 守护进程入口
-import fs from 'node:fs';
+// 程序入口：加载 config.json 并启动 chat-relay 控制面与消息传输层
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createBridgeApp } from './app.js';
+import { createRelayApp } from './app.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CONFIG_PATH = path.join(ROOT, 'config.json');
-const DATA_DIR = path.join(ROOT, 'data');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = path.resolve(__dirname, '..');
 
-if (!fs.existsSync(CONFIG_PATH)) {
-  const example = path.join(ROOT, 'config.example.json');
-  if (fs.existsSync(example)) {
-    fs.copyFileSync(example, CONFIG_PATH);
-    console.log(`未发现 config.json，已从 config.example.json 生成默认配置。`);
+async function main() {
+  const app = createRelayApp({ rootDir: ROOT_DIR });
+  const { control } = await app.start({ startTransport: true });
+  if (control.secretSource !== 'config') {
+    process.stdout.write(`[chat-relay] 控制面板一次性查看密钥 (x-control-secret): ${control.secret}\n`);
   }
+
+  let closing = false;
+  const shutdown = async (signal) => {
+    if (closing) return;
+    closing = true;
+    process.stdout.write(`\n[chat-relay] 收到 ${signal}，正在清理 Socket 与持久化状态...\n`);
+    await app.stop();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
-const app = createBridgeApp({
-  rootDir: ROOT,
-  configPath: CONFIG_PATH,
-  dataDir: DATA_DIR,
-  logger: (line) => console.log(line),
+main().catch((err) => {
+  process.stderr.write(`[chat-relay] 启动失败: ${err?.stack || err}\n`);
+  process.exit(1);
 });
-
-const shutdown = async () => {
-  await app.stop();
-  process.exit(0);
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-
-const info = await app.start({ connectOneBot: true });
-console.log(`控制台访问令牌文件: ${path.join(DATA_DIR, 'console.token')} (len=${info.console.token.length})`);

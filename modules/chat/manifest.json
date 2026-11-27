@@ -1,0 +1,48 @@
+{
+  "name": "chat",
+  "scope": "standard",
+  "summary": "房间消息收发、未读历史查询与拟人节奏收尾",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 30000,
+  "network": false,
+  "actions": {
+    "say": {
+      "desc": "向当前房间发送文本消息（单句或短句数组，可引用或 @）",
+      "params": {
+        "messages": { "type": "string_or_array", "required": true, "desc": "单条或短句数组" },
+        "replyToMessageId": { "type": "string", "desc": "可选引用消息 ID" },
+        "mentionUserId": { "type": "string", "desc": "可选 @ 成员 ID" }
+      }
+    },
+    "unread": {
+      "desc": "查看当前房间未读消息列表",
+      "params": {
+        "afterSeq": { "type": "integer", "desc": "仅返回大于该 seq 的未读消息" },
+        "limit": { "type": "integer", "desc": "最多返回条数" }
+      }
+    },
+    "history": {
+      "desc": "查看当前房间最近历史消息",
+      "params": {
+        "limit": { "type": "integer", "desc": "最多返回条数" },
+        "offset": { "type": "integer", "desc": "分页偏移量" }
+      }
+    },
+    "linger": {
+      "desc": "挂起等待群友继续发言或静默窗口结束",
+      "params": {
+        "timeoutMs": { "type": "integer", "desc": "最长等待毫秒" },
+        "quietMs": { "type": "integer", "desc": "静默多少毫秒后返回" },
+        "reason": { "type": "string", "desc": "等待原因说明" }
+      }
+    },
+    "finish": {
+      "desc": "确认本轮已读 seq 并更新房间节奏",
+      "params": {
+        "throughSeq": { "type": "integer", "desc": "确认已读到的最大 seq" },
+        "pacing": { "type": "object", "desc": "可选 { state, dormantMs }" }
+      }
+    }
+  }
+}

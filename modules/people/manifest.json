@@ -1,0 +1,29 @@
+{
+  "name": "people",
+  "scope": "standard",
+  "summary": "查看成员名录、最近发言者与发送轻拍",
+  "entry": "run.mjs",
+  "runtime": "node",
+  "timeoutMs": 15000,
+  "network": false,
+  "actions": {
+    "roster": {
+      "desc": "查看当前房间成员名录（含备注别名）",
+      "params": {
+        "limit": { "type": "integer", "desc": "最多返回人数" }
+      }
+    },
+    "recent_speakers": {
+      "desc": "查看最近发言的房间成员",
+      "params": {
+        "limit": { "type": "integer", "desc": "最多返回人数" }
+      }
+    },
+    "nudge": {
+      "desc": "向房间成员发送轻拍（戳一戳）",
+      "params": {
+        "userId": { "type": "string", "required": true, "desc": "目标成员 ID" }
+      }
+    }
+  }
+}
